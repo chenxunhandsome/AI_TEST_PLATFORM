@@ -278,8 +278,10 @@ import {
   runTestSuite
 } from '@/api/ui_automation'
 import { useI18n } from 'vue-i18n'
+import { useUiAutomationStore } from '@/stores/uiAutomation'
 
 const { t } = useI18n()
+const uiAutomationStore = useUiAutomationStore()
 
 // 响应式数据
 const projects = ref([])
@@ -397,6 +399,7 @@ const loadAvailableTestCases = async () => {
 
 // 项目切换
 const onProjectChange = async () => {
+  uiAutomationStore.setSelectedProject(projectId.value)
   pagination.currentPage = 1
   await loadSuites()
 }
@@ -743,7 +746,7 @@ const originalShowCreateDialog = showCreateDialog
 onMounted(async () => {
   await loadProjects()
   if (projects.value.length > 0) {
-    projectId.value = projects.value[0].id
+    projectId.value = uiAutomationStore.resolveSelectedProjectId(projects.value)
     await loadSuites()
   }
 })

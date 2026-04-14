@@ -16,6 +16,9 @@
         </el-descriptions-item>
         <el-descriptions-item :label="$t('testcase.testType')">{{ getTypeText(testcase.test_type) }}</el-descriptions-item>
         <el-descriptions-item :label="$t('testcase.project')">{{ testcase.project?.name || $t('testcase.noProject') }}</el-descriptions-item>
+        <el-descriptions-item :label="$t('testcase.folder')">
+          {{ testcase.folder?.name || $t('testcase.ungroupedCases') }}
+        </el-descriptions-item>
         <el-descriptions-item :label="$t('testcase.relatedVersions')" :span="2">
           <div v-if="testcase.versions && testcase.versions.length > 0" class="version-tags">
             <el-tag

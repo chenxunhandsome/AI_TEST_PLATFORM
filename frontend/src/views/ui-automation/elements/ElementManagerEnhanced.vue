@@ -295,9 +295,11 @@ import {
   validateElementLocator,
   generateElementSuggestions
 } from '@/api/ui_automation'
+import { useUiAutomationStore } from '@/stores/uiAutomation'
 
 // 国际化
 const { t } = useI18n()
+const uiAutomationStore = useUiAutomationStore()
 
 // 响应式数据
 const projects = ref([])
@@ -488,7 +490,7 @@ onMounted(async () => {
 
   if (projects.value.length > 0) {
     console.log('设置初始项目为:', projects.value[0].id)
-    selectedProject.value = projects.value[0].id
+    selectedProject.value = uiAutomationStore.resolveSelectedProjectId(projects.value)
     await onProjectChange()
     console.log('onProjectChange完成')
   }
@@ -714,6 +716,7 @@ const loadElementTree = async () => {
 
 // 项目切换
 const onProjectChange = async () => {
+  uiAutomationStore.setSelectedProject(selectedProject.value)
   selectedElement.value = null
   suggestions.value = []
 

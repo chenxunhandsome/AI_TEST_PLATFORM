@@ -13,6 +13,7 @@ from .views import (
     TestSuiteViewSet,
     TestExecutionViewSet,
     ScreenshotViewSet,
+    TestCaseFolderViewSet,
     TestCaseViewSet,
     TestCaseStepViewSet,
     TestCaseExecutionViewSet,
@@ -38,6 +39,7 @@ router.register(r'steps', ScriptStepViewSet)
 router.register(r'test-suites', TestSuiteViewSet)
 router.register(r'test-executions', TestExecutionViewSet)
 router.register(r'screenshots', ScreenshotViewSet)
+router.register(r'test-case-folders', TestCaseFolderViewSet, basename='test-case-folders')
 router.register(r'test-cases', TestCaseViewSet)
 router.register(r'test-case-steps', TestCaseStepViewSet)
 router.register(r'test-case-executions', TestCaseExecutionViewSet)

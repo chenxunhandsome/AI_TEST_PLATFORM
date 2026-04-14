@@ -6,7 +6,11 @@
         <el-select v-model="projectId" :placeholder="t('uiAutomation.project.selectProject')" style="width: 200px; margin-right: 15px" @change="onProjectChange">
           <el-option v-for="project in projects" :key="project.id" :label="project.name" :value="project.id" />
         </el-select>
-        <el-button type="primary" @click="showCreateDialog = true">
+        <el-button @click="openFolderDialog">
+          <el-icon><FolderAdd /></el-icon>
+          {{ text.newFolder }}
+        </el-button>
+        <el-button type="primary" @click="openCreateDialog">
           <el-icon><Plus /></el-icon>
           {{ t('uiAutomation.testCase.newTestCase') }}
         </el-button>
@@ -17,18 +21,41 @@
       <!-- 左侧：测试用例列表 -->
       <div class="left-panel">
         <div class="panel-header">
-          <h3>{{ t('uiAutomation.testCase.testCaseList') }}</h3>
-          <el-input
-            v-model="searchKeyword"
-            :placeholder="t('uiAutomation.testCase.searchPlaceholder')"
-            clearable
-            size="small"
-            style="width: 200px"
-          >
-            <template #prefix>
-              <el-icon><Search /></el-icon>
-            </template>
-          </el-input>
+          <div class="panel-header-top">
+            <h3>{{ t('uiAutomation.testCase.testCaseList') }}</h3>
+            <span class="case-total">{{ filteredTestCases.length }}</span>
+          </div>
+          <div class="panel-filters">
+            <el-input
+              v-model="searchKeyword"
+              :placeholder="t('uiAutomation.testCase.searchPlaceholder')"
+              clearable
+              size="small"
+            >
+              <template #prefix>
+                <el-icon><Search /></el-icon>
+              </template>
+            </el-input>
+            <el-select v-model="folderFilter" size="small">
+              <el-option :label="text.folderFilterAll" value="all" />
+              <el-option :label="text.folderFilterUngrouped" value="ungrouped" />
+              <el-option
+                v-for="folder in testCaseFolders"
+                :key="folder.id"
+                :label="folder.name"
+                :value="String(folder.id)"
+              />
+            </el-select>
+          </div>
+          <div class="panel-toolbar">
+            <span class="selected-summary">
+              {{ text.selectedPrefix }} {{ selectedCaseIds.length }} {{ text.selectedSuffix }}
+            </span>
+            <el-button size="small" :disabled="!selectedCaseIds.length" @click="openMoveDialog(selectedCaseIds)">
+              <el-icon><FolderOpened /></el-icon>
+              {{ text.moveCases }}
+            </el-button>
+          </div>
         </div>
 
         <div class="test-case-list">
@@ -40,31 +67,40 @@
             @click="selectTestCase(testCase)"
           >
             <div class="case-header">
+              <div class="case-select" @click.stop>
+                <el-checkbox :model-value="selectedCaseIds.includes(testCase.id)" @change="toggleCaseSelection(testCase.id, $event)" />
+              </div>
               <div class="case-info">
                 <h4 class="case-name">{{ testCase.name }}</h4>
                 <p class="case-description">{{ testCase.description || t('uiAutomation.testCase.noDescription') }}</p>
-              </div>
-              <div class="case-actions">
-                <el-button size="small" text @click.stop="runTestCase(testCase)">
-                  <el-icon><CaretRight /></el-icon>
-                </el-button>
-                <el-button size="small" text @click.stop="editTestCase(testCase)">
-                  <el-icon><Edit /></el-icon>
-                </el-button>
-                <el-button size="small" text @click.stop="copyTestCase(testCase)">
-                  <el-icon><CopyDocument /></el-icon>
-                </el-button>
-                <el-button size="small" text type="danger" @click.stop="deleteTestCase(testCase)">
-                  <el-icon><Delete /></el-icon>
-                </el-button>
+                <div class="case-actions">
+                  <el-button size="small" text @click.stop="runTestCase(testCase)">
+                    <el-icon><CaretRight /></el-icon>
+                  </el-button>
+                  <el-button size="small" text @click.stop="editTestCase(testCase)">
+                    <el-icon><Edit /></el-icon>
+                  </el-button>
+                  <el-button size="small" text @click.stop="copyTestCase(testCase)">
+                    <el-icon><CopyDocument /></el-icon>
+                  </el-button>
+                  <el-button size="small" text @click.stop="openMoveDialog([testCase.id])">
+                    <el-icon><FolderOpened /></el-icon>
+                  </el-button>
+                  <el-button size="small" text type="danger" @click.stop="deleteTestCase(testCase)">
+                    <el-icon><Delete /></el-icon>
+                  </el-button>
+                </div>
               </div>
             </div>
             <div class="case-meta">
               <!-- 移除状态显示 -->
+              <el-tag v-if="testCase.folder" size="small" type="success">{{ testCase.folder.name }}</el-tag>
+              <el-tag v-else size="small" type="info">{{ text.ungrouped }}</el-tag>
               <span class="step-count">{{ testCase.steps?.length || 0 }} {{ t('uiAutomation.testCase.stepsCount') }}</span>
               <span class="update-time">{{ formatTime(testCase.updated_at) }}</span>
             </div>
           </div>
+          <el-empty v-if="!filteredTestCases.length" :description="text.emptyList" />
         </div>
       </div>
 
@@ -176,22 +212,15 @@
                             <el-option :label="t('uiAutomation.testCase.actionWait')" value="wait" />
                             <el-option :label="t('uiAutomation.testCase.actionSwitchTab')" value="switchTab" />
                           </el-select>
-                          <el-select
+                          <el-button
                             v-if="needsElement(element.action_type)"
-                            v-model="element.element_id"
-                            :placeholder="t('uiAutomation.testCase.selectElement')"
                             size="small"
-                            style="width: 200px"
-                            filterable
-                            @change="onElementChange(element)"
+                            class="element-selector-trigger"
+                            @click="openElementSelector(element)"
                           >
-                            <el-option
-                              v-for="elem in availableElements"
-                              :key="elem.id"
-                              :label="`${elem.name} (${elem.locator_value})`"
-                              :value="elem.id"
-                            />
-                          </el-select>
+                            <el-icon><FolderOpened /></el-icon>
+                            <span class="element-selector-text">{{ getSelectedElementLabel(element.element_id) }}</span>
+                          </el-button>
                         </div>
                         <div class="step-right">
                           <el-button
@@ -443,6 +472,12 @@
             <el-option :label="t('uiAutomation.testCase.priorityLow')" value="low" />
           </el-select>
         </el-form-item>
+        <el-form-item :label="text.folderLabel">
+          <el-select v-model="testCaseForm.folder_id" clearable style="width: 100%" :placeholder="text.folderPlaceholder">
+            <el-option :label="text.ungrouped" :value="null" />
+            <el-option v-for="folder in testCaseFolders" :key="folder.id" :label="folder.name" :value="folder.id" />
+          </el-select>
+        </el-form-item>
       </el-form>
       <template #footer>
         <span class="dialog-footer">
@@ -453,6 +488,94 @@
     </el-dialog>
 
     <!-- 截图预览对话框 -->
+    <el-dialog
+      v-model="showFolderDialog"
+      :title="text.newFolder"
+      :close-on-click-modal="false"
+      width="420px"
+    >
+      <el-form :model="folderForm" label-width="100px">
+        <el-form-item :label="text.folderName" required>
+          <el-input v-model="folderForm.name" :placeholder="text.folderNamePlaceholder" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="showFolderDialog = false">{{ t('uiAutomation.common.cancel') }}</el-button>
+          <el-button type="primary" @click="saveFolder">{{ t('uiAutomation.common.confirm') }}</el-button>
+        </span>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="showMoveDialog"
+      :title="text.moveCases"
+      :close-on-click-modal="false"
+      width="420px"
+    >
+      <el-form :model="moveForm" label-width="100px">
+        <el-form-item :label="text.moveCount">
+          <span>{{ text.selectedPrefix }} {{ moveForm.test_case_ids.length }} {{ text.selectedSuffix }}</span>
+        </el-form-item>
+        <el-form-item :label="text.targetFolder">
+          <el-select v-model="moveForm.folder_id" clearable style="width: 100%" :placeholder="text.folderPlaceholder">
+            <el-option :label="text.ungrouped" :value="null" />
+            <el-option v-for="folder in testCaseFolders" :key="folder.id" :label="folder.name" :value="folder.id" />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="showMoveDialog = false">{{ t('uiAutomation.common.cancel') }}</el-button>
+          <el-button type="primary" @click="submitMoveCases">{{ t('uiAutomation.common.confirm') }}</el-button>
+        </span>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="showElementSelectorDialog"
+      :title="text.selectElement"
+      :close-on-click-modal="false"
+      width="640px"
+    >
+      <el-input
+        v-model="elementSelectorKeyword"
+        :placeholder="text.searchElementPlaceholder"
+        clearable
+        class="element-selector-search"
+      >
+        <template #prefix>
+          <el-icon><Search /></el-icon>
+        </template>
+      </el-input>
+
+      <div class="element-selector-tree-wrapper">
+        <el-tree
+          :data="filteredElementTreeOptions"
+          :props="{ children: 'children', label: 'name' }"
+          node-key="treeKey"
+          :default-expand-all="Boolean(elementSelectorKeyword)"
+          :expand-on-click-node="false"
+          highlight-current
+          :current-node-key="currentSelectingStep?.element_id ? `element-${currentSelectingStep.element_id}` : undefined"
+          @node-click="handleElementTreeNodeClick"
+        >
+          <template #default="{ data }">
+            <div class="element-tree-node">
+              <div class="element-tree-node-main">
+                <el-icon class="element-tree-node-icon">
+                  <component :is="data.type === 'group' ? Folder : Document" />
+                </el-icon>
+                <span class="element-tree-node-label">{{ data.name }}</span>
+              </div>
+              <span v-if="data.type === 'element'" class="element-tree-node-extra">{{ data.locator_value }}</span>
+            </div>
+          </template>
+        </el-tree>
+        <el-empty v-if="!filteredElementTreeOptions.length" :description="text.noMatchedElements" />
+      </div>
+    </el-dialog>
+
     <el-dialog
       v-model="showScreenshotPreview"
       :title="t('uiAutomation.testCase.screenshotPreview')"
@@ -522,21 +645,23 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Search, Plus, Edit, Delete, Check, CaretRight, ArrowUp, ArrowDown, Rank, Picture, Warning, View, ZoomIn, Refresh, WarningFilled, MagicStick
+  Search, Plus, Edit, Delete, Check, CaretRight, ArrowUp, ArrowDown, Rank, Picture, Warning, View, ZoomIn, Refresh, WarningFilled, MagicStick, CopyDocument, FolderAdd, FolderOpened, Folder, Document
 } from '@element-plus/icons-vue'
 import draggable from 'vuedraggable'
 import DataFactorySelector from '@/components/DataFactorySelector.vue'
 import { useI18n } from 'vue-i18n'
 
-const { t } = useI18n()
-
 import {
   getUiProjects,
-  getElements,
+  getElementTree,
+  getElementGroupTree,
   createTestCase,
+  createTestCaseFolder,
   updateTestCase,
   deleteTestCase as deleteTestCaseApi,
+  getTestCaseFolders,
   getTestCases,
+  moveTestCases,
   runTestCase as runTestCaseApi,
   copyTestCase as copyTestCaseApi,
   getLocatorStrategies,
@@ -544,16 +669,55 @@ import {
   getTestCaseExecutionDetail
 } from '@/api/ui_automation'
 import { getVariableFunctions } from '@/api/data-factory'
+import { useUiAutomationStore } from '@/stores/uiAutomation'
+
+const { t } = useI18n()
+const uiAutomationStore = useUiAutomationStore()
+
+const text = {
+  newFolder: '\u65b0\u5efa\u6587\u4ef6\u5939',
+  folderFilterAll: '\u5168\u90e8\u6587\u4ef6\u5939',
+  folderFilterUngrouped: '\u672a\u5206\u7ec4',
+  selectedPrefix: '\u5df2\u9009',
+  selectedSuffix: '\u9879',
+  moveCases: '\u79fb\u52a8\u7528\u4f8b',
+  emptyList: '\u6682\u65e0\u6d4b\u8bd5\u7528\u4f8b',
+  ungrouped: '\u672a\u5206\u7ec4',
+  folderLabel: '\u6240\u5c5e\u6587\u4ef6\u5939',
+  folderPlaceholder: '\u8bf7\u9009\u62e9\u6587\u4ef6\u5939',
+  folderName: '\u6587\u4ef6\u5939\u540d\u79f0',
+  folderNamePlaceholder: '\u8bf7\u8f93\u5165\u6587\u4ef6\u5939\u540d\u79f0',
+  moveCount: '\u79fb\u52a8\u6570\u91cf',
+  targetFolder: '\u76ee\u6807\u6587\u4ef6\u5939',
+  folderNameRequired: '\u8bf7\u8f93\u5165\u6587\u4ef6\u5939\u540d\u79f0',
+  folderCreateSuccess: '\u6587\u4ef6\u5939\u521b\u5efa\u6210\u529f',
+  folderCreateFailed: '\u6587\u4ef6\u5939\u521b\u5efa\u5931\u8d25',
+  moveCasesEmpty: '\u8bf7\u5148\u9009\u62e9\u9700\u8981\u79fb\u52a8\u7684\u7528\u4f8b',
+  moveSuccess: '\u7528\u4f8b\u79fb\u52a8\u6210\u529f',
+  moveFailed: '\u7528\u4f8b\u79fb\u52a8\u5931\u8d25',
+  selectElement: '\u9009\u62e9\u5143\u7d20',
+  selectElementPlaceholder: '\u8bf7\u9009\u62e9\u5143\u7d20',
+  searchElementPlaceholder: '\u641c\u7d22\u5143\u7d20\u540d\u79f0\u6216\u5b9a\u4f4d\u5185\u5bb9',
+  noMatchedElements: '\u672a\u627e\u5230\u5339\u914d\u7684\u5143\u7d20',
+  ungroupedElements: '\u672a\u5206\u7ec4\u5143\u7d20'
+}
 
 // 响应式数据
 const projects = ref([])
 const projectId = ref('')
 const testCases = ref([])
+const testCaseFolders = ref([])
+const elementGroups = ref([])
 const selectedTestCase = ref(null)
+const selectedCaseIds = ref([])
 const currentSteps = ref([])
 const availableElements = ref([])
 const searchKeyword = ref('')
+const folderFilter = ref('all')
 const showCreateDialog = ref(false)
+const showFolderDialog = ref(false)
+const showMoveDialog = ref(false)
+const showElementSelectorDialog = ref(false)
 const editingTestCase = ref(null)
 const executionResult = ref(null)
 const resultActiveTab = ref('logs')
@@ -574,6 +738,8 @@ const currentEditingField = ref('')
 const showDataFactorySelector = ref(false)
 const currentStepForDataFactory = ref(null)
 const currentFieldForDataFactory = ref('')
+const currentSelectingStep = ref(null)
+const elementSelectorKeyword = ref('')
 const variableCategories = ref([])
 const loading = ref(false)
 let localExecutionPollTimer = null
@@ -584,16 +750,36 @@ let localExecutionPollTimer = null
 const testCaseForm = reactive({
   name: '',
   description: '',
-  priority: 'medium'
+  priority: 'medium',
+  folder_id: null
+})
+
+const folderForm = reactive({
+  name: ''
+})
+
+const moveForm = reactive({
+  test_case_ids: [],
+  folder_id: null
 })
 
 // 计算属性
 const filteredTestCases = computed(() => {
-  if (!searchKeyword.value) return testCases.value
-  return testCases.value.filter(tc =>
-    tc.name.includes(searchKeyword.value) ||
-    tc.description?.includes(searchKeyword.value)
-  )
+  const keyword = searchKeyword.value.trim()
+
+  return testCases.value.filter((tc) => {
+    const matchedFolder =
+      folderFilter.value === 'all' ||
+      (folderFilter.value === 'ungrouped' && !tc.folder) ||
+      String(tc.folder?.id || '') === folderFilter.value
+
+    const matchedKeyword =
+      !keyword ||
+      tc.name.includes(keyword) ||
+      tc.description?.includes(keyword)
+
+    return matchedFolder && matchedKeyword
+  })
 })
 
 // 解析执行日志
@@ -613,6 +799,75 @@ const onlineLocalRunners = computed(() => {
   return localRunners.value.filter(item => item.is_online)
 })
 
+const elementTreeOptions = computed(() => {
+  const mapElementNode = (element) => ({
+    ...element,
+    treeKey: `element-${element.id}`,
+    type: 'element',
+    children: []
+  })
+
+  const buildGroupNodes = (groups) => {
+    return groups.map((group) => {
+      const childGroups = buildGroupNodes(group.children || [])
+      const childElements = availableElements.value
+        .filter(element => element.group_id === group.id)
+        .map(mapElementNode)
+
+      return {
+        ...group,
+        treeKey: `group-${group.id}`,
+        type: 'group',
+        children: [...childGroups, ...childElements]
+      }
+    })
+  }
+
+  const groupNodes = buildGroupNodes(elementGroups.value || [])
+  const ungroupedElements = availableElements.value
+    .filter(element => !element.group_id)
+    .map(mapElementNode)
+
+  if (ungroupedElements.length > 0) {
+    groupNodes.push({
+      id: 'ungrouped-root',
+      treeKey: 'group-ungrouped-root',
+      name: text.ungroupedElements,
+      type: 'group',
+      children: ungroupedElements
+    })
+  }
+
+  return groupNodes
+})
+
+const filteredElementTreeOptions = computed(() => {
+  const keyword = elementSelectorKeyword.value.trim().toLowerCase()
+  if (!keyword) {
+    return elementTreeOptions.value
+  }
+
+  const filterNodes = (nodes) => {
+    return nodes.reduce((result, node) => {
+      const children = node.children ? filterNodes(node.children) : []
+      const matchedSelf =
+        String(node.name || '').toLowerCase().includes(keyword) ||
+        String(node.locator_value || '').toLowerCase().includes(keyword)
+
+      if (matchedSelf || children.length > 0) {
+        result.push({
+          ...node,
+          children
+        })
+      }
+
+      return result
+    }, [])
+  }
+
+  return filterNodes(elementTreeOptions.value)
+})
+
 // 方法定义
 const loadProjects = async () => {
   try {
@@ -622,6 +877,57 @@ const loadProjects = async () => {
     ElMessage.error('获取项目列表失败')
     console.error('获取项目列表失败:', error)
   }
+}
+
+const loadTestCaseFolders = async () => {
+  if (!projectId.value) {
+    testCaseFolders.value = []
+    return
+  }
+
+  try {
+    const response = await getTestCaseFolders({ project: projectId.value, page_size: 200 })
+    testCaseFolders.value = response.data.results || response.data || []
+  } catch (error) {
+    console.error('获取用例文件夹列表失败:', error)
+    testCaseFolders.value = []
+  }
+}
+
+const loadElementGroups = async () => {
+  if (!projectId.value) {
+    elementGroups.value = []
+    return
+  }
+
+  try {
+    const response = await getElementGroupTree({ project: projectId.value })
+    elementGroups.value = response.data || []
+  } catch (error) {
+    console.error('获取元素分组树失败:', error)
+    elementGroups.value = []
+  }
+}
+
+const syncSelectedTestCase = () => {
+  if (!selectedTestCase.value) {
+    return
+  }
+
+  const latestCase = testCases.value.find(item => item.id === selectedTestCase.value.id)
+  if (!latestCase) {
+    selectedTestCase.value = null
+    currentSteps.value = []
+    executionResult.value = null
+    return
+  }
+
+  selectedTestCase.value = latestCase
+  currentSteps.value = (latestCase.steps || []).map(step => ({
+    ...step,
+    element_id: step.element || '',
+    expanded: currentSteps.value.find(item => item.id === step.id)?.expanded || false
+  }))
 }
 
 const loadLocalRunnerList = async () => {
@@ -691,12 +997,15 @@ const pollLocalExecutionResult = async (executionId) => {
 const loadTestCases = async () => {
   if (!projectId.value) {
     testCases.value = []
+    selectedCaseIds.value = []
     return
   }
 
   try {
     const response = await getTestCases({ project: projectId.value })
     testCases.value = response.data.results || response.data
+    selectedCaseIds.value = selectedCaseIds.value.filter(id => testCases.value.some(item => item.id === id))
+    syncSelectedTestCase()
   } catch (error) {
     console.error('获取测试用例失败:', error)
   }
@@ -709,22 +1018,150 @@ const loadElements = async () => {
   }
 
   try {
-    const response = await getElements({ project: projectId.value })
-    availableElements.value = response.data.results || response.data
+    const response = await getElements({ project: projectId.value, page_size: 1000 })
+    const elements = response.data.results || response.data || []
+    availableElements.value = elements.filter((element) => {
+      const elementProjectId = element.project?.id ?? element.project_id ?? element.project
+      return String(elementProjectId) === String(projectId.value)
+    })
   } catch (error) {
     console.error('获取元素列表失败:', error)
   }
 }
 
+const loadElementsForCurrentProject = async () => {
+  if (!projectId.value) {
+    availableElements.value = []
+    return
+  }
+
+  const currentProjectId = String(projectId.value)
+  availableElements.value = []
+
+  try {
+    const response = await getElementTree({ project: currentProjectId })
+    const elements = Array.isArray(response.data) ? response.data : []
+
+    if (String(projectId.value) !== currentProjectId) {
+      return
+    }
+
+    availableElements.value = elements.map((element) => ({
+      ...element,
+      project_id: currentProjectId
+    }))
+  } catch (error) {
+    console.error('加载当前项目元素树失败:', error)
+    availableElements.value = []
+  }
+}
+
 const onProjectChange = async () => {
+  uiAutomationStore.setSelectedProject(projectId.value)
   selectedTestCase.value = null
+  selectedCaseIds.value = []
   currentSteps.value = []
   executionResult.value = null
+  folderFilter.value = 'all'
+  availableElements.value = []
+  elementGroups.value = []
 
   await Promise.all([
+    loadTestCaseFolders(),
     loadTestCases(),
-    loadElements()
+    loadElementGroups(),
+    loadElementsForCurrentProject()
   ])
+}
+
+const openCreateDialog = () => {
+  editingTestCase.value = null
+  resetForm()
+  if (folderFilter.value !== 'all' && folderFilter.value !== 'ungrouped') {
+    testCaseForm.folder_id = Number(folderFilter.value)
+  }
+  showCreateDialog.value = true
+}
+
+const openFolderDialog = () => {
+  folderForm.name = ''
+  showFolderDialog.value = true
+}
+
+const saveFolder = async () => {
+  if (!projectId.value) {
+    ElMessage.warning(t('uiAutomation.project.selectProject'))
+    return
+  }
+
+  if (!folderForm.name.trim()) {
+    ElMessage.warning(text.folderNameRequired)
+    return
+  }
+
+  try {
+    const response = await createTestCaseFolder({
+      project: projectId.value,
+      name: folderForm.name.trim()
+    })
+    testCaseFolders.value.push(response.data)
+    testCaseFolders.value.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
+    showFolderDialog.value = false
+    folderForm.name = ''
+    ElMessage.success(text.folderCreateSuccess)
+  } catch (error) {
+    console.error('创建用例文件夹失败:', error)
+    ElMessage.error(text.folderCreateFailed)
+  }
+}
+
+const openMoveDialog = (ids) => {
+  moveForm.test_case_ids = [...new Set((ids || []).filter(Boolean))]
+  if (!moveForm.test_case_ids.length) {
+    ElMessage.warning(text.moveCasesEmpty)
+    return
+  }
+
+  if (moveForm.test_case_ids.length === 1) {
+    const targetCase = testCases.value.find(item => item.id === moveForm.test_case_ids[0])
+    moveForm.folder_id = targetCase?.folder?.id ?? null
+  } else {
+    moveForm.folder_id = null
+  }
+
+  showMoveDialog.value = true
+}
+
+const submitMoveCases = async () => {
+  if (!moveForm.test_case_ids.length) {
+    ElMessage.warning(text.moveCasesEmpty)
+    return
+  }
+
+  try {
+    await moveTestCases({
+      test_case_ids: moveForm.test_case_ids,
+      folder_id: moveForm.folder_id
+    })
+    showMoveDialog.value = false
+    ElMessage.success(text.moveSuccess)
+    await loadTestCases()
+    selectedCaseIds.value = selectedCaseIds.value.filter(id => testCases.value.some(item => item.id === id))
+  } catch (error) {
+    console.error('移动用例失败:', error)
+    ElMessage.error(text.moveFailed)
+  }
+}
+
+const toggleCaseSelection = (caseId, checked) => {
+  if (checked) {
+    if (!selectedCaseIds.value.includes(caseId)) {
+      selectedCaseIds.value.push(caseId)
+    }
+    return
+  }
+
+  selectedCaseIds.value = selectedCaseIds.value.filter(id => id !== caseId)
 }
 
 const selectTestCase = (testCase) => {
@@ -793,6 +1230,31 @@ const onElementChange = (step) => {
   if (element && !step.description) {
     step.description = `${getActionTypeText(step.action_type)}${element.name}`
   }
+}
+
+const getSelectedElementLabel = (elementId) => {
+  const element = availableElements.value.find(item => item.id === elementId)
+  if (!element) {
+    return text.selectElementPlaceholder
+  }
+
+  return `${element.name} (${element.locator_value})`
+}
+
+const openElementSelector = (step) => {
+  currentSelectingStep.value = step
+  elementSelectorKeyword.value = ''
+  showElementSelectorDialog.value = true
+}
+
+const handleElementTreeNodeClick = (node) => {
+  if (node.type !== 'element' || !currentSelectingStep.value) {
+    return
+  }
+
+  currentSelectingStep.value.element_id = node.id
+  onElementChange(currentSelectingStep.value)
+  showElementSelectorDialog.value = false
 }
 
 const needsInputValue = (actionType) => {
@@ -920,6 +1382,7 @@ const editTestCase = (testCase) => {
   testCaseForm.name = testCase.name
   testCaseForm.description = testCase.description || ''
   testCaseForm.priority = testCase.priority || 'medium'
+  testCaseForm.folder_id = testCase.folder?.id ?? null
   showCreateDialog.value = true
 }
 
@@ -1180,6 +1643,7 @@ const saveTestCaseForm = async () => {
       name: testCaseForm.name,
       description: testCaseForm.description,
       priority: testCaseForm.priority,
+      folder_id: testCaseForm.folder_id,
       project: projectId.value,
       steps: []
     }
@@ -1201,6 +1665,7 @@ const saveTestCaseForm = async () => {
       testCases.value.push(response.data)
     }
 
+    await loadTestCases()
     showCreateDialog.value = false
     editingTestCase.value = null
     resetForm()
@@ -1214,6 +1679,7 @@ const resetForm = () => {
   testCaseForm.name = ''
   testCaseForm.description = ''
   testCaseForm.priority = 'medium'
+  testCaseForm.folder_id = null
 }
 
 // 辅助方法
@@ -1301,6 +1767,33 @@ const previewScreenshot = (screenshot) => {
 }
 
 // 组件挂载
+watch(showCreateDialog, (visible) => {
+  if (!visible) {
+    editingTestCase.value = null
+    resetForm()
+  }
+})
+
+watch(showFolderDialog, (visible) => {
+  if (!visible) {
+    folderForm.name = ''
+  }
+})
+
+watch(showMoveDialog, (visible) => {
+  if (!visible) {
+    moveForm.test_case_ids = []
+    moveForm.folder_id = null
+  }
+})
+
+watch(showElementSelectorDialog, (visible) => {
+  if (!visible) {
+    currentSelectingStep.value = null
+    elementSelectorKeyword.value = ''
+  }
+})
+
 onMounted(async () => {
   console.log('TestCaseManager onMounted 开始执行...')
   await loadProjects()
@@ -1310,7 +1803,7 @@ onMounted(async () => {
   console.log('loadVariableFunctions 完成')
 
   if (projects.value.length > 0) {
-    projectId.value = projects.value[0].id
+    projectId.value = uiAutomationStore.resolveSelectedProjectId(projects.value)
     await onProjectChange()
   }
 })
@@ -1364,12 +1857,38 @@ onBeforeUnmount(() => {
   padding: 15px;
   border-bottom: 1px solid #e6e6e6;
   display: flex;
-  justify-content: space-between;
-  align-items: center;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .panel-header h3 {
   margin: 0;
+}
+
+.panel-header-top,
+.panel-filters,
+.panel-toolbar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+}
+
+.panel-header-top {
+  justify-content: space-between;
+}
+
+.panel-filters {
+  gap: 10px;
+}
+
+.panel-toolbar {
+  justify-content: space-between;
+}
+
+.case-total,
+.selected-summary {
+  font-size: 12px;
+  color: #909399;
 }
 
 .test-case-list {
@@ -1382,7 +1901,7 @@ onBeforeUnmount(() => {
   border: 1px solid #e6e6e6;
   border-radius: 6px;
   margin-bottom: 10px;
-  padding: 15px;
+  padding: 12px;
   cursor: pointer;
   transition: all 0.3s;
 }
@@ -1399,37 +1918,61 @@ onBeforeUnmount(() => {
 
 .case-header {
   display: flex;
-  justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
+  gap: 10px;
+}
+
+.case-select {
+  padding-top: 2px;
 }
 
 .case-info {
   flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 
 .case-name {
-  margin: 0 0 5px 0;
-  font-size: 16px;
+  margin: 0;
+  font-size: 14px;
   font-weight: 600;
+  line-height: 1.5;
+  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .case-description {
   margin: 0;
   color: #666;
-  font-size: 14px;
+  font-size: 12px;
   line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .case-actions {
   display: flex;
   gap: 5px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.case-actions :deep(.el-button) {
+  margin-left: 0;
+  min-height: 24px;
+  padding: 2px 6px;
 }
 
 .case-meta {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
+  flex-wrap: wrap;
   font-size: 12px;
   color: #888;
 }
@@ -1556,6 +2099,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .drag-handle {
@@ -1584,6 +2128,65 @@ onBeforeUnmount(() => {
 .step-content {
   padding: 15px;
   border-top: 1px solid #e6e6e6;
+}
+
+.element-selector-trigger {
+  width: 240px;
+  justify-content: flex-start;
+  overflow: hidden;
+}
+
+.element-selector-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.element-selector-search {
+  margin-bottom: 12px;
+}
+
+.element-selector-tree-wrapper {
+  max-height: 420px;
+  overflow-y: auto;
+  border: 1px solid #e6e6e6;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.element-tree-node {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+}
+
+.element-tree-node-main {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.element-tree-node-icon {
+  color: #409eff;
+}
+
+.element-tree-node-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.element-tree-node-extra {
+  color: #909399;
+  font-size: 12px;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .step-param {

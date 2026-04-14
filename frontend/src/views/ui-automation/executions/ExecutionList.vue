@@ -290,8 +290,10 @@ import {
   runTestCase,
   getLocalRunners
 } from '@/api/ui_automation'
+import { useUiAutomationStore } from '@/stores/uiAutomation'
 
 const { t } = useI18n()
+const uiAutomationStore = useUiAutomationStore()
 
 // 项目和执行数据
 const projects = ref([])
@@ -508,6 +510,7 @@ const loadExecutions = async () => {
 
 // 项目变更处理
 const onProjectChange = () => {
+  uiAutomationStore.setSelectedProject(projectId.value)
   queryParams.search = ''
   queryParams.status = ''
   queryParams.browser = ''
@@ -660,7 +663,7 @@ onMounted(async () => {
   await loadProjects()
   await loadLocalRunnerList()
   if (projects.value.length > 0) {
-    projectId.value = projects.value[0].id
+    projectId.value = uiAutomationStore.resolveSelectedProjectId(projects.value)
   }
   await loadExecutions()
 })

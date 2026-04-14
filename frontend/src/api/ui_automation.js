@@ -650,6 +650,22 @@ export function deleteScriptElementUsage(id) {
 // 测试用例相关API
 
 // 获取测试用例列表
+export function getTestCaseFolders(params) {
+  return request({
+    url: '/ui-automation/test-case-folders/',
+    method: 'get',
+    params
+  })
+}
+
+export function createTestCaseFolder(data) {
+  return request({
+    url: '/ui-automation/test-case-folders/',
+    method: 'post',
+    data
+  })
+}
+
 export function getTestCases(params) {
   return request({
     url: '/ui-automation/test-cases/',
@@ -693,6 +709,14 @@ export function deleteTestCase(id) {
 }
 
 // 运行测试用例
+export function moveTestCases(data) {
+  return request({
+    url: '/ui-automation/test-cases/move/',
+    method: 'post',
+    data
+  })
+}
+
 export function runTestCase(testCaseId, data) {
   return request({
     url: `/ui-automation/test-cases/${testCaseId}/run/`,

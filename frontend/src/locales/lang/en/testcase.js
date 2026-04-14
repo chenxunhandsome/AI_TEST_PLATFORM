@@ -1,24 +1,27 @@
 export default {
   testcase: {
-    // Page titles
     title: 'Test Cases',
     detail: 'Test Case Details',
     edit: 'Edit Test Case',
     create: 'Create Test Case',
 
-    // Actions
     newCase: 'New Case',
     batchDelete: 'Batch Delete',
     exportExcel: 'Export Excel',
     saveChanges: 'Save Changes',
     createCase: 'Create Case',
+    move: 'Move',
+    moveToFolder: 'Move To Folder',
+    newFolder: 'New Folder',
 
-    // Field labels
     caseTitle: 'Case Title',
     caseDescription: 'Case Description',
     project: 'Project',
     relatedProject: 'Related Project',
     relatedVersions: 'Related Versions',
+    folder: 'Folder',
+    targetFolder: 'Target Folder',
+    folderName: 'Folder Name',
     priority: 'Priority',
     status: 'Status',
     testType: 'Test Type',
@@ -29,18 +32,15 @@ export default {
     createdAt: 'Created At',
     serialNumber: 'No.',
 
-    // Priority
     low: 'Low',
     medium: 'Medium',
     high: 'High',
     critical: 'Critical',
 
-    // Status
     draft: 'Draft',
     active: 'Active',
     deprecated: 'Deprecated',
 
-    // Test types
     functional: 'Functional Testing',
     integration: 'Integration Testing',
     api: 'API Testing',
@@ -48,7 +48,6 @@ export default {
     performance: 'Performance Testing',
     security: 'Security Testing',
 
-    // Placeholders
     searchPlaceholder: 'Search case title',
     caseTitlePlaceholder: 'Enter test case title',
     caseDescriptionPlaceholder: 'Enter case description',
@@ -57,23 +56,32 @@ export default {
     selectTestType: 'Select test type',
     selectStatus: 'Select status',
     selectVersions: 'Select versions (multiple)',
+    selectFolder: 'Select folder',
+    folderNamePlaceholder: 'Enter folder name',
     preconditionsPlaceholder: 'Enter preconditions',
-    stepsPlaceholder: 'Enter detailed steps, e.g.:\n1. Open login page\n2. Enter username and password\n3. Click login button\n4. Verify login result',
-    expectedResultPlaceholder: 'Enter overall expected result',
+    stepsPlaceholder: 'Enter detailed steps, for example:\n1. Open login page\n2. Enter username and password\n3. Click login button\n4. Verify login result',
+    expectedResultPlaceholder: 'Enter expected result',
     priorityFilter: 'Priority Filter',
     statusFilter: 'Status Filter',
+    currentFolder: 'Current Folder',
+    caseFolders: 'Case Folders',
+    folderHelpText: 'Organize cases by module and move them in batches.',
+    allCases: 'All Cases',
+    ungroupedCases: 'Ungrouped',
 
-    // Messages
     fetchListFailed: 'Failed to fetch test case list',
     fetchDetailFailed: 'Failed to fetch test case details',
+    fetchProjectsFailed: 'Failed to fetch project list',
+    fetchVersionsFailed: 'Failed to fetch project versions',
+    fetchFoldersFailed: 'Failed to fetch folder list',
     deleteConfirm: 'Are you sure to delete this test case?',
     deleteSuccess: 'Test case deleted successfully',
     deleteFailed: 'Failed to delete test case',
-    selectFirst: 'Please select test cases to delete first',
-    batchDeleteConfirm: 'Are you sure to delete selected {count} test cases? This action cannot be undone.',
+    selectFirst: 'Please select test cases first',
+    batchDeleteConfirm: 'Are you sure to delete the selected {count} test cases? This action cannot be undone.',
     batchDeleteSuccess: 'Successfully deleted {successCount} test cases',
-    batchDeletePartialSuccess: 'Successfully deleted {successCount} test cases, {failCount} failed',
-    batchDeleteFailed: 'Delete failed',
+    batchDeletePartialSuccess: 'Successfully deleted {successCount} test cases, failed {failCount}',
+    batchDeleteFailed: 'Batch delete failed',
     batchDeleteError: 'Batch delete failed',
     noDataToExport: 'No test case data to export',
     exportSuccess: 'Test cases exported successfully',
@@ -82,25 +90,30 @@ export default {
     createFailed: 'Failed to create test case',
     updateSuccess: 'Test case updated successfully',
     updateFailed: 'Failed to update test case',
-    fetchProjectsFailed: 'Failed to fetch project list',
-    fetchVersionsFailed: 'Failed to fetch project versions',
+    createFolderSuccess: 'Folder created successfully',
+    createFolderFailed: 'Failed to create folder',
+    moveSuccess: 'Test cases moved successfully',
+    moveFailed: 'Failed to move test cases',
+    moveSameProjectOnly: 'Only test cases from the same project can be moved together',
+    moveTip: '{count} test case(s) selected. Choose a target folder, or select "Ungrouped" to remove them from folders.',
 
-    // Other
-    noVersion: 'No version',
-    noProject: 'No project',
-    noDescription: 'No description',
+    noVersion: 'No Version',
+    noProject: 'No Project',
+    noDescription: 'No Description',
+    noFolders: 'No folders yet',
     none: 'None',
     baseline: 'Baseline',
 
-    // Validation
     titleRequired: 'Please enter case title',
     titleLength: 'Title length must be between 5 and 500 characters',
+    projectRequired: 'Please select a project',
+    folderNameRequired: 'Please enter a folder name',
     expectedResultRequired: 'Please enter expected result',
     stepsMaxLength: 'Steps cannot exceed 1000 characters',
 
-    // Excel export
     excelNumber: 'Test Case ID',
     excelTitle: 'Case Title',
+    excelFolder: 'Folder',
     excelProject: 'Related Project',
     excelVersions: 'Related Versions',
     excelPreconditions: 'Preconditions',

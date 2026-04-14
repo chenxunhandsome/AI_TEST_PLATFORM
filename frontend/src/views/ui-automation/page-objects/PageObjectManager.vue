@@ -319,8 +319,10 @@ import {
   deletePageObjectElement,
   getElements
 } from '@/api/ui_automation'
+import { useUiAutomationStore } from '@/stores/uiAutomation'
 
 const { t } = useI18n()
+const uiAutomationStore = useUiAutomationStore()
 
 // 响应式数据
 const projects = ref([])
@@ -439,6 +441,7 @@ const loadAvailableElements = async () => {
 }
 
 const onProjectChange = () => {
+  uiAutomationStore.setSelectedProject(projectId.value)
   selectedPageObject.value = null
   selectedCanvasElement.value = null
   pageObjectElements.value = []
@@ -733,7 +736,7 @@ onMounted(async () => {
   await loadProjects()
 
   if (projects.value.length > 0) {
-    projectId.value = projects.value[0].id
+    projectId.value = uiAutomationStore.resolveSelectedProjectId(projects.value)
     await onProjectChange()
   }
 })

@@ -605,6 +605,55 @@ class TestCase(models.Model):
         return self.name
 
 
+class TestCaseFolder(models.Model):
+    """UI automation test case folder."""
+    project = models.ForeignKey(
+        UiProject,
+        on_delete=models.CASCADE,
+        related_name='test_case_folders',
+        verbose_name='Project'
+    )
+    name = models.CharField(max_length=100, verbose_name='Folder Name')
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_ui_test_case_folders',
+        verbose_name='Created By'
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created At')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='Updated At')
+
+    class Meta:
+        db_table = 'ui_test_case_folders'
+        verbose_name = 'UI Test Case Folder'
+        verbose_name_plural = 'UI Test Case Folders'
+        ordering = ['name', 'id']
+        constraints = [
+            models.UniqueConstraint(
+                fields=['project', 'name'],
+                name='ui_test_case_folder_unique_name'
+            )
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+TestCase.add_to_class(
+    'folder',
+    models.ForeignKey(
+        TestCaseFolder,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='test_cases',
+        verbose_name='Folder'
+    )
+)
+
+
 class TestCaseStep(models.Model):
     """测试用例步骤模型"""
     ACTION_TYPE_CHOICES = [

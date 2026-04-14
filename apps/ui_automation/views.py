@@ -19,7 +19,7 @@ from .models import (
     UiProject, LocatorStrategy, Element, TestScript, TestSuite,
     TestSuiteScript, TestExecution, Screenshot,
     ElementGroup, PageObject, PageObjectElement, ScriptStep, ScriptElementUsage,
-    TestCase, TestCaseStep, TestCaseExecution, OperationRecord,
+    TestCase, TestCaseFolder, TestCaseStep, TestCaseExecution, OperationRecord,
     TestCase, TestCaseStep, TestCaseExecution, OperationRecord,
     UiScheduledTask, UiNotificationLog, UiTaskNotificationSetting,
     AICase, AIExecutionRecord, LocalRunner
@@ -37,7 +37,7 @@ from .serializers import (
     PageObjectSerializer, PageObjectCreateSerializer, PageObjectElementSerializer,
     ScriptStepSerializer, ScriptElementUsageSerializer,
     ScriptAnalysisSerializer, ElementValidationSerializer, CodeGenerationSerializer,
-    TestCaseSerializer, TestCaseStepSerializer, TestCaseExecutionSerializer, TestCaseRunSerializer,
+    TestCaseSerializer, TestCaseFolderSerializer, TestCaseStepSerializer, TestCaseExecutionSerializer, TestCaseRunSerializer,
     OperationRecordSerializer,
     UiScheduledTaskSerializer, UiNotificationLogSerializer, UiTaskNotificationSettingSerializer,
     AICaseSerializer, AIExecutionRecordSerializer
@@ -882,6 +882,31 @@ class ScreenshotViewSet(viewsets.ModelViewSet):
         return Screenshot.objects.filter(execution__in=executions)
 
 
+class TestCaseFolderViewSet(viewsets.ModelViewSet):
+    """UI automation test case folder viewset."""
+    queryset = TestCaseFolder.objects.all()
+    serializer_class = TestCaseFolderSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['project']
+    search_fields = ['name']
+    ordering_fields = ['name', 'created_at', 'updated_at']
+    ordering = ['name', 'id']
+
+    def get_queryset(self):
+        user = self.request.user
+        accessible_projects = UiProject.objects.filter(
+            models.Q(owner=user) | models.Q(members=user)
+        ).distinct()
+        return TestCaseFolder.objects.filter(project__in=accessible_projects).select_related(
+            'project', 'created_by'
+        ).annotate(test_case_count=models.Count('test_cases'))
+
+    def perform_create(self, serializer):
+        folder = serializer.save(created_by=self.request.user)
+        log_operation('create', 'test_case_folder', folder.id, folder.name, self.request.user)
+
+
 class TestCaseViewSet(viewsets.ModelViewSet):
     """测试用例视图集"""
     queryset = TestCase.objects.all()
@@ -891,7 +916,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
     search_fields = ['name', 'description']
     ordering_fields = ['created_at', 'updated_at', 'name', 'priority', 'status']
     ordering = ['-created_at']
-    filterset_fields = ['project', 'status', 'priority', 'created_by']
+    filterset_fields = ['project', 'folder', 'status', 'priority', 'created_by']
 
     def get_queryset(self):
         # 只显示用户有权限访问的项目的测试用例
@@ -907,6 +932,23 @@ class TestCaseViewSet(viewsets.ModelViewSet):
             models.Q(owner=user) | models.Q(members=user)
         ).distinct()
         return TestCase.objects.filter(project__in=accessible_projects).select_related('project', 'created_by')
+
+    def get_queryset(self):
+        user = self.request.user
+        accessible_projects = UiProject.objects.filter(
+            models.Q(owner=user) | models.Q(members=user)
+        ).distinct()
+        queryset = TestCase.objects.filter(project__in=accessible_projects).select_related(
+            'project', 'created_by', 'folder'
+        )
+
+        folder_filter = self.request.query_params.get('folder_filter')
+        if folder_filter == 'ungrouped':
+            queryset = queryset.filter(folder__isnull=True)
+        elif folder_filter and folder_filter != 'all':
+            queryset = queryset.filter(folder_id=folder_filter)
+
+        return queryset
 
     def perform_create(self, serializer):
         # 创建测试用例
@@ -959,6 +1001,38 @@ class TestCaseViewSet(viewsets.ModelViewSet):
 
             logger.info(f"成功创建了 {created_count} 个新步骤")
 
+    @action(detail=False, methods=['post'])
+    def move(self, request):
+        test_case_ids = request.data.get('test_case_ids') or request.data.get('case_ids') or []
+        folder_id = request.data.get('folder_id')
+
+        if not isinstance(test_case_ids, list) or not test_case_ids:
+            return Response({'error': 'test_case_ids is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+        queryset = self.get_queryset().filter(id__in=test_case_ids)
+        if queryset.count() != len(set(test_case_ids)):
+            return Response({'error': 'Some test cases do not exist or are inaccessible'}, status=status.HTTP_400_BAD_REQUEST)
+
+        project_ids = list(queryset.values_list('project_id', flat=True).distinct())
+        if len(project_ids) != 1:
+            return Response({'error': 'Selected test cases must belong to the same project'}, status=status.HTTP_400_BAD_REQUEST)
+
+        folder = None
+        if folder_id not in [None, '', 'null']:
+            folder = get_object_or_404(TestCaseFolder, id=folder_id, project_id=project_ids[0])
+
+        updated_count = queryset.update(folder=folder)
+
+        for item in queryset:
+            log_operation('edit', 'test_case', item.id, item.name, request.user)
+
+        serializer = self.get_serializer(queryset.order_by('id'), many=True)
+        return Response({
+            'moved_count': updated_count,
+            'folder': TestCaseFolderSerializer(folder).data if folder else None,
+            'test_cases': serializer.data
+        })
+
     @action(detail=True, methods=['post'])
     def copy_case(self, request, pk=None):
         """复制测试用例"""
@@ -968,6 +1042,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
             # 1. 复制测试用例基本信息
             new_case = TestCase.objects.create(
                 project=test_case.project,
+                folder=test_case.folder,
                 name=f"{test_case.name}_copy",
                 description=test_case.description,
                 priority=test_case.priority,

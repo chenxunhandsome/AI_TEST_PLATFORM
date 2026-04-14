@@ -186,9 +186,11 @@ import {
   getElementGroupTree,
   validateElementLocator
 } from '@/api/ui_automation'
+import { useUiAutomationStore } from '@/stores/uiAutomation'
 
 // i18n
 const { t } = useI18n()
+const uiAutomationStore = useUiAutomationStore()
 
 // 响应式数据
 const projects = ref([])
@@ -325,6 +327,7 @@ const updateCursorPosition = () => {
 }
 
 const onProjectChange = async () => {
+  uiAutomationStore.setSelectedProject(projectId.value)
   selectedElementDetail.value = null
   executionLogs.value = []
   scriptContent.value = ''
@@ -560,7 +563,7 @@ onMounted(async () => {
   await loadProjects()
 
   if (projects.value.length > 0) {
-    projectId.value = projects.value[0].id
+    projectId.value = uiAutomationStore.resolveSelectedProjectId(projects.value)
     await onProjectChange()
   }
 

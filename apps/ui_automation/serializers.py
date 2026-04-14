@@ -4,7 +4,7 @@ from .models import (
     UiProject, LocatorStrategy, Element, TestScript, TestSuite,
     TestSuiteScript, TestSuiteTestCase, TestExecution, TestEnvironment, Screenshot,
     ElementGroup, PageObject, PageObjectElement, ScriptStep, ScriptElementUsage,
-    TestCase, TestCaseStep, TestCaseExecution, OperationRecord, LocalRunner,
+    TestCase, TestCaseFolder, TestCaseStep, TestCaseExecution, OperationRecord, LocalRunner,
     UiScheduledTask, UiNotificationLog, UiTaskNotificationSetting,
     AICase, AIExecutionRecord
 )
@@ -586,19 +586,58 @@ class TestCaseStepSerializer(serializers.ModelSerializer):
         ]
 
 
+class TestCaseFolderSerializer(serializers.ModelSerializer):
+    """UI automation test case folder serializer."""
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+    project_name = serializers.CharField(source='project.name', read_only=True)
+    test_case_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = TestCaseFolder
+        fields = [
+            'id', 'name', 'project', 'project_name',
+            'created_by', 'created_by_name', 'created_at', 'updated_at',
+            'test_case_count'
+        ]
+        read_only_fields = ['created_by']
+
+    def create(self, validated_data):
+        validated_data['created_by'] = self.context['request'].user
+        return super().create(validated_data)
+
+
 class TestCaseSerializer(serializers.ModelSerializer):
     """测试用例序列化器"""
     steps = TestCaseStepSerializer(many=True, read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
     project_name = serializers.CharField(source='project.name', read_only=True)
+    folder = TestCaseFolderSerializer(read_only=True)
+    folder_id = serializers.PrimaryKeyRelatedField(
+        source='folder',
+        queryset=TestCaseFolder.objects.all(),
+        write_only=True,
+        allow_null=True,
+        required=False
+    )
 
     class Meta:
         model = TestCase
         fields = [
-            'id', 'name', 'description', 'project', 'project_name', 'status', 'priority',
-            'created_by', 'created_by_name', 'created_at', 'updated_at', 'steps'
+            'id', 'name', 'description', 'project', 'project_name', 'folder', 'folder_id',
+            'status', 'priority', 'created_by', 'created_by_name', 'created_at', 'updated_at', 'steps'
         ]
         read_only_fields = ['created_by']
+
+    def validate(self, attrs):
+        project = attrs.get('project') or getattr(self.instance, 'project', None)
+        folder = attrs.get('folder', serializers.empty)
+        if folder is serializers.empty:
+            folder = getattr(self.instance, 'folder', None)
+
+        if folder and project and folder.project_id != project.id:
+            raise serializers.ValidationError({'folder_id': 'Folder does not belong to the selected project'})
+
+        return attrs
 
     def create(self, validated_data):
         validated_data['created_by'] = self.context['request'].user

@@ -39,6 +39,24 @@
             </el-form-item>
           </el-col>
           <el-col :span="8">
+            <el-form-item :label="$t('testcase.folder')">
+              <el-select
+                v-model="form.folder_id"
+                :placeholder="$t('testcase.selectFolder')"
+                clearable
+                filterable
+                :disabled="!form.project_id"
+              >
+                <el-option
+                  v-for="folder in projectFolders"
+                  :key="folder.id"
+                  :label="folder.name"
+                  :value="folder.id"
+                />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
             <el-form-item :label="$t('testcase.priority')" prop="priority">
               <el-select v-model="form.priority" :placeholder="$t('testcase.selectPriority')">
                 <el-option :label="$t('testcase.low')" value="low" />
@@ -48,6 +66,9 @@
               </el-select>
             </el-form-item>
           </el-col>
+        </el-row>
+
+        <el-row :gutter="20">
           <el-col :span="8">
             <el-form-item :label="$t('testcase.testType')" prop="test_type">
               <el-select v-model="form.test_type" :placeholder="$t('testcase.selectTestType')">
@@ -60,10 +81,7 @@
               </el-select>
             </el-form-item>
           </el-col>
-        </el-row>
-
-        <el-row :gutter="20">
-          <el-col :span="24">
+          <el-col :span="16">
             <el-form-item :label="$t('testcase.relatedVersions')">
               <el-select
                 v-model="form.version_ids"
@@ -71,7 +89,6 @@
                 multiple
                 clearable
                 filterable
-                @change="onVersionChange"
               >
                 <el-option
                   v-for="version in projectVersions"
@@ -129,25 +146,29 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, computed } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
+
 import api from '@/utils/api'
 
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
+
 const formRef = ref()
 const loading = ref(true)
 const submitting = ref(false)
 const projects = ref([])
 const projectVersions = ref([])
+const projectFolders = ref([])
 
 const form = reactive({
   title: '',
   description: '',
   project_id: null,
+  folder_id: null,
   priority: 'medium',
   test_type: 'functional',
   preconditions: '',
@@ -161,6 +182,9 @@ const rules = {
     { required: true, message: computed(() => t('testcase.titleRequired')), trigger: 'blur' },
     { min: 5, max: 500, message: computed(() => t('testcase.titleLength')), trigger: 'blur' }
   ],
+  project_id: [
+    { required: true, message: computed(() => t('testcase.projectRequired')), trigger: 'change' }
+  ],
   expected_result: [
     { required: true, message: computed(() => t('testcase.expectedResultRequired')), trigger: 'blur' }
   ],
@@ -169,13 +193,13 @@ const rules = {
   ]
 }
 
-// 将HTML的<br>标签转换为换行符（用于编辑时显示）
+const normalizeListResponse = (response) => response.data.results || response.data || []
+
 const convertBrToNewline = (text) => {
   if (!text) return ''
   return text.replace(/<br\s*\/?>/gi, '\n')
 }
 
-// 将换行符转换为HTML的<br>标签（用于保存）
 const convertNewlineToBr = (text) => {
   if (!text) return ''
   return text.replace(/\n/g, '<br>')
@@ -184,7 +208,7 @@ const convertNewlineToBr = (text) => {
 const fetchProjects = async () => {
   try {
     const response = await api.get('/projects/list/')
-    projects.value = response.data.results || []
+    projects.value = normalizeListResponse(response)
   } catch (error) {
     ElMessage.error(t('testcase.fetchProjectsFailed'))
   }
@@ -200,19 +224,33 @@ const fetchProjectVersions = async (projectId) => {
     const response = await api.get(`/versions/projects/${projectId}/versions/`)
     projectVersions.value = response.data || []
   } catch (error) {
-    console.error(t('testcase.fetchVersionsFailed'), error)
-    ElMessage.error(t('testcase.fetchVersionsFailed'))
     projectVersions.value = []
+    ElMessage.error(t('testcase.fetchVersionsFailed'))
   }
 }
 
-const onProjectChange = (projectId) => {
-  form.version_ids = []
-  fetchProjectVersions(projectId)
+const fetchProjectFolders = async (projectId) => {
+  if (!projectId) {
+    projectFolders.value = []
+    return
+  }
+
+  try {
+    const response = await api.get('/testcases/folders/', { params: { project: projectId } })
+    projectFolders.value = normalizeListResponse(response)
+  } catch (error) {
+    projectFolders.value = []
+    ElMessage.error(t('testcase.fetchFoldersFailed'))
+  }
 }
 
-const onVersionChange = () => {
-  // Version change handling logic if needed
+const onProjectChange = async (projectId) => {
+  form.version_ids = []
+  form.folder_id = null
+  await Promise.all([
+    fetchProjectVersions(projectId),
+    fetchProjectFolders(projectId)
+  ])
 }
 
 const fetchTestCase = async () => {
@@ -220,24 +258,22 @@ const fetchTestCase = async () => {
     const response = await api.get(`/testcases/${route.params.id}/`)
     const testcase = response.data
 
-    // Fill form data
     form.title = testcase.title
     form.description = testcase.description
     form.project_id = testcase.project?.id || null
+    form.folder_id = testcase.folder_id ?? null
     form.priority = testcase.priority
     form.test_type = testcase.test_type
     form.preconditions = convertBrToNewline(testcase.preconditions || '')
     form.expected_result = convertBrToNewline(testcase.expected_result || '')
-
-    // Fill steps data (convert <br> to newlines)
     form.steps = convertBrToNewline(testcase.steps || '')
+    form.version_ids = testcase.versions ? testcase.versions.map(version => version.id) : []
 
-    // Fill version associations
-    form.version_ids = testcase.versions ? testcase.versions.map(v => v.id) : []
-
-    // If project exists, fetch versions for that project
     if (form.project_id) {
-      await fetchProjectVersions(form.project_id)
+      await Promise.all([
+        fetchProjectVersions(form.project_id),
+        fetchProjectFolders(form.project_id)
+      ])
     }
 
     loading.value = false
@@ -251,32 +287,31 @@ const handleSubmit = async () => {
   if (!formRef.value) return
 
   await formRef.value.validate(async (valid) => {
-    if (valid) {
-      submitting.value = true
-      try {
-        // Convert newlines back to <br> tags before submitting
-        const submitData = {
-          ...form,
-          preconditions: convertNewlineToBr(form.preconditions || ''),
-          steps: convertNewlineToBr(form.steps || ''),
-          expected_result: convertNewlineToBr(form.expected_result || '')
-        }
+    if (!valid) return
 
-        await api.put(`/testcases/${route.params.id}/`, submitData)
-        ElMessage.success(t('testcase.updateSuccess'))
-        router.push(`/ai-generation/testcases/${route.params.id}`)
-      } catch (error) {
-        ElMessage.error(t('testcase.updateFailed'))
-        console.error('Submit error:', error)
-      } finally {
-        submitting.value = false
+    submitting.value = true
+    try {
+      const submitData = {
+        ...form,
+        preconditions: convertNewlineToBr(form.preconditions || ''),
+        steps: convertNewlineToBr(form.steps || ''),
+        expected_result: convertNewlineToBr(form.expected_result || '')
       }
+
+      await api.put(`/testcases/${route.params.id}/`, submitData)
+      ElMessage.success(t('testcase.updateSuccess'))
+      router.push(`/ai-generation/testcases/${route.params.id}`)
+    } catch (error) {
+      ElMessage.error(t('testcase.updateFailed'))
+      console.error('Submit error:', error)
+    } finally {
+      submitting.value = false
     }
   })
 }
 
 onMounted(async () => {
   await fetchProjects()
-  await fetchTestCase()  // fetchTestCase中会根据项目获取版本列表
+  await fetchTestCase()
 })
 </script>

@@ -300,8 +300,10 @@ import {
   getTestExecutions,
   deleteTestExecution
 } from '@/api/ui_automation'
+import { useUiAutomationStore } from '@/stores/uiAutomation'
 
 const { t } = useI18n()
+const uiAutomationStore = useUiAutomationStore()
 
 const reports = ref([])
 const projects = ref([])
@@ -365,6 +367,7 @@ const loadReports = async () => {
 
 // 项目切换
 const onProjectChange = async () => {
+  uiAutomationStore.setSelectedProject(selectedProject.value)
   pagination.currentPage = 1
   await loadReports()
 }
@@ -509,7 +512,7 @@ const formatDuration = (seconds) => {
 onMounted(async () => {
   await loadProjects()
   if (projects.value.length > 0) {
-    selectedProject.value = projects.value[0].id
+    selectedProject.value = uiAutomationStore.resolveSelectedProjectId(projects.value)
   }
   await loadReports()
 })
