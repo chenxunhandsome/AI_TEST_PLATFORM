@@ -52,7 +52,7 @@ export default {
   priorityDistribution: '优先级分布',
 
   // 其他
-  noData: 'No Data',
+  noData: '暂无数据',
   caseTitle: '用例标题',
   failureCount: '失败次数',
   exportInDevelopment: '报告导出功能开发中...',

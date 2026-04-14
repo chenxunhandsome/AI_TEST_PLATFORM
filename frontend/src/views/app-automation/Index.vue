@@ -3,7 +3,7 @@
     <el-card shadow="never">
       <div class="welcome-section">
         <h1>APP 自动化测试</h1>
-        <p>基于 Airtest 的 Android APP 自动化测试平台</p>
+        <p>基于 Airtest 的 Android 应用自动化测试平台</p>
       </div>
       
       <div class="features-grid">
@@ -11,7 +11,7 @@
           <div class="feature-icon bg-blue">
             <el-icon><DataAnalysis /></el-icon>
           </div>
-          <div class="feature-title">Dashboard</div>
+          <div class="feature-title">仪表板</div>
           <div class="feature-desc">查看统计数据和执行概览</div>
         </el-card>
         
@@ -28,7 +28,7 @@
             <el-icon><Picture /></el-icon>
           </div>
           <div class="feature-title">元素管理</div>
-          <div class="feature-desc">管理UI元素（图片/坐标/区域）</div>
+          <div class="feature-desc">管理 UI 元素（图片/坐标/区域）</div>
         </el-card>
         
         <el-card shadow="hover" class="feature-card" @click="$router.push('/app-automation/test-cases')">

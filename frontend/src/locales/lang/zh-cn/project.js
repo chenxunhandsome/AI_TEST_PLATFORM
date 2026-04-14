@@ -76,7 +76,7 @@ export default {
     language: {
       current: '中文',
       zhCN: '简体中文',
-      en: 'English'
+      en: '英文'
     },
 
     // Title

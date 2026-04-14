@@ -5,8 +5,9 @@ import { datetimeFormats } from './datetimeFormats.js'
 import { numberFormats } from './numberFormats.js'
 import { pluralRules } from './pluralRules.js'
 
-// 从 localStorage 获取语言设置，默认中文
-const defaultLang = localStorage.getItem('app-lang') || 'zh-cn'
+// 统一默认使用简体中文，避免保留旧的英文设置
+const defaultLang = 'zh-cn'
+localStorage.setItem('app-lang', defaultLang)
 
 // 开发环境下的缺失翻译警告处理器
 const missingHandler = (locale, key, vm, values) => {

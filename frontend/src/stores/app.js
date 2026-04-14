@@ -4,7 +4,7 @@ import i18n from '@/locales'
 
 export const useAppStore = defineStore('app', () => {
   // 状态：当前语言
-  const language = ref(localStorage.getItem('app-lang') || 'zh-cn')
+  const language = ref('zh-cn')
 
   // 动作：切换语言
   const setLanguage = (lang) => {

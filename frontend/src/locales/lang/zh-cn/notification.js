@@ -2,7 +2,7 @@ export default {
   // 页面标题
   configs: {
     title: '通知配置',
-    description: '配置飞书、企微、钉钉Webhook机器人地址'
+    description: '配置飞书、企微、钉钉 Webhook 机器人地址'
   },
 
   // 机器人类型
@@ -16,7 +16,7 @@ export default {
   form: {
     botName: '机器人名称',
     enabled: '启用',
-    webhookUrl: 'Webhook URL',
+    webhookUrl: 'Webhook 地址',
     businessType: '业务类型',
     signatureKey: '签名密钥',
     uiAutomation: 'UI自动化测试',
@@ -26,19 +26,19 @@ export default {
   // 占位符
   placeholders: {
     feishuBotName: '请输入飞书机器人名称',
-    feishuWebhook: '请输入飞书机器人Webhook URL',
+    feishuWebhook: '请输入飞书机器人 Webhook 地址',
     wechatBotName: '请输入企业微信机器人名称',
-    wechatWebhook: '请输入企业微信机器人Webhook URL',
+    wechatWebhook: '请输入企业微信机器人 Webhook 地址',
     dingtalkBotName: '请输入钉钉机器人名称',
-    dingtalkWebhook: '请输入钉钉机器人Webhook URL',
+    dingtalkWebhook: '请输入钉钉机器人 Webhook 地址',
     dingtalkSecret: '请输入钉钉机器人签名密钥（可选）'
   },
 
   // 提示信息
   hints: {
-    feishuWebhook: '飞书机器人Webhook URL格式：https://open.feishu.cn/open-apis/bot/v2/hook/...',
-    wechatWebhook: '企业微信机器人Webhook URL格式：https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...',
-    dingtalkWebhook: '钉钉机器人Webhook URL格式：https://oapi.dingtalk.com/robot/send?access_token=...',
+    feishuWebhook: '飞书机器人 Webhook 地址格式：https://open.feishu.cn/open-apis/bot/v2/hook/...',
+    wechatWebhook: '企业微信机器人 Webhook 地址格式：https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...',
+    dingtalkWebhook: '钉钉机器人 Webhook 地址格式：https://oapi.dingtalk.com/robot/send?access_token=...',
     dingtalkSecret: '钉钉机器人的签名密钥，用于安全验证。如果机器人开启了"加签"安全设置，请填写此字段。'
   },
 
@@ -53,9 +53,9 @@ export default {
   messages: {
     saveSuccess: '{type}机器人配置{action}成功',
     saveFailed: '{type}机器人配置保存失败',
-    fetchFailed: '获取Webhook机器人配置失败',
-    fetchAllFailed: '获取所有Webhook机器人配置失败',
-    notFoundCreating: '未找到现有Webhook配置，将创建新配置',
+    fetchFailed: '获取 Webhook 机器人配置失败',
+    fetchAllFailed: '获取所有 Webhook 机器人配置失败',
+    notFoundCreating: '未找到现有 Webhook 配置，将创建新配置',
     created: '创建',
     updated: '更新'
   },

@@ -146,7 +146,7 @@
           <template v-else-if="currentModule === 'app-automation'">
             <el-menu-item index="/app-automation/dashboard">
               <el-icon><Odometer /></el-icon>
-              <span>Dashboard</span>
+              <span>仪表板</span>
             </el-menu-item>
             <el-menu-item index="/app-automation/projects">
               <el-icon><Folder /></el-icon>
