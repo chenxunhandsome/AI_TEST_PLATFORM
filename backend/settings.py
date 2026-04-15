@@ -6,9 +6,26 @@ import os
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+
+def split_csv(value):
+    return [item.strip() for item in str(value or '').split(',') if item.strip()]
+
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-your-secret-key-here')
 
 DEBUG = config('DEBUG', default=True, cast=bool)
+configured_origins = split_csv(config('CORS_ALLOWED_ORIGINS', default=''))
+default_frontend_origins = [
+    'http://localhost:3000',
+    'http://127.0.0.1:3000',
+    'http://localhost:3001',
+    'http://127.0.0.1:3001',
+]
+trusted_frontend_origins = split_csv(
+    config(
+        'CSRF_TRUSTED_ORIGINS',
+        default=','.join(configured_origins or default_frontend_origins),
+    )
+)
 
 # 根据DEBUG模式设置ALLOWED_HOSTS，生产环境不应使用通配符
 if DEBUG:
@@ -215,8 +232,7 @@ else:
     CSRF_COOKIE_SAMESITE = 'Strict'
 
 # CORS Settings
-cors_origins_str = config('CORS_ALLOWED_ORIGINS', default='')
-parsed_cors_origins = [s.strip() for s in cors_origins_str.split(',') if s.strip()]
+parsed_cors_origins = configured_origins
 
 if DEBUG:
     # 开发环境默认允许本地地址，同时合并环境变量里的配置
@@ -225,9 +241,12 @@ if DEBUG:
         *parsed_cors_origins,  # 环境变量配置的地址优先
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
         "http://localhost:8080",
         "http://127.0.0.1:8080",
     ]
+    CORS_ALLOWED_ORIGINS = list(dict.fromkeys(CORS_ALLOWED_ORIGINS))
     CORS_ALLOW_CREDENTIALS = True
     # 支持EventSource (SSE) 的额外CORS头部
     CORS_ALLOW_HEADERS = [
@@ -269,8 +288,7 @@ else:
 
 # CSRF Settings
 CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
+    *trusted_frontend_origins,
 ]
 
 # Spectacular Settings
@@ -403,7 +421,7 @@ SIMPLEUI_LOGIN_PARTICLES = True
 # # 自定义首页图标 首页图标,支持element-ui和fontawesome的图标，参考https://fontawesome.com/icons图标
 # SIMPLEUI_HOME_ICON = 'fa fa-gauge'
 # 设置simpleui 点击首页图标跳转的地址
-SIMPLEUI_INDEX = 'http://localhost:3000'
+SIMPLEUI_INDEX = config('SIMPLEUI_INDEX_URL', default='http://localhost:3000')
 # 自定义后台的Logo
 SIMPLEUI_LOGO = 'https://static.djangoproject.com/img/favicon.6dbf28c0650e.ico'
 # 是否显示首页信息
