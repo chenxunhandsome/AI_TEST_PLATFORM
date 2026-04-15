@@ -1132,8 +1132,15 @@ export default {
     assertExists: 'Element Exists',
     assertHasAttribute: 'Attribute Value',
     expectedValue: 'Expected Value',
+    storeAs: 'Store As:',
+    storeAsPlaceholder: 'Enter variable name, for example abcd',
+    storeAsHelp: 'After this step succeeds, reuse the value with ${name}',
     stepDescription: 'Step Description:',
     stepDescPlaceholder: 'Describe the purpose of this step',
+    stepSummaryPlaceholder: 'Step {step}: enter a description',
+    stepDescriptionRequired: 'Please enter a description for step {step}',
+    storeAsInvalid: 'Step {step} variable name must start with a letter or underscore and contain only letters, numbers, and underscores',
+    elementPending: 'Select element',
     executionResult: 'Execution Result',
     executionSuccess: 'Execution Successful',
     executionFailed: 'Execution Failed',
@@ -1236,7 +1243,8 @@ export default {
       scroll: 'Scroll',
       screenshot: 'Screenshot',
       assert: 'Assert',
-      wait: 'Wait'
+      wait: 'Wait',
+      switchTab: 'Switch Tab'
     },
     // Action text (for displaying action descriptions in execution logs)
     actionText: {
@@ -1248,7 +1256,8 @@ export default {
       scroll: 'Scroll',
       screenshot: 'Screenshot',
       assert: 'Assert',
-      wait: 'Wait'
+      wait: 'Wait',
+      switchTab: 'Switch Tab'
     },
     // Status text
     status: {

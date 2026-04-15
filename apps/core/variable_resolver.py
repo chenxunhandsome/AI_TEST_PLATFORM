@@ -6,6 +6,7 @@
 import re
 import sys
 import json
+import threading
 from datetime import datetime, timedelta
 
 # 设置标准输出编码为 UTF-8，避免 Windows 系统上的编码问题
@@ -28,6 +29,7 @@ class VariableResolver:
     """统一变量解析器 - 使用数据工厂工具"""
     
     def __init__(self):
+        self._runtime_state = threading.local()
         # 注册所有内置函数，映射到数据工厂的工具
         self.functions = {
             # 随机工具
@@ -118,6 +120,33 @@ class VariableResolver:
             'time': self._time,
             'date_offset': self._date_offset,
         }
+
+    def _get_runtime_variables(self):
+        runtime_variables = getattr(self._runtime_state, 'variables', None)
+        if runtime_variables is None:
+            runtime_variables = {}
+            self._runtime_state.variables = runtime_variables
+        return runtime_variables
+
+    def set_runtime_variable(self, name, value):
+        if not name:
+            return
+        self._get_runtime_variables()[str(name)] = value
+
+    def set_runtime_variables(self, variables):
+        runtime_variables = self._get_runtime_variables()
+        for name, value in (variables or {}).items():
+            if name:
+                runtime_variables[str(name)] = value
+
+    def get_runtime_variable(self, name, default=None):
+        return self._get_runtime_variables().get(name, default)
+
+    def get_runtime_variables(self):
+        return dict(self._get_runtime_variables())
+
+    def clear_runtime_variables(self):
+        self._runtime_state.variables = {}
     
     def resolve(self, text):
         """解析文本中的动态函数占位符
@@ -170,6 +199,10 @@ class VariableResolver:
             args = self._parse_args(args_str)
         
         # 调用对应函数
+        runtime_variables = self._get_runtime_variables()
+        if func_name in runtime_variables:
+            return runtime_variables[func_name]
+
         if func_name in self.functions:
             return self.functions[func_name](func_name, args)
         else:
@@ -620,3 +653,23 @@ def resolve_variables(text):
         解析后的文本
     """
     return _resolver.resolve(text)
+
+
+def set_runtime_variable(name, value):
+    _resolver.set_runtime_variable(name, value)
+
+
+def set_runtime_variables(variables):
+    _resolver.set_runtime_variables(variables)
+
+
+def get_runtime_variable(name, default=None):
+    return _resolver.get_runtime_variable(name, default)
+
+
+def get_runtime_variables():
+    return _resolver.get_runtime_variables()
+
+
+def clear_runtime_variables():
+    _resolver.clear_runtime_variables()

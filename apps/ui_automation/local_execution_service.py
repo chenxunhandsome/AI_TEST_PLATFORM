@@ -10,6 +10,7 @@ from django.utils import timezone
 from .models import TestCaseStep
 from .playwright_engine import PlaywrightTestEngine
 from .selenium_engine import SeleniumTestEngine
+from .variable_resolver import clear_runtime_variables, resolve_variables, set_runtime_variable
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ def build_test_case_payload(test_case):
             'step_number': step.step_number,
             'action_type': step.action_type,
             'description': step.description or '',
+            'save_as': step.save_as or '',
             'input_value': step.input_value or '',
             'wait_time': step.wait_time,
             'assert_type': step.assert_type or '',
@@ -84,6 +86,7 @@ def _make_step(step_data):
     return SimpleNamespace(
         action_type=step_data.get('action_type', ''),
         description=step_data.get('description', ''),
+        save_as=step_data.get('save_as', ''),
         input_value=step_data.get('input_value', ''),
         wait_time=step_data.get('wait_time') or 1000,
         assert_type=step_data.get('assert_type', ''),
@@ -144,7 +147,33 @@ def _append_screenshot(screenshots, screenshot_base64, description, step_number)
     })
 
 
+def _resolve_step_runtime_values(step):
+    resolved_input_value = step.input_value
+    if step.input_value:
+        resolved_input_value = resolve_variables(step.input_value)
+
+    resolved_assert_value = step.assert_value
+    if step.assert_value:
+        resolved_assert_value = resolve_variables(step.assert_value)
+
+    step.input_value = resolved_input_value
+    step.assert_value = resolved_assert_value
+    return resolved_input_value, resolved_assert_value
+
+
+def _store_step_runtime_variable(step, resolved_input_value, resolved_assert_value):
+    save_as = str(getattr(step, 'save_as', '') or '').strip()
+    if not save_as:
+        return
+
+    if step.action_type in {'fill', 'switchTab'}:
+        set_runtime_variable(save_as, resolved_input_value)
+    elif step.action_type == 'assert':
+        set_runtime_variable(save_as, resolved_assert_value)
+
+
 def _run_selenium(payload, browser, headless, start_time, step_results, screenshots, detailed_errors):
+    clear_runtime_variables()
     is_available, error_msg = SeleniumTestEngine.check_browser_available(browser)
     if not is_available:
         return _format_final_result(
@@ -192,6 +221,7 @@ def _run_selenium(payload, browser, headless, start_time, step_results, screensh
             step = _make_step(step_data)
             element_data = step_data.get('element_data') or {}
             action_text = dict(TestCaseStep.ACTION_TYPE_CHOICES).get(step.action_type, step.action_type)
+            resolved_input_value, resolved_assert_value = _resolve_step_runtime_values(step)
 
             try:
                 success, step_log, screenshot_base64 = engine.execute_step(step, element_data)
@@ -199,6 +229,9 @@ def _run_selenium(payload, browser, headless, start_time, step_results, screensh
                 success = False
                 step_log = str(exc)
                 screenshot_base64 = None
+
+            if success:
+                _store_step_runtime_variable(step, resolved_input_value, resolved_assert_value)
 
             _append_step_result(step_results, index, step.action_type, step.description, success, None if success else step_log)
 
@@ -241,6 +274,7 @@ def _run_playwright(payload, browser, headless, start_time, step_results, screen
 
 
 async def _run_playwright_async(payload, browser, headless, start_time, step_results, screenshots, detailed_errors):
+    clear_runtime_variables()
     engine = PlaywrightTestEngine(browser_type=_browser_map(browser), headless=headless)
     error_message = ''
     status_value = 'passed'
@@ -270,6 +304,7 @@ async def _run_playwright_async(payload, browser, headless, start_time, step_res
             step = _make_step(step_data)
             element_data = step_data.get('element_data') or {}
             action_text = dict(TestCaseStep.ACTION_TYPE_CHOICES).get(step.action_type, step.action_type)
+            resolved_input_value, resolved_assert_value = _resolve_step_runtime_values(step)
 
             try:
                 success, step_log, screenshot_base64 = await engine.execute_step(step, element_data)
@@ -277,6 +312,9 @@ async def _run_playwright_async(payload, browser, headless, start_time, step_res
                 success = False
                 step_log = str(exc)
                 screenshot_base64 = None
+
+            if success:
+                _store_step_runtime_variable(step, resolved_input_value, resolved_assert_value)
 
             _append_step_result(step_results, index, step.action_type, step.description, success, None if success else step_log)
 

@@ -4,14 +4,28 @@ Playwright自动化测试执行引擎
 """
 import asyncio
 import base64
+import re
 import time
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext, TimeoutError as PlaywrightTimeout
 import logging
-from .variable_resolver import resolve_variables
+from .variable_resolver import resolve_variables, set_runtime_variable
 
 logger = logging.getLogger(__name__)
+RUNTIME_VARIABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+
+def append_runtime_variable_log(step, log, value):
+    save_as = str(getattr(step, 'save_as', '') or '').strip()
+    if not save_as:
+        return log
+
+    if not RUNTIME_VARIABLE_NAME_RE.match(save_as):
+        return f"{log}\n  - 跳过变量存储: 变量名 '{save_as}' 不合法"
+
+    set_runtime_variable(save_as, value)
+    return f"{log}\n  - 已存储变量: ${{{save_as}}} = '{value}'"
 
 class PlaywrightTestEngine:
     """Playwright测试执行引擎"""

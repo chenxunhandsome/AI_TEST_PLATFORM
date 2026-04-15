@@ -192,37 +192,22 @@
                     <div class="step-item" :class="{ expanded: element.expanded }">
                       <div class="step-header">
                         <div class="step-left">
-                          <el-icon class="drag-handle"><Rank /></el-icon>
+                          <el-icon class="drag-handle" @click.stop><Rank /></el-icon>
                           <span class="step-number">{{ index + 1 }}</span>
-                          <el-select
-                            v-model="element.action_type"
-                            :placeholder="t('uiAutomation.testCase.selectAction')"
-                            size="small"
-                            style="width: 120px"
-                            @change="onActionTypeChange(element)"
-                          >
-                            <el-option :label="t('uiAutomation.testCase.actionClick')" value="click" />
-                            <el-option :label="t('uiAutomation.testCase.actionFill')" value="fill" />
-                            <el-option :label="t('uiAutomation.testCase.actionGetText')" value="getText" />
-                            <el-option :label="t('uiAutomation.testCase.actionWaitFor')" value="waitFor" />
-                            <el-option :label="t('uiAutomation.testCase.actionHover')" value="hover" />
-                            <el-option :label="t('uiAutomation.testCase.actionScroll')" value="scroll" />
-                            <el-option :label="t('uiAutomation.testCase.actionScreenshot')" value="screenshot" />
-                            <el-option :label="t('uiAutomation.testCase.actionAssert')" value="assert" />
-                            <el-option :label="t('uiAutomation.testCase.actionWait')" value="wait" />
-                            <el-option :label="t('uiAutomation.testCase.actionSwitchTab')" value="switchTab" />
-                          </el-select>
-                          <el-button
-                            v-if="needsElement(element.action_type)"
-                            size="small"
-                            class="element-selector-trigger"
-                            @click="openElementSelector(element)"
-                          >
-                            <el-icon><FolderOpened /></el-icon>
-                            <span class="element-selector-text">{{ getSelectedElementLabel(element.element_id) }}</span>
-                          </el-button>
+                          <div class="step-summary" @click="element.expanded = !element.expanded">
+                            <div class="step-summary-title">
+                              {{ getStepSummary(element, index) }}
+                            </div>
+                            <div class="step-summary-meta">
+                              <span>{{ getActionTypeText(element.action_type) }}</span>
+                              <span v-if="needsElement(element.action_type)">{{ getStepElementSummary(element) }}</span>
+                              <span v-if="canStoreVariable(element.action_type) && element.save_as">
+                                {{ formatStoredVariable(element.save_as) }}
+                              </span>
+                            </div>
+                          </div>
                         </div>
-                        <div class="step-right">
+                        <div class="step-right" @click.stop>
                           <el-button
                             size="small"
                             text
@@ -239,6 +224,48 @@
                       </div>
 
                       <div v-if="element.expanded" class="step-content">
+                        <div class="step-param">
+                          <label>{{ t('uiAutomation.testCase.stepDescription') }}</label>
+                          <el-input
+                            v-model="element.description"
+                            :placeholder="t('uiAutomation.testCase.stepDescPlaceholder')"
+                            size="small"
+                          />
+                        </div>
+
+                        <div class="step-param">
+                          <label>{{ t('uiAutomation.testCase.selectAction') }}</label>
+                          <el-select
+                            v-model="element.action_type"
+                            :placeholder="t('uiAutomation.testCase.selectAction')"
+                            size="small"
+                            style="width: 220px"
+                            @change="onActionTypeChange(element)"
+                          >
+                            <el-option :label="t('uiAutomation.testCase.actionClick')" value="click" />
+                            <el-option :label="t('uiAutomation.testCase.actionFill')" value="fill" />
+                            <el-option :label="t('uiAutomation.testCase.actionGetText')" value="getText" />
+                            <el-option :label="t('uiAutomation.testCase.actionWaitFor')" value="waitFor" />
+                            <el-option :label="t('uiAutomation.testCase.actionHover')" value="hover" />
+                            <el-option :label="t('uiAutomation.testCase.actionScroll')" value="scroll" />
+                            <el-option :label="t('uiAutomation.testCase.actionScreenshot')" value="screenshot" />
+                            <el-option :label="t('uiAutomation.testCase.actionAssert')" value="assert" />
+                            <el-option :label="t('uiAutomation.testCase.actionWait')" value="wait" />
+                            <el-option :label="t('uiAutomation.testCase.actionSwitchTab')" value="switchTab" />
+                          </el-select>
+                        </div>
+
+                        <div v-if="needsElement(element.action_type)" class="step-param">
+                          <label>{{ t('uiAutomation.testCase.selectElement') }}</label>
+                          <el-button
+                            size="small"
+                            class="element-selector-trigger"
+                            @click="openElementSelector(element)"
+                          >
+                            <el-icon><FolderOpened /></el-icon>
+                            <span class="element-selector-text">{{ getSelectedElementLabel(element.element_id) }}</span>
+                          </el-button>
+                        </div>
                         <!-- 输入参数 -->
                         <div v-if="needsInputValue(element.action_type)" class="step-param">
                           <label>{{ t('uiAutomation.testCase.inputValue') }}</label>
@@ -267,6 +294,21 @@
                         </div>
 
                         <!-- 等待时间 -->
+                        <div v-if="canStoreVariable(element.action_type)" class="step-param step-param--stacked">
+                          <label>{{ t('uiAutomation.testCase.storeAs') }}</label>
+                          <div class="step-param-main">
+                            <el-input
+                              v-model="element.save_as"
+                              :placeholder="t('uiAutomation.testCase.storeAsPlaceholder')"
+                              size="small"
+                              clearable
+                            />
+                            <div class="step-help">
+                              {{ getStoreAsHelp(element.save_as) }}
+                            </div>
+                          </div>
+                        </div>
+
                         <div v-if="needsWaitTime(element.action_type)" class="step-param">
                           <label>{{ t('uiAutomation.testCase.waitTime') }}</label>
                           <el-input-number
@@ -314,14 +356,6 @@
                         </div>
 
                         <!-- 步骤描述 -->
-                        <div class="step-param">
-                          <label>{{ t('uiAutomation.testCase.stepDescription') }}</label>
-                          <el-input
-                            v-model="element.description"
-                            :placeholder="t('uiAutomation.testCase.stepDescPlaceholder')"
-                            size="small"
-                          />
-                        </div>
                       </div>
                     </div>
                   </template>
@@ -536,43 +570,69 @@
       v-model="showElementSelectorDialog"
       :title="text.selectElement"
       :close-on-click-modal="false"
-      width="640px"
+      :width="`${elementSelectorDialogSize.width}px`"
+      class="element-selector-dialog"
     >
-      <el-input
-        v-model="elementSelectorKeyword"
-        :placeholder="text.searchElementPlaceholder"
-        clearable
-        class="element-selector-search"
+      <div
+        class="element-selector-dialog-body"
+        :style="{ height: `${elementSelectorDialogSize.height}px` }"
       >
-        <template #prefix>
-          <el-icon><Search /></el-icon>
-        </template>
-      </el-input>
-
-      <div class="element-selector-tree-wrapper">
-        <el-tree
-          :data="filteredElementTreeOptions"
-          :props="{ children: 'children', label: 'name' }"
-          node-key="treeKey"
-          :default-expand-all="Boolean(elementSelectorKeyword)"
-          :expand-on-click-node="false"
-          highlight-current
-          :current-node-key="currentSelectingStep?.element_id ? `element-${currentSelectingStep.element_id}` : undefined"
-          @node-click="handleElementTreeNodeClick"
+        <el-input
+          v-model="elementSelectorKeyword"
+          :placeholder="text.searchElementPlaceholder"
+          clearable
+          class="element-selector-search"
         >
-          <template #default="{ data }">
-            <div class="element-tree-node">
-              <div class="element-tree-node-main">
-                <el-icon class="element-tree-node-icon">
-                  <component :is="data.type === 'group' ? Folder : Document" />
-                </el-icon>
-                <span class="element-tree-node-label">{{ data.name }}</span>
-              </div>
-              <span v-if="data.type === 'element'" class="element-tree-node-extra">{{ data.locator_value }}</span>
-            </div>
+          <template #prefix>
+            <el-icon><Search /></el-icon>
           </template>
-        </el-tree>
-        <el-empty v-if="!filteredElementTreeOptions.length" :description="text.noMatchedElements" />
+        </el-input>
+
+        <div class="element-selector-tree-wrapper">
+          <el-tree
+            :data="filteredElementTreeOptions"
+            :props="{ children: 'children', label: 'name' }"
+            node-key="treeKey"
+            :default-expand-all="Boolean(elementSelectorKeyword)"
+            :expand-on-click-node="false"
+            highlight-current
+            :current-node-key="currentSelectingStep?.element_id ? `element-${currentSelectingStep.element_id}` : undefined"
+            @node-click="handleElementTreeNodeClick"
+          >
+            <template #default="{ data }">
+              <div class="element-tree-node">
+                <div class="element-tree-node-main">
+                  <el-icon class="element-tree-node-icon">
+                    <component :is="data.type === 'group' ? Folder : Document" />
+                  </el-icon>
+                  <el-tooltip
+                    v-if="data.type === 'element'"
+                    placement="right-start"
+                    effect="dark"
+                    :show-after="150"
+                    popper-class="element-data-tooltip"
+                  >
+                    <template #content>
+                      <div class="element-tooltip-content">
+                        <div class="element-tooltip-title">{{ data.name }}</div>
+                        <pre class="element-tooltip-json">{{ getElementTooltipContent(data) }}</pre>
+                      </div>
+                    </template>
+                    <span class="element-tree-node-label is-hoverable">{{ data.name }}</span>
+                  </el-tooltip>
+                  <span v-else class="element-tree-node-label">{{ data.name }}</span>
+                </div>
+                <span v-if="data.type === 'element'" class="element-tree-node-extra">{{ data.locator_value }}</span>
+              </div>
+            </template>
+          </el-tree>
+          <el-empty v-if="!filteredElementTreeOptions.length" :description="text.noMatchedElements" />
+        </div>
+
+        <div
+          class="element-selector-resizer"
+          @mousedown="startElementSelectorResize"
+        />
       </div>
     </el-dialog>
 
@@ -743,6 +803,16 @@ const elementSelectorKeyword = ref('')
 const variableCategories = ref([])
 const loading = ref(false)
 let localExecutionPollTimer = null
+const elementSelectorDialogSize = reactive({
+  width: 640,
+  height: 520
+})
+const ELEMENT_SELECTOR_MIN_WIDTH = 520
+const ELEMENT_SELECTOR_MIN_HEIGHT = 360
+const ELEMENT_SELECTOR_VIEWPORT_WIDTH_PADDING = 80
+const ELEMENT_SELECTOR_VIEWPORT_HEIGHT_PADDING = 140
+let elementSelectorResizeHandlers = null
+const STEP_RUNTIME_VARIABLE_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 
 
@@ -850,9 +920,14 @@ const filteredElementTreeOptions = computed(() => {
   const filterNodes = (nodes) => {
     return nodes.reduce((result, node) => {
       const children = node.children ? filterNodes(node.children) : []
-      const matchedSelf =
-        String(node.name || '').toLowerCase().includes(keyword) ||
-        String(node.locator_value || '').toLowerCase().includes(keyword)
+      const matchedSelf = [
+        node.name,
+        node.locator_value,
+        node.description,
+        node.page,
+        node.component_name,
+        node.locator_strategy
+      ].some((value) => String(value || '').toLowerCase().includes(keyword))
 
       if (matchedSelf || children.length > 0) {
         result.push({
@@ -869,6 +944,178 @@ const filteredElementTreeOptions = computed(() => {
 })
 
 // 方法定义
+const canStoreVariable = (actionType) => {
+  return ['fill', 'switchTab', 'assert'].includes(actionType)
+}
+
+const createStepDraft = (step = {}, expanded = false) => ({
+  id: step.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+  action_type: step.action_type || 'click',
+  element_id: step.element_id ?? step.element ?? '',
+  input_value: step.input_value || '',
+  wait_time: Number(step.wait_time ?? 1000) || 1000,
+  assert_type: step.assert_type || 'textContains',
+  assert_value: step.assert_value || '',
+  description: step.description || '',
+  save_as: step.save_as || '',
+  expanded
+})
+
+const buildStepPayload = (step, index) => ({
+  id: step.id,
+  step_number: index + 1,
+  action_type: step.action_type || 'click',
+  element_id: step.element_id || null,
+  input_value: needsInputValue(step.action_type) ? (step.input_value || '') : '',
+  wait_time: needsWaitTime(step.action_type) ? (Number(step.wait_time) || 1000) : 1000,
+  assert_type: step.action_type === 'assert' ? (step.assert_type || 'textContains') : '',
+  assert_value: step.action_type === 'assert' ? (step.assert_value || '') : '',
+  description: String(step.description || '').trim(),
+  save_as: canStoreVariable(step.action_type) ? String(step.save_as || '').trim() : ''
+})
+
+const formatStoredVariable = (name) => {
+  const value = String(name || '').trim()
+  return value ? `\${${value}}` : ''
+}
+
+const getStoreAsHelp = (name) => {
+  const variableName = String(name || '').trim() || 'abcd'
+  return t('uiAutomation.testCase.storeAsHelp', { name: variableName })
+}
+
+const getStepSummary = (step, index) => {
+  const description = String(step.description || '').trim()
+  if (description) {
+    return description
+  }
+  return t('uiAutomation.testCase.stepSummaryPlaceholder', { step: index + 1 })
+}
+
+const getStepElementSummary = (step) => {
+  if (!needsElement(step.action_type)) {
+    return ''
+  }
+  const element = availableElements.value.find(item => item.id === step.element_id)
+  return element?.name || t('uiAutomation.testCase.elementPending')
+}
+
+const validateCurrentSteps = () => {
+  for (const [index, step] of currentSteps.value.entries()) {
+    step.description = String(step.description || '').trim()
+    step.save_as = canStoreVariable(step.action_type) ? String(step.save_as || '').trim() : ''
+
+    if (!step.description) {
+      step.expanded = true
+      ElMessage.warning(t('uiAutomation.testCase.stepDescriptionRequired', { step: index + 1 }))
+      return false
+    }
+
+    if (step.save_as && !STEP_RUNTIME_VARIABLE_RE.test(step.save_as)) {
+      step.expanded = true
+      ElMessage.warning(t('uiAutomation.testCase.storeAsInvalid', { step: index + 1 }))
+      return false
+    }
+  }
+
+  return true
+}
+
+const getElementSelectorMaxWidth = () => {
+  if (typeof window === 'undefined') {
+    return elementSelectorDialogSize.width
+  }
+
+  return Math.max(ELEMENT_SELECTOR_MIN_WIDTH, window.innerWidth - ELEMENT_SELECTOR_VIEWPORT_WIDTH_PADDING)
+}
+
+const getElementSelectorMaxHeight = () => {
+  if (typeof window === 'undefined') {
+    return elementSelectorDialogSize.height
+  }
+
+  return Math.max(ELEMENT_SELECTOR_MIN_HEIGHT, window.innerHeight - ELEMENT_SELECTOR_VIEWPORT_HEIGHT_PADDING)
+}
+
+const normalizeElementSelectorDialogSize = () => {
+  elementSelectorDialogSize.width = Math.min(
+    Math.max(elementSelectorDialogSize.width, ELEMENT_SELECTOR_MIN_WIDTH),
+    getElementSelectorMaxWidth()
+  )
+  elementSelectorDialogSize.height = Math.min(
+    Math.max(elementSelectorDialogSize.height, ELEMENT_SELECTOR_MIN_HEIGHT),
+    getElementSelectorMaxHeight()
+  )
+}
+
+const getElementTooltipContent = (node) => {
+  if (!node || node.type !== 'element') {
+    return ''
+  }
+
+  const tooltipData = Object.entries(node).reduce((result, [key, value]) => {
+    if (['children', 'treeKey'].includes(key) || value === undefined) {
+      return result
+    }
+
+    result[key] = value
+    return result
+  }, {})
+
+  return JSON.stringify(tooltipData, null, 2)
+}
+
+const stopElementSelectorResize = () => {
+  if (!elementSelectorResizeHandlers) {
+    return
+  }
+
+  document.removeEventListener('mousemove', elementSelectorResizeHandlers.handleMouseMove)
+  document.removeEventListener('mouseup', elementSelectorResizeHandlers.handleMouseUp)
+  document.body.style.userSelect = ''
+  elementSelectorResizeHandlers = null
+}
+
+const startElementSelectorResize = (event) => {
+  if (typeof window === 'undefined') {
+    return
+  }
+
+  event.preventDefault()
+
+  const startX = event.clientX
+  const startY = event.clientY
+  const initialWidth = elementSelectorDialogSize.width
+  const initialHeight = elementSelectorDialogSize.height
+
+  const handleMouseMove = (moveEvent) => {
+    const nextWidth = initialWidth + (moveEvent.clientX - startX)
+    const nextHeight = initialHeight + (moveEvent.clientY - startY)
+
+    elementSelectorDialogSize.width = Math.min(
+      Math.max(nextWidth, ELEMENT_SELECTOR_MIN_WIDTH),
+      getElementSelectorMaxWidth()
+    )
+    elementSelectorDialogSize.height = Math.min(
+      Math.max(nextHeight, ELEMENT_SELECTOR_MIN_HEIGHT),
+      getElementSelectorMaxHeight()
+    )
+  }
+
+  const handleMouseUp = () => {
+    stopElementSelectorResize()
+  }
+
+  stopElementSelectorResize()
+  document.body.style.userSelect = 'none'
+  document.addEventListener('mousemove', handleMouseMove)
+  document.addEventListener('mouseup', handleMouseUp)
+  elementSelectorResizeHandlers = {
+    handleMouseMove,
+    handleMouseUp
+  }
+}
+
 const loadProjects = async () => {
   try {
     const response = await getUiProjects({ page_size: 100 })
@@ -923,11 +1170,9 @@ const syncSelectedTestCase = () => {
   }
 
   selectedTestCase.value = latestCase
-  currentSteps.value = (latestCase.steps || []).map(step => ({
-    ...step,
-    element_id: step.element || '',
-    expanded: currentSteps.value.find(item => item.id === step.id)?.expanded || false
-  }))
+  currentSteps.value = (latestCase.steps || []).map(step =>
+    createStepDraft(step, currentSteps.value.find(item => item.id === step.id)?.expanded || false)
+  )
 }
 
 const loadLocalRunnerList = async () => {
@@ -1173,32 +1418,20 @@ const selectTestCase = (testCase) => {
   selectedTestCase.value = testCase
   // 确保步骤数据格式正确，添加前端需要的字段
   if (testCase.steps && testCase.steps.length > 0) {
-    currentSteps.value = testCase.steps.map(step => ({
-      ...step,
-      element_id: step.element || '',
-      expanded: false
-    }))
+    currentSteps.value = testCase.steps.map(step => createStepDraft(step, false))
   } else {
     currentSteps.value = []
   }
+  allStepsExpanded.value = false
   // 只有在切换到不同用例时才清空执行结果
   executionResult.value = null
   showSteps.value = true
 }
 
 const addStep = () => {
-  const newStep = {
-    id: Date.now(),
-    action_type: 'click',
-    element_id: '',
-    input_value: '',
-    wait_time: 1000,
-    assert_type: 'textContains',
-    assert_value: '',
-    description: '',
-    expanded: true
-  }
+  const newStep = createStepDraft({}, true)
   currentSteps.value.push(newStep)
+  allStepsExpanded.value = false
 }
 
 const removeStep = (index) => {
@@ -1212,15 +1445,18 @@ const onStepsReorder = () => {
 
 const onActionTypeChange = (step) => {
   // 根据操作类型重置相关参数
-  if (step.action_type !== 'fill') {
+  if (!needsInputValue(step.action_type)) {
     step.input_value = ''
   }
-  if (step.action_type !== 'wait') {
+  if (!needsWaitTime(step.action_type)) {
     step.wait_time = 1000
   }
   if (step.action_type !== 'assert') {
     step.assert_type = 'textContains'
     step.assert_value = ''
+  }
+  if (!canStoreVariable(step.action_type)) {
+    step.save_as = ''
   }
 }
 
@@ -1235,7 +1471,7 @@ const onElementChange = (step) => {
 const getSelectedElementLabel = (elementId) => {
   const element = availableElements.value.find(item => item.id === elementId)
   if (!element) {
-    return text.selectElementPlaceholder
+    return t('uiAutomation.testCase.elementPending')
   }
 
   return `${element.name} (${element.locator_value})`
@@ -1278,11 +1514,12 @@ const expandAllSteps = () => {
 
 const saveTestCase = async () => {
   if (!selectedTestCase.value) return
+  if (!validateCurrentSteps()) return
 
   try {
     const updateData = {
       ...selectedTestCase.value,
-      steps: currentSteps.value
+      steps: currentSteps.value.map(buildStepPayload)
     }
 
     await updateTestCase(selectedTestCase.value.id, updateData)
@@ -1715,7 +1952,8 @@ const getActionTypeText = (actionType) => {
     'scroll': t('uiAutomation.testCase.actionType.scroll'),
     'screenshot': t('uiAutomation.testCase.actionType.screenshot'),
     'assert': t('uiAutomation.testCase.actionType.assert'),
-    'wait': t('uiAutomation.testCase.actionType.wait')
+    'wait': t('uiAutomation.testCase.actionType.wait'),
+    'switchTab': t('uiAutomation.testCase.actionSwitchTab')
   }
   return textMap[actionType] || actionType
 }
@@ -1737,7 +1975,8 @@ const getActionText = (actionType) => {
     'scroll': t('uiAutomation.testCase.actionText.scroll'),
     'screenshot': t('uiAutomation.testCase.actionText.screenshot'),
     'assert': t('uiAutomation.testCase.actionText.assert'),
-    'wait': t('uiAutomation.testCase.actionText.wait')
+    'wait': t('uiAutomation.testCase.actionText.wait'),
+    'switchTab': t('uiAutomation.testCase.actionSwitchTab')
   }
   return actionMap[actionType] || actionType
 }
@@ -1788,10 +2027,20 @@ watch(showMoveDialog, (visible) => {
 })
 
 watch(showElementSelectorDialog, (visible) => {
+  if (visible) {
+    normalizeElementSelectorDialogSize()
+    return
+  }
+
+  stopElementSelectorResize()
   if (!visible) {
     currentSelectingStep.value = null
     elementSelectorKeyword.value = ''
   }
+})
+
+onMounted(() => {
+  window.addEventListener('resize', normalizeElementSelectorDialogSize)
 })
 
 onMounted(async () => {
@@ -1810,6 +2059,8 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopLocalExecutionPolling()
+  stopElementSelectorResize()
+  window.removeEventListener('resize', normalizeElementSelectorDialogSize)
 })
 </script>
 
@@ -2099,7 +2350,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
+  min-width: 0;
+  flex: 1;
 }
 
 .drag-handle {
@@ -2118,6 +2370,29 @@ onBeforeUnmount(() => {
   justify-content: center;
   font-size: 12px;
   font-weight: bold;
+}
+
+.step-summary {
+  min-width: 0;
+  flex: 1;
+  cursor: pointer;
+}
+
+.step-summary-title {
+  color: #303133;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.step-summary-meta {
+  margin-top: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #909399;
+  font-size: 12px;
 }
 
 .step-right {
@@ -2146,12 +2421,21 @@ onBeforeUnmount(() => {
   margin-bottom: 12px;
 }
 
+.element-selector-dialog-body {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
 .element-selector-tree-wrapper {
-  max-height: 420px;
-  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
   border: 1px solid #e6e6e6;
   border-radius: 6px;
   padding: 10px;
+  padding-right: 14px;
 }
 
 .element-tree-node {
@@ -2175,9 +2459,21 @@ onBeforeUnmount(() => {
 }
 
 .element-tree-node-label {
+  display: inline-block;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.element-tree-node-label.is-hoverable {
+  cursor: help;
+  border-bottom: 1px dashed transparent;
+}
+
+.element-tree-node-label.is-hoverable:hover {
+  color: #409eff;
+  border-bottom-color: rgba(64, 158, 255, 0.45);
 }
 
 .element-tree-node-extra {
@@ -2189,6 +2485,49 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
+.element-selector-resizer {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  background:
+    linear-gradient(135deg, transparent 0 34%, #c0c4cc 34% 44%, transparent 44% 58%, #c0c4cc 58% 68%, transparent 68% 82%, #c0c4cc 82% 100%);
+}
+
+.element-tooltip-content {
+  max-width: min(640px, calc(100vw - 64px));
+}
+
+.element-tooltip-title {
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+.element-tooltip-json {
+  margin: 0;
+  max-height: min(360px, calc(100vh - 180px));
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 12px;
+  line-height: 1.5;
+  font-family: Consolas, 'Courier New', monospace;
+}
+
+:deep(.element-selector-dialog) {
+  max-width: calc(100vw - 32px);
+}
+
+:deep(.element-selector-dialog .el-dialog__body) {
+  padding-top: 10px;
+}
+
+:deep(.element-data-tooltip) {
+  max-width: min(680px, calc(100vw - 40px));
+}
+
 .step-param {
   display: flex;
   align-items: center;
@@ -2196,10 +2535,26 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
+.step-param--stacked {
+  align-items: flex-start;
+}
+
 .step-param label {
   width: 120px;
   font-weight: 500;
   color: #333;
+}
+
+.step-param-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.step-help {
+  margin-top: 6px;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .execution-result {

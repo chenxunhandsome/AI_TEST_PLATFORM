@@ -2,6 +2,7 @@
 UI自动化测试执行服务
 支持 Playwright 和 Selenium 测试引擎
 """
+import re
 import time
 import json
 from datetime import datetime
@@ -21,7 +22,31 @@ from .models import (
     TestSuite, TestExecution, TestCase, TestCaseStep,
     TestCaseExecution, Element
 )
-from .variable_resolver import resolve_variables
+from .variable_resolver import clear_runtime_variables, resolve_variables, set_runtime_variable
+
+
+RUNTIME_VARIABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+
+def _normalize_runtime_variable_name(value):
+    return str(value or '').strip()
+
+
+def _store_runtime_variable_for_step(step_data, resolved_input_value=None, resolved_assert_value=None):
+    save_as = _normalize_runtime_variable_name(step_data.get('save_as'))
+    if not save_as or not RUNTIME_VARIABLE_NAME_RE.match(save_as):
+        return
+
+    value_to_store = None
+    if step_data.get('action_type') in {'fill', 'switchTab'}:
+        value_to_store = resolved_input_value
+    elif step_data.get('action_type') == 'assert':
+        value_to_store = resolved_assert_value
+
+    if value_to_store is None:
+        return
+
+    set_runtime_variable(save_as, value_to_store)
 
 
 class TestExecutor:
@@ -200,6 +225,7 @@ class TestExecutor:
                     'step_number': step.step_number,
                     'action_type': step.action_type,
                     'description': step.description,
+                    'save_as': step.save_as or '',
                     'input_value': step.input_value,
                     'wait_time': step.wait_time,
                     'assert_type': step.assert_type,
@@ -405,6 +431,7 @@ class TestExecutor:
         }
 
         try:
+            clear_runtime_variables()
             # 遍历预先准备好的步骤数据
             just_switched_tab = False  # 跟踪是否刚切换了标签页
             for step_data in case_data['steps']:
@@ -614,6 +641,8 @@ class TestExecutor:
             'success': False,
             'error': None
         }
+        resolved_input_value = step_data.get('input_value')
+        resolved_assert_value = step_data.get('assert_value')
 
         try:
             # 获取元素定位器
@@ -871,22 +900,22 @@ class TestExecutor:
 
                 elif step_data['action_type'] == 'fill':
                     # 解析输入值中的变量表达式
-                    resolved_value = resolve_variables(step_data['input_value'])
+                    resolved_input_value = resolve_variables(step_data['input_value'])
 
                     # 如果刚切换了标签页，增加超时时间
                     if step_data.get('_just_switched_tab'):
                         # 确保页面保持在前台
                         self.current_page.bring_to_front()
                         extended_timeout = max(step_data['wait_time'], 10000)
-                        self.current_page.fill(selector, resolved_value, timeout=extended_timeout)
+                        self.current_page.fill(selector, resolved_input_value, timeout=extended_timeout)
                     else:
-                        self.current_page.fill(selector, resolved_value, timeout=step_data['wait_time'])
+                        self.current_page.fill(selector, resolved_input_value, timeout=step_data['wait_time'])
 
                     step_result['success'] = True
                     # 记录解析后的值（用于调试）
-                    if resolved_value != step_data['input_value']:
-                        step_result['resolved_value'] = resolved_value
-                        print(f"  ✓ 变量解析: {step_data['input_value']} -> {resolved_value}")
+                    if resolved_input_value != step_data['input_value']:
+                        step_result['resolved_value'] = resolved_input_value
+                        print(f"  ✓ 变量解析: {step_data['input_value']} -> {resolved_input_value}")
 
 
                 elif step_data['action_type'] == 'getText':
@@ -1001,9 +1030,14 @@ class TestExecutor:
                             except Exception as e:
                                 print(f"    {idx}: [Error getting info] {str(e)}")
 
-                        if step_data['input_value'] and str(step_data['input_value']).isdigit():
+                        if step_data['input_value']:
+                            resolved_input_value = resolve_variables(step_data['input_value'])
+                            if resolved_input_value != step_data['input_value']:
+                                print(f"  ✓ 变量解析: {step_data['input_value']} -> {resolved_input_value}")
+
+                        if resolved_input_value and str(resolved_input_value).isdigit():
                             # 指定索引的情况
-                            idx = int(step_data['input_value'])
+                            idx = int(resolved_input_value)
                             if 0 <= idx < len(pages):
                                 target_index = idx
                                 should_switch = True
@@ -1127,9 +1161,14 @@ class TestExecutor:
                             except Exception as e:
                                 print(f"    {idx}: [Error getting info] {str(e)}")
 
-                        if step_data['input_value'] and str(step_data['input_value']).isdigit():
+                        if step_data['input_value']:
+                            resolved_input_value = resolve_variables(step_data['input_value'])
+                            if resolved_input_value != step_data['input_value']:
+                                print(f"  ✓ 变量解析: {step_data['input_value']} -> {resolved_input_value}")
+
+                        if resolved_input_value and str(resolved_input_value).isdigit():
                             # 指定索引的情况
-                            idx = int(step_data['input_value'])
+                            idx = int(resolved_input_value)
                             if 0 <= idx < len(pages):
                                 target_index = idx
                                 should_switch = True
@@ -1209,6 +1248,8 @@ class TestExecutor:
                     print(f"  - 页面标题: {self.current_page.title()}")
                     print(f"  - self.current_page已更新为新页面")
 
+            if step_result['success']:
+                _store_runtime_variable_for_step(step_data, resolved_input_value, resolved_assert_value)
         except Exception as e:
             # 格式化为详细的错误信息，与playwright_engine.py保持一致
             execution_time = round(time.time() - start_time, 2)
@@ -1288,6 +1329,7 @@ class TestExecutor:
                     'step_number': step.step_number,
                     'action_type': step.action_type,
                     'description': step.description,
+                    'save_as': step.save_as or '',
                     'input_value': step.input_value,
                     'wait_time': step.wait_time,
                     'assert_type': step.assert_type,
@@ -1745,6 +1787,7 @@ class TestExecutor:
         }
 
         try:
+            clear_runtime_variables()
             # 遍历预先准备好的步骤数据
             for step_data in case_data['steps']:
                 step_result = self.execute_step_selenium(driver, step_data)
@@ -1877,6 +1920,8 @@ class TestExecutor:
             'success': False,
             'error': None
         }
+        resolved_input_value = step_data.get('input_value')
+        resolved_assert_value = step_data.get('assert_value')
 
         try:
             if step_data['element']:
@@ -2099,18 +2144,18 @@ class TestExecutor:
                     element_obj = wait.until(EC.presence_of_element_located((by, locator_value)))
                     
                     # 解析输入值中的变量表达式
-                    resolved_value = resolve_variables(step_data['input_value'])
+                    resolved_input_value = resolve_variables(step_data['input_value'])
 
                     for attempt in range(max_retries):
                         try:
                             element_obj.clear()
-                            element_obj.send_keys(resolved_value)
+                            element_obj.send_keys(resolved_input_value)
                             step_result['success'] = True
 
                             # 记录解析后的值（用于调试）
-                            if resolved_value != step_data['input_value']:
-                                step_result['resolved_value'] = resolved_value
-                                print(f"  ✓ 变量解析: {step_data['input_value']} -> {resolved_value}")
+                            if resolved_input_value != step_data['input_value']:
+                                step_result['resolved_value'] = resolved_input_value
+                                print(f"  ✓ 变量解析: {step_data['input_value']} -> {resolved_input_value}")
 
                             break
                         except StaleElementReferenceException:
@@ -2229,8 +2274,13 @@ class TestExecutor:
                         # 简单的策略：切换到最后一个窗口（通常是新打开的）
                         # 如果指定了索引，则切换到指定索引
                         target_index = -1
-                        if step_data.get('input_value') and str(step_data['input_value']).isdigit():
-                            target_index = int(step_data['input_value'])
+                        if step_data.get('input_value'):
+                            resolved_input_value = resolve_variables(step_data['input_value'])
+                            if resolved_input_value != step_data['input_value']:
+                                print(f"  ✓ 变量解析: {step_data['input_value']} -> {resolved_input_value}")
+
+                        if resolved_input_value and str(resolved_input_value).isdigit():
+                            target_index = int(resolved_input_value)
 
                         if target_index >= 0 and target_index < len(handles):
                             driver.switch_to.window(handles[target_index])
@@ -2243,6 +2293,8 @@ class TestExecutor:
                         step_result['error'] = f"切换标签页失败: {str(e)}"
                         step_result['success'] = False
 
+            if step_result['success']:
+                _store_runtime_variable_for_step(step_data, resolved_input_value, resolved_assert_value)
         except TimeoutException as e:
             # 格式化为详细的错误信息，与selenium_engine.py保持一致
             execution_time = round(time.time() - start_time, 2)

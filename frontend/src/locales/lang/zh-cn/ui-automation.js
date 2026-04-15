@@ -1260,6 +1260,13 @@ export default {
       unknown: '未知'
     },
     // 表单验证消息
+    storeAs: '\u5b58\u50a8\u4e3a\uff1a',
+    storeAsPlaceholder: '\u8f93\u5165\u53d8\u91cf\u540d\uff0c\u4f8b\u5982 abcd',
+    storeAsHelp: '\u6b65\u9aa4\u6267\u884c\u6210\u529f\u540e\uff0c\u53ef\u901a\u8fc7 ${name} \u518d\u6b21\u5f15\u7528\u8be5\u503c',
+    stepSummaryPlaceholder: '\u7b2c {step} \u6b65\uff1a\u8bf7\u8f93\u5165\u6b65\u9aa4\u63cf\u8ff0',
+    stepDescriptionRequired: '\u8bf7\u586b\u5199\u7b2c {step} \u6b65\u7684\u6b65\u9aa4\u63cf\u8ff0',
+    storeAsInvalid: '\u7b2c {step} \u6b65\u7684\u53d8\u91cf\u540d\u4ec5\u5141\u8bb8\u5b57\u6bcd\u3001\u6570\u5b57\u548c\u4e0b\u5212\u7ebf\uff0c\u4e14\u9700\u4ee5\u5b57\u6bcd\u6216\u4e0b\u5212\u7ebf\u5f00\u5934',
+    elementPending: '\u8bf7\u9009\u62e9\u5143\u7d20',
     form: {
       nameRequired: '请输入测试用例名称'
     },

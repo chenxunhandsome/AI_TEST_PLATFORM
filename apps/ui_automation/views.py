@@ -1,5 +1,6 @@
-from rest_framework import viewsets, status
+﻿from rest_framework import viewsets, status
 from rest_framework.decorators import action, api_view
+from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.contrib.auth import get_user_model
@@ -43,9 +44,65 @@ from .serializers import (
     AICaseSerializer, AIExecutionRecordSerializer
 )
 from .operation_logger import log_operation
+from .variable_resolver import clear_runtime_variables, resolve_variables, set_runtime_variable
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
+STEP_RUNTIME_VARIABLE_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+
+def normalize_runtime_variable_name(value):
+    return str(value or '').strip()
+
+
+def validate_test_case_steps_payload(steps_data):
+    validated_steps = []
+
+    for index, raw_step in enumerate(steps_data or [], start=1):
+        step_data = dict(raw_step or {})
+        description = str(step_data.get('description', '') or '').strip()
+        if not description:
+            raise ValidationError(f'步骤 {index} 必须填写步骤描述')
+
+        save_as = normalize_runtime_variable_name(step_data.get('save_as'))
+        if save_as and not STEP_RUNTIME_VARIABLE_RE.match(save_as):
+            raise ValidationError(f'步骤 {index} 的存储变量名不合法: {save_as}')
+
+        step_data['description'] = description
+        step_data['save_as'] = save_as
+        validated_steps.append(step_data)
+
+    return validated_steps
+
+
+def resolve_step_runtime_payload(step):
+    resolved_input_value = step.input_value
+    if step.input_value:
+        resolved_input_value = resolve_variables(step.input_value)
+
+    resolved_assert_value = step.assert_value
+    if step.assert_value:
+        resolved_assert_value = resolve_variables(step.assert_value)
+
+    return resolved_input_value, resolved_assert_value
+
+
+def store_step_runtime_variable(step, action_type, resolved_input_value, resolved_assert_value):
+    save_as = normalize_runtime_variable_name(getattr(step, 'save_as', ''))
+    if not save_as:
+        return None
+
+    value_to_store = None
+    if action_type in {'fill', 'switchTab'}:
+        value_to_store = resolved_input_value
+    elif action_type == 'assert':
+        value_to_store = resolved_assert_value
+
+    if value_to_store is None:
+        return None
+
+    set_runtime_variable(save_as, value_to_store)
+    return save_as, value_to_store
 
 
 def extract_step_info(s, step_index):
@@ -316,13 +373,19 @@ class ElementViewSet(viewsets.ModelViewSet):
                 'id': element.id,
                 'name': element.name,
                 'type': 'element',
+                'description': element.description,
                 'element_type': element.element_type,
                 'locator_strategy': element.locator_strategy.name if element.locator_strategy else None,
                 'locator_value': element.locator_value,
+                'component_name': element.component_name,
                 'validation_status': element.validation_status,
                 'usage_count': element.usage_count,
                 'group_id': element.group_id,  # 用于前端关联到页面
                 'page': element.page,  # 保留向后兼容
+                'wait_timeout': element.wait_timeout,
+                'force_action': element.force_action,
+                'is_visible': element.is_visible,
+                'is_enabled': element.is_enabled,
                 'children': []
             }
             element_data_list.append(element_data)
@@ -952,13 +1015,13 @@ class TestCaseViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         # 创建测试用例
+        steps_data = validate_test_case_steps_payload(self.request.data.get('steps', []))
         instance = serializer.save(created_by=self.request.user)
 
         # 记录操作
         log_operation('create', 'test_case', instance.id, instance.name, self.request.user)
 
         # 处理步骤数据
-        steps_data = self.request.data.get('steps', [])
         logger.info(f"创建测试用例 {instance.id} 的步骤数据: {len(steps_data)} 个步骤")
 
         if steps_data:
@@ -992,7 +1055,8 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                         wait_time=step_data.get('wait_time', 1000),
                         assert_type=step_data.get('assert_type', ''),
                         assert_value=step_data.get('assert_value', ''),
-                        description=step_data.get('description', '')
+                        description=step_data.get('description', ''),
+                        save_as=step_data.get('save_as', '')
                     )
                     created_count += 1
                 except Exception as e:
@@ -1063,7 +1127,8 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                     wait_time=step.wait_time,
                     assert_type=step.assert_type,
                     assert_value=step.assert_value,
-                    description=step.description
+                    description=step.description,
+                    save_as=step.save_as
                 ))
 
             if new_steps:
@@ -1081,13 +1146,13 @@ class TestCaseViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         # 更新测试用例步骤
+        steps_data = validate_test_case_steps_payload(self.request.data.get('steps', []))
         instance = serializer.save()
 
         # 记录操作
         log_operation('edit', 'test_case', instance.id, instance.name, self.request.user)
 
         # 处理步骤数据
-        steps_data = self.request.data.get('steps', [])
         logger.info(f"更新测试用例 {instance.id} 的步骤数据: {len(steps_data)} 个步骤")
 
         if steps_data:
@@ -1126,7 +1191,8 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                         wait_time=step_data.get('wait_time', 1000),
                         assert_type=step_data.get('assert_type', ''),
                         assert_value=step_data.get('assert_value', ''),
-                        description=step_data.get('description', '')
+                        description=step_data.get('description', ''),
+                        save_as=step_data.get('save_as', '')
                     )
                     created_count += 1
                 except Exception as e:
@@ -1417,6 +1483,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                     'step': step,
                     'action_type': step.action_type,
                     'description': step.description,
+                    'save_as': step.save_as,
                     'input_value': step.input_value,
                     'wait_time': step.wait_time,
                     'assert_type': step.assert_type,
@@ -1469,6 +1536,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
 
                     # 创建Selenium引擎实例
                     engine = SeleniumTestEngine(browser_type=browser_type, headless=headless)
+                    clear_runtime_variables()
 
                     try:
                         # 启动浏览器
@@ -1542,7 +1610,17 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                                     execution_logs.append(f"  (此步骤不需要元素)")
 
                                 try:
+                                    resolved_input_value, resolved_assert_value = resolve_step_runtime_payload(step)
+                                    step.input_value = resolved_input_value
+                                    step.assert_value = resolved_assert_value
                                     success, step_log, screenshot_base64 = engine.execute_step(step, element_data or {})
+                                    if success:
+                                        store_step_runtime_variable(
+                                            step,
+                                            action_type,
+                                            resolved_input_value,
+                                            resolved_assert_value
+                                        )
                                     execution_logs.append(f"  {step_log}")
                                     execution_logs.append("")
 
@@ -1674,6 +1752,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
 
                         # 创建Playwright引擎实例
                         engine = PlaywrightTestEngine(browser_type=browser_type, headless=headless)
+                        clear_runtime_variables()
 
                         try:
                             # 启动浏览器
@@ -1730,8 +1809,18 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                                     # 执行步骤
                                     try:
                                         execution_logs.append(f"  [调试] 准备执行步骤...")
+                                        resolved_input_value, resolved_assert_value = resolve_step_runtime_payload(step)
+                                        step.input_value = resolved_input_value
+                                        step.assert_value = resolved_assert_value
                                         success, step_log, screenshot_base64 = await engine.execute_step(step,
                                                                                                          element_data or {})
+                                        if success:
+                                            store_step_runtime_variable(
+                                                step,
+                                                action_type,
+                                                resolved_input_value,
+                                                resolved_assert_value
+                                            )
                                         execution_logs.append(f"  [调试] 步骤执行完成, success={success}")
 
                                         execution_logs.append(f"  {step_log}")
@@ -2285,6 +2374,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                         'step': step,
                                         'action_type': step.action_type,
                                         'description': step.description,
+                                        'save_as': step.save_as,
                                         'input_value': step.input_value,
                                         'wait_time': step.wait_time,
                                         'assert_type': step.assert_type,
@@ -2333,6 +2423,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
 
                                     # 创建Selenium引擎实例并执行
                                     engine = SeleniumTestEngine(browser_type=task.browser, headless=task.headless)
+                                    clear_runtime_variables()
 
                                     try:
                                         # 启动浏览器
@@ -2354,8 +2445,18 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                             action_type = step_info['action_type']
                                             element_data = step_info['element_data']
 
+                                            resolved_input_value, resolved_assert_value = resolve_step_runtime_payload(step)
+                                            step.input_value = resolved_input_value
+                                            step.assert_value = resolved_assert_value
                                             success, step_log, screenshot_base64 = engine.execute_step(step,
                                                                                                        element_data or {})
+                                            if success:
+                                                store_step_runtime_variable(
+                                                    step,
+                                                    action_type,
+                                                    resolved_input_value,
+                                                    resolved_assert_value
+                                                )
 
                                             step_results.append({
                                                 'step_number': i,
@@ -2407,6 +2508,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                         browser_type = browser_map.get(task.browser, 'chromium')
 
                                         engine = PlaywrightTestEngine(browser_type=browser_type, headless=task.headless)
+                                        clear_runtime_variables()
 
                                         try:
                                             # 启动浏览器
@@ -2431,8 +2533,18 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                                 action_type = step_info['action_type']
                                                 element_data = step_info['element_data']
 
+                                                resolved_input_value, resolved_assert_value = resolve_step_runtime_payload(step)
+                                                step.input_value = resolved_input_value
+                                                step.assert_value = resolved_assert_value
                                                 success, step_log, screenshot_base64 = await engine.execute_step(step,
                                                                                                                  element_data or {})
+                                                if success:
+                                                    store_step_runtime_variable(
+                                                        step,
+                                                        action_type,
+                                                        resolved_input_value,
+                                                        resolved_assert_value
+                                                    )
 
                                                 step_results.append({
                                                     'step_number': i,

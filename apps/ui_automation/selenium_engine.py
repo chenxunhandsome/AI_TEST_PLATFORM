@@ -3,8 +3,9 @@ Selenium自动化测试执行引擎
 用于驱动真实浏览器执行UI自动化测试
 """
 import base64
+import re
 import time
-from .variable_resolver import resolve_variables
+from .variable_resolver import resolve_variables, set_runtime_variable
 import os
 import shutil
 from datetime import datetime
@@ -18,6 +19,19 @@ from selenium.common.exceptions import TimeoutException, NoSuchElementException,
 import logging
 
 logger = logging.getLogger(__name__)
+RUNTIME_VARIABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+
+def append_runtime_variable_log(step, log, value):
+    save_as = str(getattr(step, 'save_as', '') or '').strip()
+    if not save_as:
+        return log
+
+    if not RUNTIME_VARIABLE_NAME_RE.match(save_as):
+        return f"{log}\n  - 跳过变量存储: 变量名 '{save_as}' 不合法"
+
+    set_runtime_variable(save_as, value)
+    return f"{log}\n  - 已存储变量: ${{{save_as}}} = '{value}'"
 
 
 class SeleniumTestEngine:
