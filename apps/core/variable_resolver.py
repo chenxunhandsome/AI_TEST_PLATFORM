@@ -204,9 +204,15 @@ class VariableResolver:
             return runtime_variables[func_name]
 
         if func_name in self.functions:
-            return self.functions[func_name](func_name, args)
+            return self._invoke_function(func_name, args)
         else:
             raise ValueError(f"未知函数: {func_name}")
+
+    def _invoke_function(self, func_name, args):
+        handler = self.functions[func_name]
+        if func_name in {'timestamp', 'timestamp_sec', 'datetime', 'date', 'time', 'date_offset'}:
+            return handler(*args)
+        return handler(func_name, args)
     
     def _parse_args(self, args_str):
         """解析函数参数

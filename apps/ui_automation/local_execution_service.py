@@ -10,37 +10,76 @@ from django.utils import timezone
 from .models import TestCaseStep
 from .playwright_engine import PlaywrightTestEngine
 from .selenium_engine import SeleniumTestEngine
-from .variable_resolver import resolve_variables, set_runtime_variable
+from .variable_resolver import (
+    clear_runtime_variables,
+    get_runtime_variables,
+    resolve_variables,
+    set_runtime_variable,
+    set_runtime_variables,
+)
 from .project_runtime import initialize_project_runtime_variables
 
 logger = logging.getLogger(__name__)
 
 
+def _normalize_runtime_variable_name(value):
+    return str(value or '').strip()
+
+
+def _resolve_serialized_step_payload(step):
+    resolved_input_value = step.input_value or ''
+    if step.input_value:
+        resolved_input_value = resolve_variables(step.input_value)
+
+    resolved_assert_value = step.assert_value or ''
+    if step.assert_value:
+        resolved_assert_value = resolve_variables(step.assert_value)
+
+    save_as = _normalize_runtime_variable_name(step.save_as)
+    if save_as:
+        if step.action_type in {'fill', 'switchTab'}:
+            set_runtime_variable(save_as, resolved_input_value)
+        elif step.action_type == 'assert':
+            set_runtime_variable(save_as, resolved_assert_value)
+
+    return {
+        'step_number': step.step_number,
+        'action_type': step.action_type,
+        'description': step.description or '',
+        'save_as': save_as,
+        'input_value': resolved_input_value,
+        'wait_time': step.wait_time,
+        'assert_type': step.assert_type or '',
+        'assert_value': resolved_assert_value,
+    }
+
+
 def build_test_case_payload(test_case):
     """将数据库中的测试用例转换为可在本地 runner 上执行的 payload。"""
     steps = []
-    for step in test_case.steps.all().order_by('step_number'):
-        element_data = None
-        if step.element:
-            element_data = {
-                'locator_strategy': step.element.locator_strategy.name if step.element.locator_strategy else 'css',
-                'locator_value': step.element.locator_value,
-                'name': step.element.name,
-                'wait_timeout': step.element.wait_timeout,
-                'force_action': step.element.force_action,
-            }
+    previous_runtime_variables = get_runtime_variables()
 
-        steps.append({
-            'step_number': step.step_number,
-            'action_type': step.action_type,
-            'description': step.description or '',
-            'save_as': step.save_as or '',
-            'input_value': step.input_value or '',
-            'wait_time': step.wait_time,
-            'assert_type': step.assert_type or '',
-            'assert_value': step.assert_value or '',
-            'element_data': element_data,
-        })
+    try:
+        initialize_project_runtime_variables(project=test_case.project)
+
+        for step in test_case.steps.all().order_by('step_number'):
+            element_data = None
+            if step.element:
+                element_data = {
+                    'locator_strategy': step.element.locator_strategy.name if step.element.locator_strategy else 'css',
+                    'locator_value': step.element.locator_value,
+                    'name': step.element.name,
+                    'wait_timeout': step.element.wait_timeout,
+                    'force_action': step.element.force_action,
+                }
+
+            step_payload = _resolve_serialized_step_payload(step)
+            step_payload['element_data'] = element_data
+            steps.append(step_payload)
+    finally:
+        clear_runtime_variables()
+        if previous_runtime_variables:
+            set_runtime_variables(previous_runtime_variables)
 
     return {
         'test_case_id': test_case.id,
