@@ -9,6 +9,7 @@ from .models import (
     AICase, AIExecutionRecord
 )
 from django.contrib.auth import get_user_model
+from .project_runtime import normalize_project_global_variables
 
 User = get_user_model()
 
@@ -39,7 +40,7 @@ class UiProjectSerializer(serializers.ModelSerializer):
         model = UiProject
         fields = (
             'id', 'name', 'description', 'status', 'base_url',
-            'start_date', 'end_date', 'owner', 'members',
+            'start_date', 'end_date', 'owner', 'members', 'global_variables',
             'created_at', 'updated_at'
         )
         read_only_fields = ('created_at', 'updated_at')
@@ -51,14 +52,21 @@ class UiProjectCreateSerializer(serializers.ModelSerializer):
         write_only=True,
         required=False
     )
+    global_variables = serializers.JSONField(required=False)
 
     class Meta:
         model = UiProject
-        fields = ('name', 'description', 'status', 'base_url', 'start_date', 'end_date', 'member_ids')
+        fields = ('name', 'description', 'status', 'base_url', 'start_date', 'end_date', 'member_ids', 'global_variables')
 
     def validate_member_ids(self, value):
         resolve_member_ids(value)
         return value
+
+    def validate_global_variables(self, value):
+        try:
+            return normalize_project_global_variables(value, strict=True)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc))
 
     def create(self, validated_data):
         member_ids = validated_data.pop('member_ids', [])
@@ -73,14 +81,21 @@ class UiProjectUpdateSerializer(serializers.ModelSerializer):
         write_only=True,
         required=False
     )
+    global_variables = serializers.JSONField(required=False)
 
     class Meta:
         model = UiProject
-        fields = ('name', 'description', 'status', 'base_url', 'start_date', 'end_date', 'member_ids')
+        fields = ('name', 'description', 'status', 'base_url', 'start_date', 'end_date', 'member_ids', 'global_variables')
 
     def validate_member_ids(self, value):
         resolve_member_ids(value)
         return value
+
+    def validate_global_variables(self, value):
+        try:
+            return normalize_project_global_variables(value, strict=True)
+        except ValueError as exc:
+            raise serializers.ValidationError(str(exc))
 
     def update(self, instance, validated_data):
         member_ids = validated_data.pop('member_ids', None)

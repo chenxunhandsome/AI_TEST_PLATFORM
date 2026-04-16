@@ -72,3 +72,6 @@ docker-compose*.yml
 nginx.conf
 Makefile
 build-multiplatform.sh
+
+# UI automation migrations must be versioned with code changes
+!apps/ui_automation/migrations/*.py

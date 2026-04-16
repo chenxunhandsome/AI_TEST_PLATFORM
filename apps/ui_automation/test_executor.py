@@ -11,6 +11,7 @@ from django.db import connection
 from playwright.sync_api import sync_playwright
 from selenium import webdriver
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options as ChromeOptions
@@ -22,7 +23,8 @@ from .models import (
     TestSuite, TestExecution, TestCase, TestCaseStep,
     TestCaseExecution, Element
 )
-from .variable_resolver import clear_runtime_variables, resolve_variables, set_runtime_variable
+from .variable_resolver import resolve_variables, set_runtime_variable
+from .project_runtime import initialize_project_runtime_variables
 
 
 RUNTIME_VARIABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
@@ -47,6 +49,41 @@ def _store_runtime_variable_for_step(step_data, resolved_input_value=None, resol
         return
 
     set_runtime_variable(save_as, value_to_store)
+
+
+def _resolve_drag_target_payload(raw_input):
+    if not raw_input:
+        raise ValueError('拖拽步骤缺少目标元素配置')
+
+    payload = raw_input
+    if isinstance(raw_input, str):
+        payload = json.loads(raw_input)
+
+    if not isinstance(payload, dict):
+        raise ValueError('拖拽目标配置格式不正确')
+
+    target_element_id = payload.get('target_element_id') or payload.get('element_id')
+    if target_element_id:
+        try:
+            target_element = Element.objects.select_related('locator_strategy').get(id=int(target_element_id))
+            return {
+                'locator_strategy': target_element.locator_strategy.name if target_element.locator_strategy else 'css',
+                'locator_value': target_element.locator_value,
+                'name': target_element.name,
+            }
+        except (ValueError, TypeError, Element.DoesNotExist):
+            pass
+
+    locator_strategy = payload.get('target_locator_strategy') or payload.get('locator_strategy')
+    locator_value = payload.get('target_locator_value') or payload.get('locator_value')
+    if not locator_strategy or not locator_value:
+        raise ValueError('拖拽目标元素缺少定位信息')
+
+    return {
+        'locator_strategy': locator_strategy,
+        'locator_value': locator_value,
+        'name': payload.get('target_element_name') or payload.get('name') or '目标元素',
+    }
 
 
 class TestExecutor:
@@ -214,6 +251,7 @@ class TestExecutor:
                 'id': test_case.id,
                 'name': test_case.name,
                 'project_id': self.test_suite.project.id,
+                'project_global_variables': self.test_suite.project.global_variables or [],
                 'steps': []
             }
 
@@ -431,7 +469,7 @@ class TestExecutor:
         }
 
         try:
-            clear_runtime_variables()
+            initialize_project_runtime_variables(global_variables=case_data.get('project_global_variables'))
             # 遍历预先准备好的步骤数据
             just_switched_tab = False  # 跟踪是否刚切换了标签页
             for step_data in case_data['steps']:
@@ -948,6 +986,47 @@ class TestExecutor:
 
                 elif step_data['action_type'] == 'scroll':
                     self.current_page.locator(selector).scroll_into_view_if_needed()
+                    step_result['success'] = True
+
+                elif step_data['action_type'] == 'drag':
+                    target_element = _resolve_drag_target_payload(resolved_input_value)
+                    target_locator_strategy = target_element['locator_strategy'].lower()
+                    target_locator_value = target_element['locator_value']
+
+                    if target_locator_strategy in ['css', 'css selector']:
+                        target_selector = target_locator_value
+                    elif target_locator_strategy == 'xpath':
+                        target_selector = f'xpath={target_locator_value}'
+                    elif target_locator_strategy == 'id':
+                        target_selector = f'#{target_locator_value}'
+                    elif target_locator_strategy == 'name':
+                        target_selector = f'[name="{target_locator_value}"]'
+                    elif target_locator_strategy == 'text':
+                        target_selector = f'text={target_locator_value}'
+                    else:
+                        target_selector = target_locator_value
+
+                    source_locator = self.current_page.locator(selector).first
+                    target_locator = self.current_page.locator(target_selector).first
+                    source_locator.scroll_into_view_if_needed()
+                    target_locator.scroll_into_view_if_needed()
+
+                    source_box = source_locator.bounding_box()
+                    target_box = target_locator.bounding_box()
+                    if not source_box or not target_box:
+                        raise ValueError('拖拽时无法获取起点或终点元素坐标')
+
+                    source_x = source_box['x'] + source_box['width'] / 2
+                    source_y = source_box['y'] + source_box['height'] / 2
+                    target_x = target_box['x'] + target_box['width'] / 2
+                    target_y = target_box['y'] + target_box['height'] / 2
+
+                    self.current_page.mouse.move(source_x, source_y)
+                    self.current_page.mouse.down()
+                    time.sleep(0.2)
+                    self.current_page.mouse.move(target_x, target_y, steps=20)
+                    time.sleep(0.1)
+                    self.current_page.mouse.up()
                     step_result['success'] = True
 
                 elif step_data['action_type'] == 'screenshot':
@@ -1787,7 +1866,7 @@ class TestExecutor:
         }
 
         try:
-            clear_runtime_variables()
+            initialize_project_runtime_variables(global_variables=case_data.get('project_global_variables'))
             # 遍历预先准备好的步骤数据
             for step_data in case_data['steps']:
                 step_result = self.execute_step_selenium(driver, step_data)
@@ -2216,6 +2295,49 @@ class TestExecutor:
                                 print(f"✓ 元素重新定位成功")
                             else:
                                 raise
+
+                elif step_data['action_type'] == 'drag':
+                    element_obj = wait.until(EC.presence_of_element_located((by, locator_value)))
+                    target_element = _resolve_drag_target_payload(resolve_variables(step_data['input_value']))
+                    target_strategy = target_element['locator_strategy'].lower()
+                    target_locator_value = target_element['locator_value']
+
+                    if target_strategy in ['css', 'css selector']:
+                        target_by = By.CSS_SELECTOR
+                    elif target_strategy == 'xpath':
+                        target_by = By.XPATH
+                    elif target_strategy == 'id':
+                        target_by = By.ID
+                    elif target_strategy == 'name':
+                        target_by = By.NAME
+                    elif target_strategy in ['class', 'class name']:
+                        target_by = By.CLASS_NAME
+                    elif target_strategy in ['tag', 'tag name']:
+                        target_by = By.TAG_NAME
+                    elif target_strategy == 'link text':
+                        target_by = By.LINK_TEXT
+                    elif target_strategy == 'partial link text':
+                        target_by = By.PARTIAL_LINK_TEXT
+                    elif target_strategy == 'text':
+                        target_by = By.XPATH
+                        target_locator_value = f"//*[contains(text(), '{target_locator_value}')]"
+                    else:
+                        target_by = By.CSS_SELECTOR
+
+                    target_element_obj = wait.until(EC.presence_of_element_located((target_by, target_locator_value)))
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", element_obj)
+                    driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", target_element_obj)
+                    time.sleep(0.2)
+
+                    ActionChains(driver) \
+                        .move_to_element(element_obj) \
+                        .click_and_hold(element_obj) \
+                        .pause(0.2) \
+                        .move_to_element(target_element_obj) \
+                        .pause(0.1) \
+                        .release() \
+                        .perform()
+                    step_result['success'] = True
 
                 elif step_data['action_type'] == 'screenshot':
                     screenshot_path = f'screenshots/step_{step_data["step_number"]}.png'

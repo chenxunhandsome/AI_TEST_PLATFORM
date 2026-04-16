@@ -118,6 +118,26 @@ export function deleteElement(id) {
   })
 }
 
+export function exportElements(params) {
+  return request({
+    url: '/ui-automation/elements/export/',
+    method: 'get',
+    params,
+    responseType: 'blob'
+  })
+}
+
+export function importElements(data) {
+  return request({
+    url: '/ui-automation/elements/import/',
+    method: 'post',
+    data,
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    }
+  })
+}
+
 // 测试脚本相关API
 
 // 获取测试脚本列表
@@ -731,6 +751,26 @@ export function copyTestCase(id) {
   return request({
     url: `/ui-automation/test-cases/${id}/copy_case/`,
     method: 'post'
+  })
+}
+
+export function exportTestCases(params) {
+  return request({
+    url: '/ui-automation/test-cases/export/',
+    method: 'get',
+    params,
+    responseType: 'blob'
+  })
+}
+
+export function importTestCases(data) {
+  return request({
+    url: '/ui-automation/test-cases/import/',
+    method: 'post',
+    data,
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    }
   })
 }
 

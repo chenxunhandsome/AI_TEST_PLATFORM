@@ -8,13 +8,14 @@ from django.shortcuts import get_object_or_404
 from django.http import HttpResponse
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 import logging
 import json
 import re
 import random
 import time
+from urllib.parse import quote
 
 from .models import (
     UiProject, LocatorStrategy, Element, TestScript, TestSuite,
@@ -44,15 +45,318 @@ from .serializers import (
     AICaseSerializer, AIExecutionRecordSerializer
 )
 from .operation_logger import log_operation
-from .variable_resolver import clear_runtime_variables, resolve_variables, set_runtime_variable
+from .variable_resolver import resolve_variables, set_runtime_variable
+from .project_runtime import (
+    initialize_project_runtime_variables,
+)
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
 STEP_RUNTIME_VARIABLE_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+IMPORT_EXPORT_FORMAT_VERSION = 1
 
 
 def normalize_runtime_variable_name(value):
     return str(value or '').strip()
+
+
+def get_accessible_projects_for_user(user):
+    return UiProject.objects.filter(
+        models.Q(owner=user) | models.Q(members=user)
+    ).distinct()
+
+
+def get_accessible_project_for_request(request, project_id):
+    if not project_id:
+        raise ValidationError('需要指定项目ID')
+
+    try:
+        project_id = int(project_id)
+    except (TypeError, ValueError):
+        raise ValidationError('项目ID格式不正确')
+
+    return get_object_or_404(get_accessible_projects_for_user(request.user), id=project_id)
+
+
+def normalize_import_overwrite_flag(value):
+    if isinstance(value, bool):
+        return value
+    return str(value or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def make_json_download_response(payload, filename):
+    response = HttpResponse(
+        json.dumps(payload, ensure_ascii=False, indent=2),
+        content_type='application/json; charset=utf-8'
+    )
+    response['Content-Disposition'] = f"attachment; filename*=UTF-8''{quote(filename)}"
+    return response
+
+
+def parse_uploaded_manifest(request):
+    uploaded_file = request.FILES.get('file')
+    manifest_data = request.data.get('manifest')
+
+    if uploaded_file is not None:
+        try:
+            return json.loads(uploaded_file.read().decode('utf-8'))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValidationError(f'导入文件解析失败: {exc}')
+
+    if isinstance(manifest_data, dict):
+        return manifest_data
+
+    if isinstance(manifest_data, str) and manifest_data.strip():
+        try:
+            return json.loads(manifest_data)
+        except json.JSONDecodeError as exc:
+            raise ValidationError(f'导入内容解析失败: {exc}')
+
+    raise ValidationError('请上传 JSON 文件')
+
+
+def get_element_group_path(group):
+    if not group:
+        return []
+
+    path = []
+    current = group
+    while current:
+        path.append(current.name)
+        current = current.parent_group
+    return list(reversed(path))
+
+
+def ensure_element_group(project, group_path):
+    if not group_path:
+        return None
+
+    parent_group = None
+    for index, group_name in enumerate(group_path):
+        if not group_name:
+            continue
+        group_defaults = {'order': index}
+        group, _ = ElementGroup.objects.get_or_create(
+            project=project,
+            parent_group=parent_group,
+            name=group_name,
+            defaults=group_defaults
+        )
+        parent_group = group
+    return parent_group
+
+
+def normalize_backup_locators(backup_locators):
+    if not backup_locators:
+        return []
+
+    normalized = []
+    if isinstance(backup_locators, list):
+        for item in backup_locators:
+            if not isinstance(item, dict):
+                continue
+            strategy = str(item.get('strategy', '') or '').strip()
+            value = str(item.get('value', '') or '').strip()
+            if strategy and value:
+                normalized.append({'strategy': strategy, 'value': value})
+    return normalized
+
+
+def normalize_import_int(value, default):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_import_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value in [None, '']:
+        return default
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def get_locator_strategy_by_name(name):
+    strategy_name = str(name or '').strip()
+    if not strategy_name:
+        raise ValidationError('定位策略不能为空')
+
+    strategy = LocatorStrategy.objects.filter(name__iexact=strategy_name).first()
+    if not strategy:
+        raise ValidationError(f'定位策略不存在: {strategy_name}')
+    return strategy
+
+
+def build_element_manifest_item(element):
+    return {
+        'name': element.name,
+        'description': element.description or '',
+        'element_type': element.element_type,
+        'page': element.page or '',
+        'component_name': element.component_name or '',
+        'group_path': get_element_group_path(element.group),
+        'locator_strategy': element.locator_strategy.name if element.locator_strategy else '',
+        'locator_value': element.locator_value,
+        'backup_locators': normalize_backup_locators(element.backup_locators),
+        'wait_timeout': element.wait_timeout,
+        'is_unique': element.is_unique,
+        'is_visible': element.is_visible,
+        'is_enabled': element.is_enabled,
+        'force_action': element.force_action,
+    }
+
+
+def match_existing_element(project, locator_strategy, locator_value, page):
+    return Element.objects.filter(
+        project=project,
+        locator_strategy=locator_strategy,
+        locator_value=locator_value,
+        page=page or ''
+    ).first()
+
+
+def resolve_imported_element(project, element_data, created_by=None, overwrite=False):
+    locator_strategy = get_locator_strategy_by_name(element_data.get('locator_strategy'))
+    locator_value = str(element_data.get('locator_value', '') or '').strip()
+    if not locator_value:
+        raise ValidationError('元素定位值不能为空')
+
+    group = ensure_element_group(project, element_data.get('group_path') or [])
+    existing_element = match_existing_element(project, locator_strategy, locator_value, element_data.get('page'))
+
+    defaults = {
+        'group': group,
+        'name': str(element_data.get('name', '') or '').strip() or locator_value,
+        'description': str(element_data.get('description', '') or '').strip(),
+        'element_type': str(element_data.get('element_type', '') or 'BUTTON'),
+        'page': str(element_data.get('page', '') or '').strip(),
+        'component_name': str(element_data.get('component_name', '') or '').strip(),
+        'locator_strategy': locator_strategy,
+        'locator_value': locator_value,
+        'backup_locators': normalize_backup_locators(element_data.get('backup_locators')),
+        'wait_timeout': normalize_import_int(element_data.get('wait_timeout'), 5),
+        'is_unique': normalize_import_bool(element_data.get('is_unique', False), False),
+        'is_visible': normalize_import_bool(element_data.get('is_visible', True), True),
+        'is_enabled': normalize_import_bool(element_data.get('is_enabled', True), True),
+        'force_action': normalize_import_bool(element_data.get('force_action', False), False),
+    }
+
+    if existing_element:
+        if overwrite:
+            for field_name, field_value in defaults.items():
+                setattr(existing_element, field_name, field_value)
+            existing_element.save()
+            return existing_element, 'updated'
+        return existing_element, 'reused'
+
+    element = Element.objects.create(
+        project=project,
+        created_by=created_by,
+        **defaults
+    )
+    return element, 'created'
+
+
+def build_drag_input_payload(target_element):
+    if not target_element:
+        return ''
+
+    return json.dumps({
+        'target_element_id': target_element.id,
+        'target_element_name': target_element.name,
+        'target_locator_strategy': target_element.locator_strategy.name if target_element.locator_strategy else 'css',
+        'target_locator_value': target_element.locator_value
+    }, ensure_ascii=False)
+
+
+def build_test_case_manifest_item(test_case):
+    steps = []
+    for step in test_case.steps.select_related('element', 'element__locator_strategy').order_by('step_number'):
+        drag_target_element = None
+        if step.action_type == 'drag' and step.input_value:
+            try:
+                drag_payload = json.loads(step.input_value)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                drag_payload = {}
+
+            target_element_id = drag_payload.get('target_element_id') or drag_payload.get('element_id')
+            if target_element_id:
+                drag_target_element = Element.objects.filter(
+                    project=test_case.project
+                ).select_related('locator_strategy', 'group').filter(id=target_element_id).first()
+
+        steps.append({
+            'step_number': step.step_number,
+            'action_type': step.action_type,
+            'description': step.description or '',
+            'input_value': step.input_value or '',
+            'wait_time': step.wait_time,
+            'assert_type': step.assert_type or '',
+            'assert_value': step.assert_value or '',
+            'save_as': step.save_as or '',
+            'element': build_element_manifest_item(step.element) if step.element else None,
+            'drag_target_element': build_element_manifest_item(drag_target_element) if drag_target_element else None,
+        })
+
+    return {
+        'name': test_case.name,
+        'description': test_case.description or '',
+        'status': test_case.status,
+        'priority': test_case.priority,
+        'folder_name': test_case.folder.name if getattr(test_case, 'folder', None) else '',
+        'steps': steps,
+    }
+
+
+def ensure_test_case_folder(project, folder_name, created_by=None):
+    folder_name = str(folder_name or '').strip()
+    if not folder_name:
+        return None
+
+    folder, created = TestCaseFolder.objects.get_or_create(
+        project=project,
+        name=folder_name,
+        defaults={'created_by': created_by}
+    )
+    if created_by and created and not folder.created_by:
+        folder.created_by = created_by
+        folder.save(update_fields=['created_by'])
+    return folder
+
+
+def resolve_imported_test_case_step(project, step_data, created_by=None, overwrite=False):
+    element = None
+    if isinstance(step_data.get('element'), dict):
+        element, _ = resolve_imported_element(
+            project,
+            step_data['element'],
+            created_by=created_by,
+            overwrite=overwrite
+        )
+
+    input_value = step_data.get('input_value', '') or ''
+    if step_data.get('action_type') == 'drag':
+        drag_target_element = None
+        if isinstance(step_data.get('drag_target_element'), dict):
+            drag_target_element, _ = resolve_imported_element(
+                project,
+                step_data['drag_target_element'],
+                created_by=created_by,
+                overwrite=overwrite
+            )
+        input_value = build_drag_input_payload(drag_target_element)
+
+    return {
+        'action_type': step_data.get('action_type', 'click'),
+        'description': str(step_data.get('description', '') or '').strip(),
+        'input_value': input_value,
+        'wait_time': normalize_import_int(step_data.get('wait_time'), 1000),
+        'assert_type': str(step_data.get('assert_type', '') or '').strip(),
+        'assert_value': step_data.get('assert_value', '') or '',
+        'save_as': str(step_data.get('save_as', '') or '').strip(),
+        'element': element,
+    }
 
 
 def validate_test_case_steps_payload(steps_data):
@@ -61,8 +365,15 @@ def validate_test_case_steps_payload(steps_data):
     for index, raw_step in enumerate(steps_data or [], start=1):
         step_data = dict(raw_step or {})
         description = str(step_data.get('description', '') or '').strip()
+        action_type = str(step_data.get('action_type', '') or '').strip()
         if not description:
             raise ValidationError(f'步骤 {index} 必须填写步骤描述')
+
+        if action_type == 'drag':
+            if not step_data.get('element') and not step_data.get('element_id'):
+                raise ValidationError(f'步骤 {index} 的拖拽操作必须指定起始元素')
+            if not str(step_data.get('input_value', '') or '').strip():
+                raise ValidationError(f'步骤 {index} 的拖拽操作必须指定目标元素')
 
         save_as = normalize_runtime_variable_name(step_data.get('save_as'))
         if save_as and not STEP_RUNTIME_VARIABLE_RE.match(save_as):
@@ -309,6 +620,70 @@ class ElementViewSet(viewsets.ModelViewSet):
         elements = self.get_queryset().filter(project_id=project_id)
         tree_data = self._build_element_tree(elements)
         return Response(tree_data)
+
+    @action(detail=False, methods=['get'], url_path='export')
+    def export_elements(self, request):
+        project = get_accessible_project_for_request(request, request.query_params.get('project'))
+        ids_param = request.query_params.get('ids', '').strip()
+
+        queryset = self.get_queryset().filter(project=project)
+        if ids_param:
+            element_ids = []
+            for raw_id in ids_param.split(','):
+                raw_id = raw_id.strip()
+                if not raw_id:
+                    continue
+                try:
+                    element_ids.append(int(raw_id))
+                except ValueError:
+                    raise ValidationError(f'元素ID格式不正确: {raw_id}')
+            queryset = queryset.filter(id__in=element_ids)
+
+        exported_elements = [build_element_manifest_item(element) for element in queryset]
+        payload = {
+            'format': 'ui_automation_elements',
+            'version': IMPORT_EXPORT_FORMAT_VERSION,
+            'source_project': {
+                'id': project.id,
+                'name': project.name,
+            },
+            'exported_at': timezone.now().isoformat(),
+            'elements': exported_elements,
+        }
+        filename = f'ui-elements-project-{project.id}-{timezone.now().strftime("%Y%m%d%H%M%S")}.json'
+        return make_json_download_response(payload, filename)
+
+    @action(detail=False, methods=['post'], url_path='import')
+    def import_elements(self, request):
+        project = get_accessible_project_for_request(request, request.data.get('project'))
+        overwrite = normalize_import_overwrite_flag(request.data.get('overwrite'))
+        manifest = parse_uploaded_manifest(request)
+
+        if manifest.get('format') != 'ui_automation_elements':
+            raise ValidationError('导入文件格式不正确')
+
+        elements_data = manifest.get('elements') or []
+        if not isinstance(elements_data, list) or not elements_data:
+            raise ValidationError('导入文件中没有可用的元素数据')
+
+        summary = {'created': 0, 'updated': 0, 'reused': 0}
+
+        with transaction.atomic():
+            for element_data in elements_data:
+                _, action = resolve_imported_element(
+                    project,
+                    element_data,
+                    created_by=request.user,
+                    overwrite=overwrite
+                )
+                summary[action] = summary.get(action, 0) + 1
+
+        return Response({
+            'success': True,
+            'message': '元素导入成功',
+            'summary': summary,
+            'project': {'id': project.id, 'name': project.name},
+        })
 
     @action(detail=True, methods=['post'])
     def add_backup_locator(self, request, pk=None):
@@ -1097,6 +1472,119 @@ class TestCaseViewSet(viewsets.ModelViewSet):
             'test_cases': serializer.data
         })
 
+    @action(detail=False, methods=['get'], url_path='export')
+    def export_test_cases(self, request):
+        project = get_accessible_project_for_request(request, request.query_params.get('project'))
+        ids_param = request.query_params.get('ids', '').strip()
+
+        queryset = self.get_queryset().filter(project=project).prefetch_related(
+            'steps__element__locator_strategy',
+            'steps__element__group'
+        ).select_related('folder')
+        if ids_param:
+            case_ids = []
+            for raw_id in ids_param.split(','):
+                raw_id = raw_id.strip()
+                if not raw_id:
+                    continue
+                try:
+                    case_ids.append(int(raw_id))
+                except ValueError:
+                    raise ValidationError(f'用例ID格式不正确: {raw_id}')
+            queryset = queryset.filter(id__in=case_ids)
+
+        payload = {
+            'format': 'ui_automation_test_cases',
+            'version': IMPORT_EXPORT_FORMAT_VERSION,
+            'source_project': {
+                'id': project.id,
+                'name': project.name,
+            },
+            'exported_at': timezone.now().isoformat(),
+            'test_cases': [build_test_case_manifest_item(test_case) for test_case in queryset],
+        }
+        filename = f'ui-test-cases-project-{project.id}-{timezone.now().strftime("%Y%m%d%H%M%S")}.json'
+        return make_json_download_response(payload, filename)
+
+    @action(detail=False, methods=['post'], url_path='import')
+    def import_test_cases(self, request):
+        project = get_accessible_project_for_request(request, request.data.get('project'))
+        overwrite = normalize_import_overwrite_flag(request.data.get('overwrite'))
+        manifest = parse_uploaded_manifest(request)
+
+        if manifest.get('format') != 'ui_automation_test_cases':
+            raise ValidationError('导入文件格式不正确')
+
+        test_cases_data = manifest.get('test_cases') or []
+        if not isinstance(test_cases_data, list) or not test_cases_data:
+            raise ValidationError('导入文件中没有可用的测试用例数据')
+
+        summary = {'created': 0, 'updated': 0}
+
+        with transaction.atomic():
+            for case_data in test_cases_data:
+                folder = ensure_test_case_folder(
+                    project,
+                    case_data.get('folder_name'),
+                    created_by=request.user
+                )
+                name = str(case_data.get('name', '') or '').strip()
+                if not name:
+                    raise ValidationError('测试用例名称不能为空')
+
+                existing_case = None
+                if overwrite:
+                    existing_case = TestCase.objects.filter(project=project, name=name).first()
+
+                if existing_case:
+                    test_case = existing_case
+                    test_case.description = str(case_data.get('description', '') or '').strip()
+                    test_case.status = case_data.get('status') or test_case.status
+                    test_case.priority = case_data.get('priority') or test_case.priority
+                    test_case.folder = folder
+                    test_case.save()
+                    test_case.steps.all().delete()
+                    summary['updated'] += 1
+                else:
+                    test_case = TestCase.objects.create(
+                        project=project,
+                        folder=folder,
+                        name=name,
+                        description=str(case_data.get('description', '') or '').strip(),
+                        status=case_data.get('status') or 'draft',
+                        priority=case_data.get('priority') or 'medium',
+                        created_by=request.user
+                    )
+                    summary['created'] += 1
+
+                steps = case_data.get('steps') or []
+                for index, step_data in enumerate(steps, start=1):
+                    resolved_step = resolve_imported_test_case_step(
+                        project,
+                        step_data,
+                        created_by=request.user,
+                        overwrite=overwrite
+                    )
+                    TestCaseStep.objects.create(
+                        test_case=test_case,
+                        step_number=index,
+                        action_type=resolved_step['action_type'],
+                        element=resolved_step['element'],
+                        input_value=resolved_step['input_value'],
+                        wait_time=resolved_step['wait_time'],
+                        assert_type=resolved_step['assert_type'],
+                        assert_value=resolved_step['assert_value'],
+                        description=resolved_step['description'],
+                        save_as=resolved_step['save_as'],
+                    )
+
+        return Response({
+            'success': True,
+            'message': '测试用例导入成功',
+            'summary': summary,
+            'project': {'id': project.id, 'name': project.name},
+        })
+
     @action(detail=True, methods=['post'])
     def copy_case(self, request, pk=None):
         """复制测试用例"""
@@ -1271,6 +1759,21 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                 log_parts.append(f"- 滚动操作成功 - 耗时 {execution_time}s")
             else:
                 log_parts.append(f"- 滚动操作失败 - 元素未找到")
+
+        elif step.action_type == 'drag':
+            target_name = '目标元素'
+            try:
+                target_payload = json.loads(step.input_value or '{}')
+                target_name = target_payload.get('target_element_name') or target_name
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+
+            log_parts.append(f"拖拽元素 '{element_name}' 到 '{target_name}'")
+            log_parts.append(f"- 使用定位器: {locator_info}")
+            if step_result == 'success':
+                log_parts.append(f"- 拖拽操作成功 - 耗时 {execution_time}s")
+            else:
+                log_parts.append(f"- 拖拽操作失败 - 起点或终点元素不可用")
 
         elif step.action_type == 'screenshot':
             log_parts.append(f"执行截图操作")
@@ -1536,7 +2039,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
 
                     # 创建Selenium引擎实例
                     engine = SeleniumTestEngine(browser_type=browser_type, headless=headless)
-                    clear_runtime_variables()
+                    initialize_project_runtime_variables(project=test_case.project)
 
                     try:
                         # 启动浏览器
@@ -1752,7 +2255,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
 
                         # 创建Playwright引擎实例
                         engine = PlaywrightTestEngine(browser_type=browser_type, headless=headless)
-                        clear_runtime_variables()
+                        initialize_project_runtime_variables(project=test_case.project)
 
                         try:
                             # 启动浏览器
@@ -2423,7 +2926,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
 
                                     # 创建Selenium引擎实例并执行
                                     engine = SeleniumTestEngine(browser_type=task.browser, headless=task.headless)
-                                    clear_runtime_variables()
+                                    initialize_project_runtime_variables(project=test_case.project)
 
                                     try:
                                         # 启动浏览器
@@ -2508,7 +3011,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                         browser_type = browser_map.get(task.browser, 'chromium')
 
                                         engine = PlaywrightTestEngine(browser_type=browser_type, headless=task.headless)
-                                        clear_runtime_variables()
+                                        initialize_project_runtime_variables(project=test_case.project)
 
                                         try:
                                             # 启动浏览器

@@ -3,6 +3,7 @@ Selenium自动化测试执行引擎
 用于驱动真实浏览器执行UI自动化测试
 """
 import base64
+import json
 import re
 import time
 from .variable_resolver import resolve_variables, set_runtime_variable
@@ -308,6 +309,44 @@ class SeleniumTestEngine:
             logger.info("浏览器已关闭")
         except Exception as e:
             logger.error(f"关闭浏览器失败: {str(e)}")
+
+    def _resolve_drag_target_data(self, raw_input) -> Dict[str, str]:
+        if not raw_input:
+            raise ValueError('拖拽步骤缺少目标元素配置')
+
+        payload = raw_input
+        if isinstance(raw_input, str):
+            try:
+                payload = json.loads(raw_input)
+            except json.JSONDecodeError as exc:
+                raise ValueError('拖拽目标配置不是有效的 JSON') from exc
+
+        if not isinstance(payload, dict):
+            raise ValueError('拖拽目标配置格式不正确')
+
+        target_element_id = payload.get('target_element_id') or payload.get('element_id')
+        if target_element_id:
+            try:
+                from .models import Element
+                target_element = Element.objects.select_related('locator_strategy').get(id=int(target_element_id))
+                return {
+                    'locator_strategy': target_element.locator_strategy.name if target_element.locator_strategy else 'css',
+                    'locator_value': target_element.locator_value,
+                    'name': target_element.name,
+                }
+            except (ValueError, TypeError, Element.DoesNotExist):
+                pass
+
+        locator_strategy = payload.get('target_locator_strategy') or payload.get('locator_strategy')
+        locator_value = payload.get('target_locator_value') or payload.get('locator_value')
+        if not locator_strategy or not locator_value:
+            raise ValueError('拖拽目标元素缺少定位信息')
+
+        return {
+            'locator_strategy': locator_strategy,
+            'locator_value': locator_value,
+            'name': payload.get('target_element_name') or payload.get('name') or '目标元素',
+        }
 
     def _get_locator(self, locator_strategy: str, locator_value: str) -> Tuple[str, str]:
         """
@@ -713,6 +752,35 @@ class SeleniumTestEngine:
                 log = f"✓ 滚动到元素 '{element_name}' 成功\n"
                 log += f"  - 定位器: {locator_strategy}={locator_value}\n"
                 log += f"  - 超时设置: {timeout_seconds}秒\n"
+                log += f"  - 执行时间: {execution_time}秒"
+                return True, log, None
+
+            elif action_type == 'drag':
+                target_element_data = self._resolve_drag_target_data(resolved_input_value)
+                target_by_type, target_by_value = self._get_locator(
+                    target_element_data.get('locator_strategy', 'css'),
+                    target_element_data.get('locator_value', '')
+                )
+                target_element = wait.until(EC.presence_of_element_located((target_by_type, target_by_value)))
+
+                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", element)
+                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'center'});", target_element)
+                time.sleep(0.2)
+
+                ActionChains(self.driver) \
+                    .move_to_element(element) \
+                    .click_and_hold(element) \
+                    .pause(0.2) \
+                    .move_to_element(target_element) \
+                    .pause(0.1) \
+                    .release() \
+                    .perform()
+
+                execution_time = round(time.time() - start_time, 2)
+                log = f"✔ 拖拽元素 '{element_name}' 到 '{target_element_data.get('name', '目标元素')}' 成功\n"
+                log += f"  - 起点定位器: {locator_strategy}={locator_value}\n"
+                log += f"  - 终点定位器: {target_element_data.get('locator_strategy')}={target_element_data.get('locator_value')}\n"
+                log += f"  - 操作方式: click_and_hold -> move_to_element -> release\n"
                 log += f"  - 执行时间: {execution_time}秒"
                 return True, log, None
 

@@ -437,6 +437,7 @@ const getActionText = (actionType) => {
     'waitFor': t('uiAutomation.actionTypes.waitFor'),
     'hover': t('uiAutomation.actionTypes.hover'),
     'scroll': t('uiAutomation.actionTypes.scroll'),
+    'drag': '拖拽',
     'screenshot': t('uiAutomation.actionTypes.screenshot'),
     'assert': t('uiAutomation.actionTypes.assert'),
     'wait': t('uiAutomation.actionTypes.wait')

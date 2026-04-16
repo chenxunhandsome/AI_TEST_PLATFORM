@@ -10,7 +10,8 @@ from django.utils import timezone
 from .models import TestCaseStep
 from .playwright_engine import PlaywrightTestEngine
 from .selenium_engine import SeleniumTestEngine
-from .variable_resolver import clear_runtime_variables, resolve_variables, set_runtime_variable
+from .variable_resolver import resolve_variables, set_runtime_variable
+from .project_runtime import initialize_project_runtime_variables
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +48,7 @@ def build_test_case_payload(test_case):
         'project_id': test_case.project_id,
         'project_name': test_case.project.name,
         'base_url': test_case.project.base_url,
+        'project_global_variables': test_case.project.global_variables or [],
         'steps': steps,
     }
 
@@ -173,7 +175,7 @@ def _store_step_runtime_variable(step, resolved_input_value, resolved_assert_val
 
 
 def _run_selenium(payload, browser, headless, start_time, step_results, screenshots, detailed_errors):
-    clear_runtime_variables()
+    initialize_project_runtime_variables(global_variables=payload.get('project_global_variables'))
     is_available, error_msg = SeleniumTestEngine.check_browser_available(browser)
     if not is_available:
         return _format_final_result(
@@ -274,7 +276,7 @@ def _run_playwright(payload, browser, headless, start_time, step_results, screen
 
 
 async def _run_playwright_async(payload, browser, headless, start_time, step_results, screenshots, detailed_errors):
-    clear_runtime_variables()
+    initialize_project_runtime_variables(global_variables=payload.get('project_global_variables'))
     engine = PlaywrightTestEngine(browser_type=_browser_map(browser), headless=headless)
     error_message = ''
     status_value = 'passed'

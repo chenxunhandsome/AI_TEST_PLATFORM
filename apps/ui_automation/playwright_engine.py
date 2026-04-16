@@ -4,6 +4,7 @@ Playwright自动化测试执行引擎
 """
 import asyncio
 import base64
+import json
 import re
 import time
 from datetime import datetime
@@ -100,6 +101,80 @@ class PlaywrightTestEngine:
             logger.info("浏览器已关闭")
         except Exception as e:
             logger.error(f"关闭浏览器失败: {str(e)}")
+
+    def _build_locator(self, locator_strategy: str, locator_value: str):
+        locator_strategy = (locator_strategy or 'css').lower()
+        locator_value = locator_value or ''
+
+        if locator_strategy == 'id':
+            return self.page.locator(f'#{locator_value}')
+        if locator_strategy in ['css', 'css selector']:
+            if any(keyword in locator_value.lower() for keyword in ['dropdown', 'el-select', ':has(', 'li']):
+                if 'visible=true' not in locator_value:
+                    return self.page.locator(f"{locator_value} >> visible=true").first
+                return self.page.locator(locator_value).first
+            return self.page.locator(locator_value)
+        if locator_strategy == 'xpath':
+            if any(keyword in locator_value.lower() for keyword in ['dropdown', 'el-select', ':has(', 'li']):
+                if 'visible=true' not in locator_value:
+                    return self.page.locator(f"xpath={locator_value} >> visible=true").first
+                return self.page.locator(f"xpath={locator_value}").first
+            if '[' in locator_value and ']' in locator_value:
+                return self.page.locator(f'xpath={locator_value}')
+            return self.page.locator(f'xpath={locator_value}').first
+        if locator_strategy == 'text':
+            return self.page.get_by_text(locator_value)
+        if locator_strategy == 'name':
+            return self.page.locator(f'[name="{locator_value}"]')
+        if locator_strategy == 'placeholder':
+            return self.page.get_by_placeholder(locator_value)
+        if locator_strategy == 'role':
+            return self.page.get_by_role(locator_value)
+        if locator_strategy == 'label':
+            return self.page.get_by_label(locator_value)
+        if locator_strategy == 'title':
+            return self.page.get_by_title(locator_value)
+        if locator_strategy == 'test-id':
+            return self.page.get_by_test_id(locator_value)
+        return self.page.locator(locator_value)
+
+    def _resolve_drag_target_data(self, raw_input) -> Dict[str, str]:
+        if not raw_input:
+            raise ValueError('拖拽步骤缺少目标元素配置')
+
+        payload = raw_input
+        if isinstance(raw_input, str):
+            try:
+                payload = json.loads(raw_input)
+            except json.JSONDecodeError as exc:
+                raise ValueError('拖拽目标配置不是有效的 JSON') from exc
+
+        if not isinstance(payload, dict):
+            raise ValueError('拖拽目标配置格式不正确')
+
+        target_element_id = payload.get('target_element_id') or payload.get('element_id')
+        if target_element_id:
+            try:
+                from .models import Element
+                target_element = Element.objects.select_related('locator_strategy').get(id=int(target_element_id))
+                return {
+                    'locator_strategy': target_element.locator_strategy.name if target_element.locator_strategy else 'css',
+                    'locator_value': target_element.locator_value,
+                    'name': target_element.name,
+                }
+            except (ValueError, TypeError, Element.DoesNotExist):
+                pass
+
+        locator_strategy = payload.get('target_locator_strategy') or payload.get('locator_strategy')
+        locator_value = payload.get('target_locator_value') or payload.get('locator_value')
+        if not locator_strategy or not locator_value:
+            raise ValueError('拖拽目标元素缺少定位信息')
+
+        return {
+            'locator_strategy': locator_strategy,
+            'locator_value': locator_value,
+            'name': payload.get('target_element_name') or payload.get('name') or '目标元素',
+        }
 
     async def execute_step(self, step, element_data: Dict) -> Tuple[bool, str, Optional[str]]:
         """
@@ -650,6 +725,43 @@ class PlaywrightTestEngine:
                 log = f"✓ 滚动到元素 '{element_name}' 成功\n"
                 log += f"  - 定位器: {locator_strategy}={locator_value}\n"
                 log += f"  - 超时设置: {timeout_ms/1000}秒\n"
+                log += f"  - 执行时间: {execution_time}秒"
+                return True, log, None
+
+            elif action_type == 'drag':
+                target_element_data = self._resolve_drag_target_data(resolved_input_value)
+                target_locator = self._build_locator(
+                    target_element_data.get('locator_strategy', 'css'),
+                    target_element_data.get('locator_value', '')
+                )
+
+                await locator.wait_for(state='visible', timeout=timeout_ms)
+                await target_locator.wait_for(state='visible', timeout=timeout_ms)
+                await locator.scroll_into_view_if_needed(timeout=timeout_ms)
+                await target_locator.scroll_into_view_if_needed(timeout=timeout_ms)
+
+                source_box = await locator.bounding_box()
+                target_box = await target_locator.bounding_box()
+                if not source_box or not target_box:
+                    raise ValueError('拖拽时无法获取起点或终点元素坐标')
+
+                source_x = source_box['x'] + source_box['width'] / 2
+                source_y = source_box['y'] + source_box['height'] / 2
+                target_x = target_box['x'] + target_box['width'] / 2
+                target_y = target_box['y'] + target_box['height'] / 2
+
+                await self.page.mouse.move(source_x, source_y)
+                await self.page.mouse.down()
+                await asyncio.sleep(0.2)
+                await self.page.mouse.move(target_x, target_y, steps=20)
+                await asyncio.sleep(0.1)
+                await self.page.mouse.up()
+
+                execution_time = round(time.time() - start_time, 2)
+                log = f"✔ 拖拽元素 '{element_name}' 到 '{target_element_data.get('name', '目标元素')}' 成功\n"
+                log += f"  - 起点定位器: {locator_strategy}={locator_value}\n"
+                log += f"  - 终点定位器: {target_element_data.get('locator_strategy')}={target_element_data.get('locator_value')}\n"
+                log += f"  - 操作方式: mouse.down -> move -> mouse.up\n"
                 log += f"  - 执行时间: {execution_time}秒"
                 return True, log, None
 

@@ -14,6 +14,9 @@
           <el-icon><Plus /></el-icon>
           {{ t('uiAutomation.testCase.newTestCase') }}
         </el-button>
+        <el-button :disabled="!projectId" @click="openImportDialog">导入用例</el-button>
+        <el-button :disabled="!projectId || !selectedCaseIds.length" @click="handleExportSelectedCases">导出选中</el-button>
+        <el-button :disabled="!projectId" @click="handleExportAllCases">导出全部</el-button>
       </div>
     </div>
 
@@ -248,6 +251,7 @@
                             <el-option :label="t('uiAutomation.testCase.actionWaitFor')" value="waitFor" />
                             <el-option :label="t('uiAutomation.testCase.actionHover')" value="hover" />
                             <el-option :label="t('uiAutomation.testCase.actionScroll')" value="scroll" />
+                            <el-option label="拖拽" value="drag" />
                             <el-option :label="t('uiAutomation.testCase.actionScreenshot')" value="screenshot" />
                             <el-option :label="t('uiAutomation.testCase.actionAssert')" value="assert" />
                             <el-option :label="t('uiAutomation.testCase.actionWait')" value="wait" />
@@ -267,6 +271,18 @@
                           </el-button>
                         </div>
                         <!-- 输入参数 -->
+                        <div v-if="element.action_type === 'drag'" class="step-param">
+                          <label>拖拽目标元素</label>
+                          <el-button
+                            size="small"
+                            class="element-selector-trigger"
+                            @click="openElementSelector(element, 'drag_target_element_id')"
+                          >
+                            <el-icon><FolderOpened /></el-icon>
+                            <span class="element-selector-text">{{ getSelectedElementLabel(element.drag_target_element_id) }}</span>
+                          </el-button>
+                        </div>
+
                         <div v-if="needsInputValue(element.action_type)" class="step-param">
                           <label>{{ t('uiAutomation.testCase.inputValue') }}</label>
                           <div style="display: flex; gap: 5px; flex: 1">
@@ -567,6 +583,40 @@
     </el-dialog>
 
     <el-dialog
+      v-model="showImportDialog"
+      title="导入测试用例"
+      :close-on-click-modal="false"
+      width="420px"
+    >
+      <el-form label-width="100px">
+        <el-form-item label="导入项目">
+          <span>{{ selectedProject?.name || '-' }}</span>
+        </el-form-item>
+        <el-form-item label="JSON文件">
+          <el-upload
+            :auto-upload="false"
+            :limit="1"
+            accept=".json,application/json"
+            :show-file-list="true"
+            :on-change="handleImportFileChange"
+            :on-remove="handleImportFileRemove"
+          >
+            <el-button>选择文件</el-button>
+          </el-upload>
+        </el-form-item>
+        <el-form-item label="覆盖同名用例">
+          <el-switch v-model="importOverwrite" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="showImportDialog = false">{{ t('uiAutomation.common.cancel') }}</el-button>
+          <el-button type="primary" :loading="importing" @click="submitImportCases">开始导入</el-button>
+        </span>
+      </template>
+    </el-dialog>
+
+    <el-dialog
       v-model="showElementSelectorDialog"
       :title="text.selectElement"
       :close-on-click-modal="false"
@@ -724,6 +774,8 @@ import {
   moveTestCases,
   runTestCase as runTestCaseApi,
   copyTestCase as copyTestCaseApi,
+  exportTestCases,
+  importTestCases,
   getLocatorStrategies,
   getLocalRunners,
   getTestCaseExecutionDetail
@@ -777,6 +829,7 @@ const folderFilter = ref('all')
 const showCreateDialog = ref(false)
 const showFolderDialog = ref(false)
 const showMoveDialog = ref(false)
+const showImportDialog = ref(false)
 const showElementSelectorDialog = ref(false)
 const editingTestCase = ref(null)
 const executionResult = ref(null)
@@ -799,9 +852,11 @@ const showDataFactorySelector = ref(false)
 const currentStepForDataFactory = ref(null)
 const currentFieldForDataFactory = ref('')
 const currentSelectingStep = ref(null)
+const currentSelectingField = ref('element_id')
 const elementSelectorKeyword = ref('')
 const variableCategories = ref([])
 const loading = ref(false)
+const importing = ref(false)
 let localExecutionPollTimer = null
 const elementSelectorDialogSize = reactive({
   width: 640,
@@ -813,6 +868,8 @@ const ELEMENT_SELECTOR_VIEWPORT_WIDTH_PADDING = 80
 const ELEMENT_SELECTOR_VIEWPORT_HEIGHT_PADDING = 140
 let elementSelectorResizeHandlers = null
 const STEP_RUNTIME_VARIABLE_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+const importFile = ref(null)
+const importOverwrite = ref(false)
 
 
 
@@ -867,6 +924,28 @@ const parsedExecutionLogs = computed(() => {
 
 const onlineLocalRunners = computed(() => {
   return localRunners.value.filter(item => item.is_online)
+})
+
+const selectedProject = computed(() => {
+  return projects.value.find(item => String(item.id) === String(projectId.value)) || null
+})
+
+const projectVariableCategory = computed(() => {
+  const variables = (selectedProject.value?.global_variables || []).map(item => ({
+    name: item.name,
+    desc: item.description || `当前值: ${item.value || ''}`,
+    syntax: `\${${item.name}}`,
+    example: `\${${item.name}}`
+  }))
+
+  if (!variables.length) {
+    return null
+  }
+
+  return {
+    label: '项目全局变量',
+    variables
+  }
 })
 
 const elementTreeOptions = computed(() => {
@@ -948,7 +1027,41 @@ const canStoreVariable = (actionType) => {
   return ['fill', 'switchTab', 'assert'].includes(actionType)
 }
 
+const parseDragTargetPayload = (inputValue) => {
+  const rawValue = String(inputValue || '').trim()
+  if (!rawValue) {
+    return {}
+  }
+
+  try {
+    const payload = JSON.parse(rawValue)
+    return typeof payload === 'object' && payload !== null ? payload : {}
+  } catch (error) {
+    return {}
+  }
+}
+
+const buildDragTargetPayload = (targetElementId) => {
+  const targetElement = availableElements.value.find(item => item.id === targetElementId)
+  if (!targetElement) {
+    return ''
+  }
+
+  return JSON.stringify({
+    target_element_id: targetElement.id,
+    target_element_name: targetElement.name,
+    target_locator_strategy: targetElement.locator_strategy?.name || targetElement.locator_strategy || 'css',
+    target_locator_value: targetElement.locator_value
+  })
+}
+
 const createStepDraft = (step = {}, expanded = false) => ({
+  ...(() => {
+    const dragPayload = parseDragTargetPayload(step.input_value)
+    return {
+      drag_target_element_id: dragPayload.target_element_id || ''
+    }
+  })(),
   id: step.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   action_type: step.action_type || 'click',
   element_id: step.element_id ?? step.element ?? '',
@@ -966,7 +1079,9 @@ const buildStepPayload = (step, index) => ({
   step_number: index + 1,
   action_type: step.action_type || 'click',
   element_id: step.element_id || null,
-  input_value: needsInputValue(step.action_type) ? (step.input_value || '') : '',
+  input_value: step.action_type === 'drag'
+    ? buildDragTargetPayload(step.drag_target_element_id)
+    : (needsInputValue(step.action_type) ? (step.input_value || '') : ''),
   wait_time: needsWaitTime(step.action_type) ? (Number(step.wait_time) || 1000) : 1000,
   assert_type: step.action_type === 'assert' ? (step.assert_type || 'textContains') : '',
   assert_value: step.action_type === 'assert' ? (step.assert_value || '') : '',
@@ -997,6 +1112,12 @@ const getStepElementSummary = (step) => {
     return ''
   }
   const element = availableElements.value.find(item => item.id === step.element_id)
+  if (step.action_type === 'drag') {
+    const targetElement = availableElements.value.find(item => item.id === step.drag_target_element_id)
+    if (element?.name && targetElement?.name) {
+      return `${element.name} -> ${targetElement.name}`
+    }
+  }
   return element?.name || t('uiAutomation.testCase.elementPending')
 }
 
@@ -1014,6 +1135,12 @@ const validateCurrentSteps = () => {
     if (step.save_as && !STEP_RUNTIME_VARIABLE_RE.test(step.save_as)) {
       step.expanded = true
       ElMessage.warning(t('uiAutomation.testCase.storeAsInvalid', { step: index + 1 }))
+      return false
+    }
+
+    if (step.action_type === 'drag' && !step.drag_target_element_id) {
+      step.expanded = true
+      ElMessage.warning(`步骤 ${index + 1} 请选择拖拽目标元素`)
       return false
     }
   }
@@ -1124,6 +1251,35 @@ const loadProjects = async () => {
     ElMessage.error('获取项目列表失败')
     console.error('获取项目列表失败:', error)
   }
+}
+
+const getDownloadFilename = (contentDisposition, fallbackName) => {
+  if (!contentDisposition) {
+    return fallbackName
+  }
+
+  const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(contentDisposition)
+  if (utf8Match && utf8Match[1]) {
+    return decodeURIComponent(utf8Match[1])
+  }
+
+  const plainMatch = /filename="?([^"]+)"?/i.exec(contentDisposition)
+  if (plainMatch && plainMatch[1]) {
+    return plainMatch[1]
+  }
+
+  return fallbackName
+}
+
+const downloadBlob = (blob, filename) => {
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  window.URL.revokeObjectURL(url)
 }
 
 const loadTestCaseFolders = async () => {
@@ -1398,6 +1554,92 @@ const submitMoveCases = async () => {
   }
 }
 
+const handleExportCases = async (ids = []) => {
+  if (!projectId.value) {
+    ElMessage.warning(t('uiAutomation.project.selectProject'))
+    return
+  }
+
+  try {
+    const response = await exportTestCases({
+      project: projectId.value,
+      ids: ids.join(',')
+    })
+    const blob = new Blob([response.data], {
+      type: response.headers['content-type'] || 'application/json'
+    })
+    const filename = getDownloadFilename(response.headers['content-disposition'], 'ui-test-cases.json')
+    downloadBlob(blob, filename)
+    ElMessage.success('测试用例导出成功')
+  } catch (error) {
+    console.error('导出测试用例失败:', error)
+    ElMessage.error('测试用例导出失败')
+  }
+}
+
+const handleExportSelectedCases = async () => {
+  if (!selectedCaseIds.value.length) {
+    ElMessage.warning('请先选择要导出的用例')
+    return
+  }
+  await handleExportCases(selectedCaseIds.value)
+}
+
+const handleExportAllCases = async () => {
+  await handleExportCases([])
+}
+
+const openImportDialog = () => {
+  if (!projectId.value) {
+    ElMessage.warning(t('uiAutomation.project.selectProject'))
+    return
+  }
+  importFile.value = null
+  importOverwrite.value = false
+  showImportDialog.value = true
+}
+
+const handleImportFileChange = (file) => {
+  importFile.value = file.raw
+}
+
+const handleImportFileRemove = () => {
+  importFile.value = null
+}
+
+const submitImportCases = async () => {
+  if (!projectId.value) {
+    ElMessage.warning(t('uiAutomation.project.selectProject'))
+    return
+  }
+  if (!importFile.value) {
+    ElMessage.warning('请先选择导入文件')
+    return
+  }
+
+  importing.value = true
+  try {
+    const formData = new FormData()
+    formData.append('project', projectId.value)
+    formData.append('overwrite', importOverwrite.value ? '1' : '0')
+    formData.append('file', importFile.value)
+    const response = await importTestCases(formData)
+    const summary = response.data?.summary || {}
+    ElMessage.success(`测试用例导入成功，新增 ${summary.created || 0} 个，更新 ${summary.updated || 0} 个`)
+    showImportDialog.value = false
+    await Promise.all([
+      loadTestCaseFolders(),
+      loadTestCases(),
+      loadElementsForCurrentProject()
+    ])
+  } catch (error) {
+    console.error('导入测试用例失败:', error)
+    ElMessage.error(error.response?.data?.detail || error.response?.data?.message || '测试用例导入失败')
+  } finally {
+    importing.value = false
+  }
+}
+
 const toggleCaseSelection = (caseId, checked) => {
   if (checked) {
     if (!selectedCaseIds.value.includes(caseId)) {
@@ -1448,6 +1690,9 @@ const onActionTypeChange = (step) => {
   if (!needsInputValue(step.action_type)) {
     step.input_value = ''
   }
+  if (step.action_type !== 'drag') {
+    step.drag_target_element_id = ''
+  }
   if (!needsWaitTime(step.action_type)) {
     step.wait_time = 1000
   }
@@ -1477,8 +1722,9 @@ const getSelectedElementLabel = (elementId) => {
   return `${element.name} (${element.locator_value})`
 }
 
-const openElementSelector = (step) => {
+const openElementSelector = (step, field = 'element_id') => {
   currentSelectingStep.value = step
+  currentSelectingField.value = field
   elementSelectorKeyword.value = ''
   showElementSelectorDialog.value = true
 }
@@ -1488,8 +1734,10 @@ const handleElementTreeNodeClick = (node) => {
     return
   }
 
-  currentSelectingStep.value.element_id = node.id
-  onElementChange(currentSelectingStep.value)
+  currentSelectingStep.value[currentSelectingField.value] = node.id
+  if (currentSelectingField.value === 'element_id') {
+    onElementChange(currentSelectingStep.value)
+  }
   showElementSelectorDialog.value = false
 }
 
@@ -1804,12 +2052,16 @@ const useLocalVariableCategories = () => {
 
 // 计算属性提供变量分类数据
 const variableCategoriesComputed = computed(() => {
-  return variableCategories.value.length > 0 ? variableCategories.value : [
+  const dynamicCategories = variableCategories.value.length > 0 ? variableCategories.value : [
     {
       label: t('uiAutomation.testCase.variableCategory.randomNumber'),
       variables: []
     }
   ]
+
+  return projectVariableCategory.value
+    ? [projectVariableCategory.value, ...dynamicCategories]
+    : dynamicCategories
 })
 
 const openVariableHelper = (step, field) => {
@@ -1950,6 +2202,7 @@ const getActionTypeText = (actionType) => {
     'waitFor': t('uiAutomation.testCase.actionType.waitFor'),
     'hover': t('uiAutomation.testCase.actionType.hover'),
     'scroll': t('uiAutomation.testCase.actionType.scroll'),
+    'drag': '拖拽',
     'screenshot': t('uiAutomation.testCase.actionType.screenshot'),
     'assert': t('uiAutomation.testCase.actionType.assert'),
     'wait': t('uiAutomation.testCase.actionType.wait'),
@@ -1973,6 +2226,7 @@ const getActionText = (actionType) => {
     'waitFor': t('uiAutomation.testCase.actionText.waitFor'),
     'hover': t('uiAutomation.testCase.actionText.hover'),
     'scroll': t('uiAutomation.testCase.actionText.scroll'),
+    'drag': '拖拽',
     'screenshot': t('uiAutomation.testCase.actionText.screenshot'),
     'assert': t('uiAutomation.testCase.actionText.assert'),
     'wait': t('uiAutomation.testCase.actionText.wait'),
@@ -2035,6 +2289,7 @@ watch(showElementSelectorDialog, (visible) => {
   stopElementSelectorResize()
   if (!visible) {
     currentSelectingStep.value = null
+    currentSelectingField.value = 'element_id'
     elementSelectorKeyword.value = ''
   }
 })

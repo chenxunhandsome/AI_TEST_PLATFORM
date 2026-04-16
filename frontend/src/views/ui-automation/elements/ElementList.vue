@@ -9,6 +9,9 @@
         <el-icon><Plus /></el-icon>
         {{ $t('uiAutomation.element.newElement') }}
       </el-button>
+      <el-button :disabled="!projectId" @click="handleImportDialog">导入元素</el-button>
+      <el-button :disabled="!projectId || !selectedElementIds.length" @click="handleExportSelected">导出选中</el-button>
+      <el-button :disabled="!projectId" @click="handleExportAll">导出全部</el-button>
     </div>
     
     <div class="card-container">
@@ -39,7 +42,7 @@
         </el-row>
       </div>
       
-      <el-table :data="elements" v-loading="loading" style="width: 100%">
+      <el-table :data="elements" v-loading="loading" style="width: 100%" @selection-change="handleSelectionChange">
         <el-table-column type="selection" width="55" />
         <el-table-column prop="name" :label="$t('uiAutomation.element.elementName')" min-width="150">
           <template #default="{ row }">
@@ -178,6 +181,35 @@
     </el-dialog>
     
     <!-- 元素详情对话框 -->
+    <el-dialog v-model="showImportDialog" title="导入元素" width="480px" :close-on-click-modal="false">
+      <el-form label-width="100px">
+        <el-form-item label="导入项目">
+          <span>{{ projects.find(item => item.id === projectId)?.name || '-' }}</span>
+        </el-form-item>
+        <el-form-item label="JSON文件">
+          <el-upload
+            :auto-upload="false"
+            :limit="1"
+            accept=".json,application/json"
+            :show-file-list="true"
+            :on-change="handleImportFileChange"
+            :on-remove="handleImportFileRemove"
+          >
+            <el-button>选择文件</el-button>
+          </el-upload>
+        </el-form-item>
+        <el-form-item label="覆盖已存在">
+          <el-switch v-model="importOverwrite" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="showImportDialog = false">取消</el-button>
+          <el-button type="primary" :loading="importing" @click="submitImport">开始导入</el-button>
+        </span>
+      </template>
+    </el-dialog>
+
     <el-dialog v-model="showDetailDialog" :title="$t('uiAutomation.element.elementDetail')" width="600px">
       <div v-if="Object.keys(currentElementDetail).length > 0" class="element-detail">
         <el-descriptions border column="2" :column="{ xs: 1, sm: 2 }">
@@ -225,7 +257,9 @@ import {
   updateElement,
   deleteElement,
   getElementDetail,
-  getLocatorStrategies
+  getLocatorStrategies,
+  exportElements,
+  importElements
 } from '@/api/ui_automation'
 import { useI18n } from 'vue-i18n'
 
@@ -235,11 +269,13 @@ const { t } = useI18n()
 const projects = ref([])
 const projectId = ref('')
 const elements = ref([])
+const selectedElementIds = ref([])
 
 // 定位策略数据
 const strategies = ref([])
 const pages = ref([])
 const loading = ref(false)
+const importing = ref(false)
 const total = ref(0)
 const pagination = reactive({
   currentPage: 1,
@@ -255,10 +291,13 @@ const pageFilter = ref('')
 const showCreateDialog = ref(false)
 const showEditDialog = ref(false)
 const showDetailDialog = ref(false)
+const showImportDialog = ref(false)
 const createFormRef = ref(null)
 const editFormRef = ref(null)
 const currentEditId = ref(null)
 const currentElementDetail = ref({})
+const importFile = ref(null)
+const importOverwrite = ref(false)
 
 // 表单数据
 const createForm = reactive({
@@ -339,10 +378,44 @@ const handleShowCreateDialog = () => {
   showCreateDialog.value = true
 }
 
+const handleSelectionChange = (selection) => {
+  selectedElementIds.value = (selection || []).map(item => item.id)
+}
+
+const getDownloadFilename = (contentDisposition, fallbackName) => {
+  if (!contentDisposition) {
+    return fallbackName
+  }
+
+  const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(contentDisposition)
+  if (utf8Match && utf8Match[1]) {
+    return decodeURIComponent(utf8Match[1])
+  }
+
+  const plainMatch = /filename="?([^"]+)"?/i.exec(contentDisposition)
+  if (plainMatch && plainMatch[1]) {
+    return plainMatch[1]
+  }
+
+  return fallbackName
+}
+
+const downloadBlob = (blob, filename) => {
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  window.URL.revokeObjectURL(url)
+}
+
 // 加载元素列表
 const loadElements = async () => {
   if (!projectId.value) {
     elements.value = []
+    selectedElementIds.value = []
     total.value = 0
     return
   }
@@ -372,6 +445,7 @@ const loadElements = async () => {
     
     const response = await getElements(params)
     elements.value = response.data.results || response.data
+    selectedElementIds.value = selectedElementIds.value.filter(id => elements.value.some(item => item.id === id))
     total.value = response.data.count || elements.value.length
     
     // 提取所有页面名称用于筛选
@@ -392,6 +466,7 @@ const onProjectChange = () => {
   strategyFilter.value = ''
   pageFilter.value = ''
   pagination.currentPage = 1
+  selectedElementIds.value = []
   
   // 设置创建表单的项目
   createForm.project = projectId.value
@@ -421,6 +496,88 @@ const handleSizeChange = (size) => {
 const handleCurrentChange = (current) => {
   pagination.currentPage = current
   loadElements()
+}
+
+const handleExport = async (ids = []) => {
+  if (!projectId.value) {
+    ElMessage.warning(t('uiAutomation.common.selectProject'))
+    return
+  }
+
+  try {
+    const response = await exportElements({
+      project: projectId.value,
+      ids: ids.join(',')
+    })
+    const blob = new Blob([response.data], {
+      type: response.headers['content-type'] || 'application/json'
+    })
+    const filename = getDownloadFilename(response.headers['content-disposition'], 'ui-elements.json')
+    downloadBlob(blob, filename)
+    ElMessage.success('元素导出成功')
+  } catch (error) {
+    console.error('导出元素失败:', error)
+    ElMessage.error('元素导出失败')
+  }
+}
+
+const handleExportSelected = async () => {
+  if (!selectedElementIds.value.length) {
+    ElMessage.warning('请先选择要导出的元素')
+    return
+  }
+  await handleExport(selectedElementIds.value)
+}
+
+const handleExportAll = async () => {
+  await handleExport([])
+}
+
+const handleImportDialog = () => {
+  if (!projectId.value) {
+    ElMessage.warning(t('uiAutomation.common.selectProject'))
+    return
+  }
+  importFile.value = null
+  importOverwrite.value = false
+  showImportDialog.value = true
+}
+
+const handleImportFileChange = (file) => {
+  importFile.value = file.raw
+}
+
+const handleImportFileRemove = () => {
+  importFile.value = null
+}
+
+const submitImport = async () => {
+  if (!projectId.value) {
+    ElMessage.warning(t('uiAutomation.common.selectProject'))
+    return
+  }
+  if (!importFile.value) {
+    ElMessage.warning('请先选择导入文件')
+    return
+  }
+
+  importing.value = true
+  try {
+    const formData = new FormData()
+    formData.append('project', projectId.value)
+    formData.append('overwrite', importOverwrite.value ? '1' : '0')
+    formData.append('file', importFile.value)
+    const response = await importElements(formData)
+    const summary = response.data?.summary || {}
+    ElMessage.success(`元素导入成功，新增 ${summary.created || 0} 个，更新 ${summary.updated || 0} 个，复用 ${summary.reused || 0} 个`)
+    showImportDialog.value = false
+    await loadElements()
+  } catch (error) {
+    console.error('导入元素失败:', error)
+    ElMessage.error(error.response?.data?.detail || error.response?.data?.message || '元素导入失败')
+  } finally {
+    importing.value = false
+  }
 }
 
 // 查看元素详情

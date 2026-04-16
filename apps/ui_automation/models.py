@@ -22,6 +22,7 @@ class UiProject(models.Model):
     end_date = models.DateField(null=True, blank=True, verbose_name='结束日期')
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='owned_ui_projects', verbose_name='负责人')
     members = models.ManyToManyField(User, blank=True, related_name='ui_projects', verbose_name='团队成员')
+    global_variables = models.JSONField(default=list, blank=True, verbose_name='项目全局变量')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
@@ -663,6 +664,7 @@ class TestCaseStep(models.Model):
         ('waitFor', '等待元素'),
         ('hover', '悬停'),
         ('scroll', '滚动'),
+        ('drag', '拖拽'),
         ('screenshot', '截图'),
         ('assert', '断言'),
         ('wait', '等待'),

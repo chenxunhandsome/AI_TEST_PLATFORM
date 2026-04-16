@@ -158,6 +158,22 @@
             />
           </el-select>
         </el-form-item>
+        <el-form-item label="全局变量">
+          <div class="global-variables-editor">
+            <div
+              v-for="(item, index) in createForm.global_variables"
+              :key="`create-var-${index}`"
+              class="global-variable-row"
+            >
+              <el-input v-model="item.name" placeholder="变量名，如 baseUrl" />
+              <el-input v-model="item.value" placeholder="变量值" />
+              <el-input v-model="item.description" placeholder="描述，可选" />
+              <el-button type="danger" plain @click="removeGlobalVariable(createForm, index)">删除</el-button>
+            </div>
+            <el-button plain @click="addGlobalVariable(createForm)">新增变量</el-button>
+            <div class="form-tip">当前项目中的所有 UI 自动化测试用例都可以使用 `${变量名}` 引用这里定义的变量。</div>
+          </div>
+        </el-form-item>
         <div class="form-tip">{{ $t('uiAutomation.project.ownerOnlyTip') }}</div>
         <el-form-item :label="$t('uiAutomation.project.startDate')" prop="start_date">
           <el-date-picker v-model="createForm.start_date" type="date" :placeholder="$t('uiAutomation.project.selectDate')" />
@@ -222,6 +238,22 @@
             />
           </el-select>
         </el-form-item>
+        <el-form-item label="全局变量">
+          <div class="global-variables-editor">
+            <div
+              v-for="(item, index) in editForm.global_variables"
+              :key="`edit-var-${index}`"
+              class="global-variable-row"
+            >
+              <el-input v-model="item.name" placeholder="变量名，如 baseUrl" />
+              <el-input v-model="item.value" placeholder="变量值" />
+              <el-input v-model="item.description" placeholder="描述，可选" />
+              <el-button type="danger" plain @click="removeGlobalVariable(editForm, index)">删除</el-button>
+            </div>
+            <el-button plain @click="addGlobalVariable(editForm)">新增变量</el-button>
+            <div class="form-tip">当前项目中的所有 UI 自动化测试用例都可以使用 `${变量名}` 引用这里定义的变量。</div>
+          </div>
+        </el-form-item>
         <div class="form-tip">{{ $t('uiAutomation.project.ownerOnlyTip') }}</div>
         <el-form-item :label="$t('uiAutomation.project.startDate')" prop="start_date">
           <el-date-picker v-model="editForm.start_date" type="date" :placeholder="$t('uiAutomation.project.selectDate')" />
@@ -272,6 +304,20 @@
             </div>
             <span v-else>{{ $t('uiAutomation.project.noMembers') }}</span>
           </el-descriptions-item>
+          <el-descriptions-item label="全局变量">
+            <div v-if="currentProjectDetail.global_variables?.length" class="global-variable-tags">
+              <div
+                v-for="(item, index) in currentProjectDetail.global_variables"
+                :key="`detail-var-${index}`"
+                class="global-variable-display"
+              >
+                <el-tag type="success">{{ '${' + item.name + '}' }}</el-tag>
+                <span>{{ item.value || '-' }}</span>
+                <span v-if="item.description" class="variable-description">{{ item.description }}</span>
+              </div>
+            </div>
+            <span v-else>未配置</span>
+          </el-descriptions-item>
           <el-descriptions-item :label="$t('uiAutomation.project.startDate')">
             {{ currentProjectDetail.start_date ? formatDateOnly(currentProjectDetail.start_date) : $t('uiAutomation.project.notSet') }}
           </el-descriptions-item>
@@ -320,12 +366,27 @@ import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
 const userStore = useUserStore()
 
+const createEmptyGlobalVariable = () => ({
+  name: '',
+  value: '',
+  description: ''
+})
+
+const cloneGlobalVariables = (items = []) => {
+  return (items || []).map(item => ({
+    name: item?.name || '',
+    value: item?.value || '',
+    description: item?.description || ''
+  }))
+}
+
 const buildDefaultForm = () => ({
   name: '',
   description: '',
   status: 'IN_PROGRESS',
   base_url: '',
   member_ids: [],
+  global_variables: [],
   start_date: null,
   end_date: null
 })
@@ -422,6 +483,14 @@ const getStatusText = (status) => {
 
 const canManageProject = (project) => project?.owner?.id === currentUserId.value
 
+const addGlobalVariable = (form) => {
+  form.global_variables.push(createEmptyGlobalVariable())
+}
+
+const removeGlobalVariable = (form, index) => {
+  form.global_variables.splice(index, 1)
+}
+
 const loadProjects = async () => {
   loading.value = true
   try {
@@ -513,6 +582,7 @@ const editProject = (project) => {
     status: project.status,
     base_url: project.base_url,
     member_ids: (project.members || []).map(member => member.id),
+    global_variables: cloneGlobalVariables(project.global_variables),
     start_date: project.start_date ? new Date(project.start_date) : null,
     end_date: project.end_date ? new Date(project.end_date) : null
   })
@@ -560,6 +630,7 @@ const handleCreate = async () => {
     const projectData = {
       ...createForm,
       member_ids: [...createForm.member_ids],
+      global_variables: cloneGlobalVariables(createForm.global_variables),
       start_date: formatDateToISO(createForm.start_date),
       end_date: formatDateToISO(createForm.end_date)
     }
@@ -586,6 +657,7 @@ const handleEdit = async () => {
     const projectData = {
       ...editForm,
       member_ids: [...editForm.member_ids],
+      global_variables: cloneGlobalVariables(editForm.global_variables),
       start_date: formatDateToISO(editForm.start_date),
       end_date: formatDateToISO(editForm.end_date)
     }
@@ -665,6 +737,34 @@ onMounted(async () => {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.global-variables-editor {
+  width: 100%;
+}
+
+.global-variable-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr auto;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.global-variable-tags {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.global-variable-display {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.variable-description {
+  color: #909399;
 }
 
 .form-tip,
