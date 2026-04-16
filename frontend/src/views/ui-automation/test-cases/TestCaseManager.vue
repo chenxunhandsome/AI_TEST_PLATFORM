@@ -1188,7 +1188,105 @@ const syncTransactionCollapseMap = () => {
   )
 }
 
+const clearTransactionFromSteps = (steps = []) => {
+  steps.forEach((step) => {
+    step.transaction_id = ''
+    step.transaction_name = ''
+  })
+}
+
+const applyTransactionToStep = (step, transactionSource) => {
+  const transactionId = getTransactionId(transactionSource)
+  const transactionName = getTransactionName(transactionSource)
+
+  if (!transactionId || !transactionName) {
+    step.transaction_id = ''
+    step.transaction_name = ''
+    return
+  }
+
+  step.transaction_id = transactionId
+  step.transaction_name = transactionName
+}
+
+const getAdjacentTransactionSource = (index) => {
+  const previousStep = currentSteps.value[index - 1]
+  const nextStep = currentSteps.value[index + 1]
+  const previousTransactionId = getTransactionId(previousStep)
+  const nextTransactionId = getTransactionId(nextStep)
+
+  if (previousTransactionId && previousTransactionId === nextTransactionId) {
+    return previousStep
+  }
+
+  if (previousTransactionId) {
+    return previousStep
+  }
+
+  if (nextTransactionId) {
+    return nextStep
+  }
+
+  return null
+}
+
 const normalizeTransactionBlocks = () => {
+  const seenTransactionIds = new Set()
+  let segmentSteps = []
+  let segmentTransactionId = ''
+  let segmentTransactionName = ''
+
+  const finalizeSegment = () => {
+    if (!segmentSteps.length) {
+      return
+    }
+
+    if (!segmentTransactionId || !segmentTransactionName || segmentSteps.length < 2 || seenTransactionIds.has(segmentTransactionId)) {
+      clearTransactionFromSteps(segmentSteps)
+      delete transactionCollapseState.value[segmentTransactionId]
+    } else {
+      segmentSteps.forEach((step) => {
+        step.transaction_id = segmentTransactionId
+        step.transaction_name = segmentTransactionName
+      })
+      seenTransactionIds.add(segmentTransactionId)
+    }
+
+    segmentSteps = []
+    segmentTransactionId = ''
+    segmentTransactionName = ''
+  }
+
+  currentSteps.value.forEach((step) => {
+    const transactionId = getTransactionId(step)
+    const transactionName = getTransactionName(step)
+
+    if (!transactionId || !transactionName) {
+      finalizeSegment()
+      step.transaction_id = ''
+      step.transaction_name = ''
+      return
+    }
+
+    if (!segmentSteps.length || segmentTransactionId === transactionId) {
+      segmentSteps.push(step)
+      segmentTransactionId = transactionId
+      segmentTransactionName = segmentTransactionName || transactionName || '未命名事务块'
+      return
+    }
+
+    finalizeSegment()
+    segmentSteps = [step]
+    segmentTransactionId = transactionId
+    segmentTransactionName = transactionName || '未命名事务块'
+  })
+
+  finalizeSegment()
+
+  syncCheckedStepIds()
+  syncTransactionCollapseMap()
+  return
+
   const groups = new Map()
 
   currentSteps.value.forEach((step) => {
@@ -2109,7 +2207,23 @@ const onStepsReorder = () => {
   console.log('步骤已重新排序')
 }
 
-const handleStepsReorder = () => {
+const handleStepsReorder = (event) => {
+  const movedIndex = event?.moved?.newIndex
+
+  if (Number.isInteger(movedIndex) && movedIndex >= 0) {
+    const movedStep = currentSteps.value[movedIndex]
+    const adjacentTransactionSource = getAdjacentTransactionSource(movedIndex)
+
+    if (movedStep) {
+      if (adjacentTransactionSource) {
+        applyTransactionToStep(movedStep, adjacentTransactionSource)
+      } else if (hasTransaction(movedStep)) {
+        movedStep.transaction_id = ''
+        movedStep.transaction_name = ''
+      }
+    }
+  }
+
   normalizeTransactionBlocks()
   console.log('步骤已重新排序')
 }
