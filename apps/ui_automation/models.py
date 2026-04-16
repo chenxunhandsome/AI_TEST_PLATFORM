@@ -689,6 +689,8 @@ class TestCaseStep(models.Model):
     assert_value = models.TextField(blank=True, verbose_name='断言期望值')
     description = models.TextField(blank=True, verbose_name='步骤描述')
     save_as = models.CharField(max_length=100, blank=True, verbose_name='Stored Variable Name')
+    transaction_id = models.CharField(max_length=64, blank=True, db_index=True, verbose_name='事务块ID')
+    transaction_name = models.CharField(max_length=100, blank=True, verbose_name='事务块名称')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
 
     class Meta:

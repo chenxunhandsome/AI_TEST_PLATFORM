@@ -15,6 +15,7 @@ import json
 import re
 import random
 import time
+import uuid
 from urllib.parse import quote
 
 from .models import (
@@ -45,6 +46,7 @@ from .serializers import (
     AICaseSerializer, AIExecutionRecordSerializer
 )
 from .operation_logger import log_operation
+from .locator_strategy_defaults import ensure_default_locator_strategies
 from .variable_resolver import resolve_variables, set_runtime_variable
 from .project_runtime import (
     initialize_project_runtime_variables,
@@ -295,6 +297,8 @@ def build_test_case_manifest_item(test_case):
             'assert_type': step.assert_type or '',
             'assert_value': step.assert_value or '',
             'save_as': step.save_as or '',
+            'transaction_id': step.transaction_id or '',
+            'transaction_name': step.transaction_name or '',
             'element': build_element_manifest_item(step.element) if step.element else None,
             'drag_target_element': build_element_manifest_item(drag_target_element) if drag_target_element else None,
         })
@@ -347,6 +351,13 @@ def resolve_imported_test_case_step(project, step_data, created_by=None, overwri
             )
         input_value = build_drag_input_payload(drag_target_element)
 
+    transaction_id = str(step_data.get('transaction_id', '') or '').strip()
+    transaction_name = str(step_data.get('transaction_name', '') or '').strip()
+    if transaction_name and not transaction_id:
+        transaction_id = str(uuid.uuid4())
+    if transaction_id and not transaction_name:
+        transaction_id = ''
+
     return {
         'action_type': step_data.get('action_type', 'click'),
         'description': str(step_data.get('description', '') or '').strip(),
@@ -355,6 +366,8 @@ def resolve_imported_test_case_step(project, step_data, created_by=None, overwri
         'assert_type': str(step_data.get('assert_type', '') or '').strip(),
         'assert_value': step_data.get('assert_value', '') or '',
         'save_as': str(step_data.get('save_as', '') or '').strip(),
+        'transaction_id': transaction_id,
+        'transaction_name': transaction_name,
         'element': element,
     }
 
@@ -379,8 +392,17 @@ def validate_test_case_steps_payload(steps_data):
         if save_as and not STEP_RUNTIME_VARIABLE_RE.match(save_as):
             raise ValidationError(f'步骤 {index} 的存储变量名不合法: {save_as}')
 
+        transaction_id = str(step_data.get('transaction_id', '') or '').strip()
+        transaction_name = str(step_data.get('transaction_name', '') or '').strip()
+        if transaction_name and not transaction_id:
+            transaction_id = str(uuid.uuid4())
+        if transaction_id and not transaction_name:
+            raise ValidationError(f'步骤 {index} 的事务块名称不能为空')
+
         step_data['description'] = description
         step_data['save_as'] = save_as
+        step_data['transaction_id'] = transaction_id
+        step_data['transaction_name'] = transaction_name
         validated_steps.append(step_data)
 
     return validated_steps
@@ -534,6 +556,10 @@ class LocatorStrategyViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
     serializer_class = LocatorStrategySerializer
     ordering = ['id']
+
+    def get_queryset(self):
+        ensure_default_locator_strategies()
+        return super().get_queryset().order_by('id')
 
 
 class ElementViewSet(viewsets.ModelViewSet):
@@ -1431,7 +1457,9 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                         assert_type=step_data.get('assert_type', ''),
                         assert_value=step_data.get('assert_value', ''),
                         description=step_data.get('description', ''),
-                        save_as=step_data.get('save_as', '')
+                        save_as=step_data.get('save_as', ''),
+                        transaction_id=step_data.get('transaction_id', ''),
+                        transaction_name=step_data.get('transaction_name', '')
                     )
                     created_count += 1
                 except Exception as e:
@@ -1576,6 +1604,8 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                         assert_value=resolved_step['assert_value'],
                         description=resolved_step['description'],
                         save_as=resolved_step['save_as'],
+                        transaction_id=resolved_step['transaction_id'],
+                        transaction_name=resolved_step['transaction_name'],
                     )
 
         return Response({
@@ -1616,7 +1646,9 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                     assert_type=step.assert_type,
                     assert_value=step.assert_value,
                     description=step.description,
-                    save_as=step.save_as
+                    save_as=step.save_as,
+                    transaction_id=step.transaction_id,
+                    transaction_name=step.transaction_name
                 ))
 
             if new_steps:
@@ -1680,7 +1712,9 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                         assert_type=step_data.get('assert_type', ''),
                         assert_value=step_data.get('assert_value', ''),
                         description=step_data.get('description', ''),
-                        save_as=step_data.get('save_as', '')
+                        save_as=step_data.get('save_as', ''),
+                        transaction_id=step_data.get('transaction_id', ''),
+                        transaction_name=step_data.get('transaction_name', '')
                     )
                     created_count += 1
                 except Exception as e:

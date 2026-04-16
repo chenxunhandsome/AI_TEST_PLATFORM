@@ -1,7 +1,7 @@
-<template>
+﻿<template>
   <div class="element-manager">
     <div class="element-layout">
-      <!-- 左侧页面树 -->
+      <!-- 宸︿晶椤甸潰鏍?-->
       <div class="sidebar">
         <div class="sidebar-header">
           <el-select v-model="selectedProject" :placeholder="$t('common.selectProject')" @change="onProjectChange">
@@ -29,8 +29,12 @@
             :data="treeData"
             :props="treeProps"
             node-key="id"
+            show-checkbox
+            check-strictly
+            :default-checked-keys="checkedElementIds"
             :expand-on-click-node="false"
             :default-expanded-keys="expandedKeys"
+            @check="handleTreeCheck"
             @node-click="onNodeClick"
             @node-contextmenu="onNodeRightClick"
             @node-expand="onNodeExpand"
@@ -45,7 +49,7 @@
                   <Document />
                 </el-icon>
 
-                <!-- 页面名称编辑 -->
+                <!-- 椤甸潰鍚嶇О缂栬緫 -->
                 <div v-if="data.type === 'page' && editingNodeId === data.id" class="node-edit">
                   <el-input
                     v-model="editingNodeName"
@@ -57,7 +61,7 @@
                   />
                 </div>
 
-                <!-- 普通显示模式 -->
+                <!-- 鏅€氭樉绀烘ā寮?-->
                 <span v-else class="node-label">{{ node.label }}</span>
 
                 <span v-if="data.type === 'element'" class="element-type-tag" :class="data.element_type?.toLowerCase()">
@@ -69,8 +73,15 @@
         </div>
       </div>
 
-      <!-- 右侧元素详情 -->
+      <!-- 鍙充晶鍏冪礌璇︽儏 -->
       <div class="main-content">
+        <div class="content-toolbar">
+          <el-button :disabled="!selectedProject" @click="openImportDialog">导入文件</el-button>
+          <el-button :disabled="!selectedElementCount" @click="handleExportSelectedElement">导出选中元素</el-button>
+          <el-button :disabled="!selectedProject" @click="handleExportAllElements">导出全部元素</el-button>
+          <el-button :disabled="!selectedElementCount" @click="openTransferDialog('selected')">复制选中元素</el-button>
+          <el-button :disabled="!selectedProject" @click="openTransferDialog('all')">复制全部元素</el-button>
+        </div>
         <div v-if="!selectedElement" class="empty-state">
           <el-empty :description="$t('uiAutomation.element.emptyElementTip')">
             <el-button type="primary" @click="createEmptyElement">{{ $t('uiAutomation.element.createNewElement') }}</el-button>
@@ -78,7 +89,7 @@
         </div>
 
         <div v-else class="element-detail">
-          <!-- 元素基本信息 -->
+          <!-- 鍏冪礌鍩烘湰淇℃伅 -->
           <div class="element-header">
             <div class="element-info">
               <el-form ref="elementHeaderFormRef" :model="selectedElement" :rules="elementHeaderRules" inline>
@@ -114,7 +125,7 @@
             </div>
           </div>
 
-          <!-- 元素配置 -->
+          <!-- 鍏冪礌閰嶇疆 -->
           <div class="element-form">
             <el-form ref="elementFormRef" :key="formKey" :model="selectedElement" :rules="elementRules" label-width="100px">
               <el-row :gutter="20">
@@ -198,7 +209,7 @@
       </div>
     </div>
 
-    <!-- 创建页面对话框 -->
+    <!-- 鍒涘缓椤甸潰瀵硅瘽妗?-->
     <el-dialog v-model="showCreatePageDialog" :title="$t('uiAutomation.element.createPageTitle')" width="500px" :close-on-click-modal="false">
       <el-form ref="pageFormRef" :model="pageForm" :rules="pageRules" label-width="100px">
         <el-form-item :label="$t('uiAutomation.element.pageName')" prop="name">
@@ -225,14 +236,14 @@
       </template>
     </el-dialog>
 
-    <!-- 右键菜单 -->
+    <!-- 鍙抽敭鑿滃崟 -->
     <ul v-show="showContextMenu" class="context-menu" :style="{ left: contextMenuX + 'px', top: contextMenuY + 'px' }">
       <li @click="addContextElement">{{ $t('uiAutomation.element.contextMenu.addElement') }}</li>
-      <!-- 只有在普通页面节点下才显示"新增子页面"选项 -->
+      <!-- 鍙湁鍦ㄦ櫘閫氶〉闈㈣妭鐐逛笅鎵嶆樉绀?鏂板瀛愰〉闈?閫夐」 -->
       <li v-if="rightClickedNode && rightClickedNode.type === 'page' && rightClickedNode.id !== 'unassigned'" @click="addSubPage">
         {{ $t('uiAutomation.element.contextMenu.addSubPage') }}
       </li>
-      <!-- "未关联页面"节点不显示编辑和删除选项 -->
+      <!-- "鏈叧鑱旈〉闈?鑺傜偣涓嶆樉绀虹紪杈戝拰鍒犻櫎閫夐」 -->
       <li v-if="rightClickedNode && rightClickedNode.id !== 'unassigned'" @click="editNode">
         {{ $t('uiAutomation.element.contextMenu.edit') }}
       </li>
@@ -241,7 +252,7 @@
       </li>
     </ul>
 
-    <!-- 编辑页面对话框 -->
+    <!-- 缂栬緫椤甸潰瀵硅瘽妗?-->
     <el-dialog v-model="showEditPageDialog" :title="$t('uiAutomation.element.editPageTitle')" width="500px" :close-on-click-modal="false">
       <el-form ref="editPageFormRef" :model="editPageForm" :rules="pageRules" label-width="100px">
         <el-form-item :label="$t('uiAutomation.element.pageName')" prop="name">
@@ -265,6 +276,67 @@
       <template #footer>
         <el-button @click="showEditPageDialog = false">{{ $t('uiAutomation.common.cancel') }}</el-button>
         <el-button type="primary" @click="updatePage">{{ $t('uiAutomation.common.save') }}</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="showImportDialog" title="导入元素" width="520px" :close-on-click-modal="false">
+      <el-form label-width="100px">
+        <el-form-item label="目标项目">
+          <el-select v-model="importTargetProject" placeholder="请选择目标项目" style="width: 100%">
+            <el-option
+              v-for="project in projects"
+              :key="project.id"
+              :label="project.name"
+              :value="project.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="JSON文件">
+          <el-upload
+            :auto-upload="false"
+            :limit="1"
+            accept=".json,application/json"
+            :show-file-list="true"
+            :on-change="handleImportFileChange"
+            :on-remove="handleImportFileRemove"
+          >
+            <el-button>选择文件</el-button>
+          </el-upload>
+        </el-form-item>
+        <el-form-item label="覆盖已存在">
+          <el-switch v-model="importOverwrite" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showImportDialog = false">取消</el-button>
+        <el-button type="primary" :loading="importing" @click="submitImportFile">开始导入</el-button>
+      </template>
+    </el-dialog>
+    <el-dialog v-model="showTransferDialog" title="复制元素到项目" width="520px" :close-on-click-modal="false">
+      <el-form label-width="100px">
+        <el-form-item label="来源项目">
+          <span>{{ currentProjectName || '-' }}</span>
+        </el-form-item>
+        <el-form-item label="复制范围">
+          <span>{{ transferScopeLabel }}</span>
+        </el-form-item>
+        <el-form-item label="目标项目">
+          <el-select v-model="transferTargetProject" placeholder="请选择目标项目" style="width: 100%">
+            <el-option
+              v-for="project in projects"
+              :key="project.id"
+              :label="project.name"
+              :value="project.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="覆盖已存在">
+          <el-switch v-model="transferOverwrite" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showTransferDialog = false">取消</el-button>
+        <el-button type="primary" :loading="transferring" @click="submitTransfer">开始复制</el-button>
       </template>
     </el-dialog>
   </div>
@@ -292,44 +364,57 @@ import {
   updateElementGroup,
   deleteElementGroup,
   getLocatorStrategies,
+  exportElements,
+  importElements,
   validateElementLocator,
   generateElementSuggestions
 } from '@/api/ui_automation'
 import { useUiAutomationStore } from '@/stores/uiAutomation'
 
-// 国际化
+// 鍥介檯鍖?
 const { t } = useI18n()
 const uiAutomationStore = useUiAutomationStore()
 
-// 响应式数据
+// 鍝嶅簲寮忔暟鎹?
 const projects = ref([])
 const selectedProject = ref('')
 const pages = ref([])
 const locatorStrategies = ref([])
 const treeData = ref([])
 const selectedElement = ref(null)
+const checkedElementIds = ref([])
 const expandedKeys = ref([])
-const treeKey = ref(0) // 用于强制重新渲染树组件
-const formKey = ref(0) // 用于强制重新渲染表单组件
+const treeKey = ref(0) // 鐢ㄤ簬寮哄埗閲嶆柊娓叉煋鏍戠粍浠?
+const formKey = ref(0) // 鐢ㄤ簬寮哄埗閲嶆柊娓叉煋琛ㄥ崟缁勪欢
 
-// 表单引用
+// 琛ㄥ崟寮曠敤
 const treeRef = ref(null)
 const pageFormRef = ref(null)
 const editPageFormRef = ref(null)
 const elementFormRef = ref(null)
 const elementHeaderFormRef = ref(null)
+const showImportDialog = ref(false)
+const showTransferDialog = ref(false)
+const importFile = ref(null)
+const importOverwrite = ref(false)
+const importTargetProject = ref('')
+const importing = ref(false)
+const transferring = ref(false)
+const transferOverwrite = ref(false)
+const transferTargetProject = ref('')
+const transferScope = ref('all')
 
-// 对话框控制
+// 瀵硅瘽妗嗘帶鍒?
 const showCreatePageDialog = ref(false)
 const showEditPageDialog = ref(false)
 
-// 右键菜单
+// 鍙抽敭鑿滃崟
 const showContextMenu = ref(false)
 const contextMenuX = ref(0)
 const contextMenuY = ref(0)
 const rightClickedNode = ref(null)
 
-// 表单数据
+// 琛ㄥ崟鏁版嵁
 const pageForm = reactive({
   name: '',
   description: '',
@@ -343,20 +428,21 @@ const editPageForm = reactive({
   parent_page: null
 })
 
-// 树形组件配置
+// 鏍戝舰缁勪欢閰嶇疆
 const treeProps = {
   children: 'children',
-  label: 'name'
+  label: 'name',
+  disabled: 'disabled'
 }
 
-// 表单验证规则
+// 琛ㄥ崟楠岃瘉瑙勫垯
 const pageRules = computed(() => ({
   name: [
     { required: true, message: t('uiAutomation.element.rules.pageNameRequired'), trigger: 'blur' }
   ]
 }))
 
-// 元素表单头部验证规则（元素名称）
+// 鍏冪礌琛ㄥ崟澶撮儴楠岃瘉瑙勫垯锛堝厓绱犲悕绉帮級
 const elementHeaderRules = computed(() => ({
   name: [
     { required: true, message: t('uiAutomation.element.rules.nameRequired'), trigger: 'blur' },
@@ -364,7 +450,7 @@ const elementHeaderRules = computed(() => ({
   ]
 }))
 
-// 元素表单验证规则
+// 鍏冪礌琛ㄥ崟楠岃瘉瑙勫垯
 const elementRules = computed(() => ({
   locator_strategy_id: [
     { required: true, message: t('uiAutomation.element.rules.strategyRequired'), trigger: 'change' }
@@ -375,7 +461,7 @@ const elementRules = computed(() => ({
   ]
 }))
 
-// 获取元素类型标签
+// 鑾峰彇鍏冪礌绫诲瀷鏍囩
 const getElementTypeLabel = (type) => {
   const typeKey = type?.toLowerCase()
   const typeMap = {
@@ -394,7 +480,7 @@ const getElementTypeLabel = (type) => {
   return typeMap[typeKey] || type
 }
 
-// 获取所有页面
+// 鑾峰彇鎵€鏈夐〉闈?
 const getAllPages = () => {
   const allPages = []
 
@@ -416,7 +502,7 @@ const getAllPages = () => {
   return allPages
 }
 
-// 获取所有页面（除了指定ID的页面）
+// 鑾峰彇鎵€鏈夐〉闈紙闄や簡鎸囧畾ID鐨勯〉闈級
 const getAllPagesExceptCurrent = (currentId) => {
   const allPages = []
 
@@ -438,19 +524,32 @@ const getAllPagesExceptCurrent = (currentId) => {
   return allPages
 }
 
-// 页面名称编辑相关
+// 椤甸潰鍚嶇О缂栬緫鐩稿叧
 const editingNodeId = ref(null)
 const editingNodeName = ref('')
 const editInputRef = ref(null)
 
-// 状态
+// 鐘舵€?
 const saving = ref(false)
 const validating = ref(false)
 const generating = ref(false)
 const suggestions = ref([])
 
+const currentProjectName = computed(() => {
+  return projects.value.find(project => project.id === selectedProject.value)?.name || ''
+})
 
-// 将关键变量暴露到window对象，方便在控制台调试
+const selectedElementCount = computed(() => checkedElementIds.value.length)
+
+const transferScopeLabel = computed(() => {
+  if (transferScope.value === 'selected') {
+    return `已勾选 ${selectedElementCount.value} 个元素`
+  }
+  return '当前项目全部元素'
+})
+
+
+// 灏嗗叧閿彉閲忔毚闇插埌window瀵硅薄锛屾柟渚垮湪鎺у埗鍙拌皟璇?
 const exposeToWindow = () => {
   if (typeof window !== 'undefined') {
     window.ELEMENTS_DEBUG = {
@@ -461,16 +560,16 @@ const exposeToWindow = () => {
       treeRef: typeof treeRef !== 'undefined' ? treeRef : null,
       expandedKeys,
       pages,
-      $vm: { // 当前组件实例
+      $vm: { // 褰撳墠缁勪欢瀹炰緥
         treeData: treeData.value,
         projects: projects.value,
         pages: pages.value,
         expandedKeys: expandedKeys.value
       }
     }
-    console.log('=== Vue组件调试信息已暴露 ===')
-    console.log('Window可用调试变量已设置')
-    console.log('控制台可直接访问:')
+    console.log('=== Vue缁勪欢璋冭瘯淇℃伅宸叉毚闇?===')
+    console.log('Debug helpers exposed on window')
+    console.log('鎺у埗鍙板彲鐩存帴璁块棶:')
     console.log('  window.ELEMENTS_DEBUG.treeData')
     console.log('  window.ELEMENTS_DEBUG.projects')
     console.log('  window.ELEMENTS_DEBUG.selectedElement')
@@ -478,45 +577,45 @@ const exposeToWindow = () => {
   }
 }
 
-// 组件挂载
+// 缁勪欢鎸傝浇
 onMounted(async () => {
-  console.log('=== 组件挂载开始 ===')
+  console.log('=== 缁勪欢鎸傝浇寮€濮?===')
 
   await loadProjects()
   await loadLocatorStrategies()
 
-  console.log('项目数量:', projects.value.length)
-  console.log('定位策略:', locatorStrategies.value.length)
+  console.log('椤圭洰鏁伴噺:', projects.value.length)
+  console.log('瀹氫綅绛栫暐:', locatorStrategies.value.length)
 
   if (projects.value.length > 0) {
-    console.log('设置初始项目为:', projects.value[0].id)
+    console.log('璁剧疆鍒濆椤圭洰涓?', projects.value[0].id)
     selectedProject.value = uiAutomationStore.resolveSelectedProjectId(projects.value)
     await onProjectChange()
-    console.log('onProjectChange完成')
+    console.log('onProjectChange瀹屾垚')
   }
 
-  // 暴露调试信息
+  // 鏆撮湶璋冭瘯淇℃伅
   exposeToWindow()
 
-  console.log('=== 组件挂载完成 ===')
+  console.log('=== 缁勪欢鎸傝浇瀹屾垚 ===')
 })
 
-// 加载项目列表
+// 鍔犺浇椤圭洰鍒楄〃
 const loadProjects = async () => {
   try {
     const response = await getUiProjects()
     projects.value = response.data?.results || response.data || []
   } catch (error) {
-    console.error('获取项目列表失败:', error)
+    console.error('鑾峰彇椤圭洰鍒楄〃澶辫触:', error)
   }
 }
 
-// 提供控制台调试帮助函数
+// 鎻愪緵鎺у埗鍙拌皟璇曞府鍔╁嚱鏁?
 const debugTree = () => {
   if (typeof window !== 'undefined') {
-    console.log('=== 树数据调试 ===')
+    console.log('=== 鏍戞暟鎹皟璇?===')
     console.log('treeData:', treeData.value)
-    console.log('页面对象:',
+    console.log('椤甸潰瀵硅薄:',
       treeData.value.map(p => ({
         id: p.id,
         name: p.name,
@@ -526,7 +625,7 @@ const debugTree = () => {
       }))
     )
 
-    // 找出所有元素
+    // 鎵惧嚭鎵€鏈夊厓绱?
     const allElements = []
     const findElements = (nodes, parent) => {
       nodes.forEach(node => {
@@ -542,26 +641,26 @@ const debugTree = () => {
       })
     }
     findElements(treeData.value, null)
-    console.log('所有元素:', allElements)
+    console.log('鎵€鏈夊厓绱?', allElements)
 
-    // 暴露到window
+    // 鏆撮湶鍒皐indow
     window.debugTreeData = debugTree
-    console.log('调试函数已挂载到 window.debugTreeData()')
+    console.log('璋冭瘯鍑芥暟宸叉寕杞藉埌 window.debugTreeData()')
     console.log('===============================')
   }
 }
 
-// 加载定位策略
+// 鍔犺浇瀹氫綅绛栫暐
 const loadLocatorStrategies = async () => {
   try {
     const response = await getLocatorStrategies()
     locatorStrategies.value = response.data?.results || response.data || []
   } catch (error) {
-    console.error('获取定位策略失败:', error)
+    console.error('鑾峰彇瀹氫綅绛栫暐澶辫触:', error)
   }
 }
 
-// 加载页面（分组）
+// 鍔犺浇椤甸潰锛堝垎缁勶級
 const loadPages = async () => {
   if (!selectedProject.value) return
 
@@ -569,33 +668,34 @@ const loadPages = async () => {
     const response = await getElementGroups({ project: selectedProject.value })
     pages.value = response.data?.results || response.data || []
   } catch (error) {
-    console.error('获取页面失败:', error)
+    console.error('鑾峰彇椤甸潰澶辫触:', error)
   }
 }
 
-// 加载页面树结构
+// 鍔犺浇椤甸潰鏍戠粨鏋?
 const loadPageTree = async () => {
   if (!selectedProject.value) return
 
   try {
     const response = await getElementGroupTree({ project: selectedProject.value })
-    // 构建完整的树形结构
+    // 鏋勫缓瀹屾暣鐨勬爲褰㈢粨鏋?
     const buildTree = (groups) => {
       return groups.map(group => ({
         ...group,
         type: 'page',
+        disabled: true,
         children: group.children ? buildTree(group.children) : []
       }))
     }
 
     treeData.value = buildTree(response.data || [])
   } catch (error) {
-    console.error('获取页面树失败:', error)
+    console.error('鑾峰彇椤甸潰鏍戝け璐?', error)
     treeData.value = []
   }
 }
 
-// 加载元素树
+// 鍔犺浇鍏冪礌鏍?
 const loadElementTree = async () => {
   if (!selectedProject.value) {
     treeData.value = []
@@ -603,60 +703,62 @@ const loadElementTree = async () => {
   }
 
   try {
-    // 并行加载页面树和元素
+    // 骞惰鍔犺浇椤甸潰鏍戝拰鍏冪礌
     const [pageTreeResponse, elementsResponse] = await Promise.all([
       getElementGroupTree({ project: selectedProject.value }),
       getElementTree({ project: selectedProject.value })
     ])
 
-    // 构建完整的树形结构
+    // 鏋勫缓瀹屾暣鐨勬爲褰㈢粨鏋?
     const buildTree = (groups) => {
       return groups.map(group => ({
         ...group,
         type: 'page',
+        disabled: true,
         children: group.children ? buildTree(group.children) : []
       }))
     }
 
     const pageNodes = buildTree(pageTreeResponse.data || [])
 
-    // 调试信息 - 检查API返回的完整响应结构
-    console.log('=== 加载元素树调试 ===')
-    console.log('页面树响应:', pageTreeResponse)
-    console.log('元素响应:', elementsResponse)
+    // 璋冭瘯淇℃伅 - 妫€鏌PI杩斿洖鐨勫畬鏁村搷搴旂粨鏋?
+    console.log('=== 鍔犺浇鍏冪礌鏍戣皟璇?===')
+    console.log('椤甸潰鏍戝搷搴?', pageTreeResponse)
+    console.log('鍏冪礌鍝嶅簲:', elementsResponse)
 
-    // 打印原始数据进行分析
-    console.log('页面树原始数据:', JSON.parse(JSON.stringify(pageTreeResponse.data || []), null, 2))
+    // 鎵撳嵃鍘熷鏁版嵁杩涜鍒嗘瀽
+    console.log('椤甸潰鏍戝師濮嬫暟鎹?', JSON.parse(JSON.stringify(pageTreeResponse.data || []), null, 2))
 
     const elements = elementsResponse.data?.results || elementsResponse.data || []
-    console.log('提取的元素列表:', elements)
+    console.log('鎻愬彇鐨勫厓绱犲垪琛?', elements)
 
-    // 获取所有页面的ID，用于调试
+    // 鑾峰彇鎵€鏈夐〉闈㈢殑ID锛岀敤浜庤皟璇?
     const pageIds = pageNodes.map(page => page.id)
-    console.log('页面ID列表:', pageIds)
+    console.log('椤甸潰ID鍒楄〃:', pageIds)
 
-    // 将元素添加到对应页面下
+    // 灏嗗厓绱犳坊鍔犲埌瀵瑰簲椤甸潰涓?
     const attachedElementIds = new Set()
 
     const attachElementsToPages = (pages) => {
       pages.forEach(page => {
-        // 找到属于当前页面的元素
+        // 鎵惧埌灞炰簬褰撳墠椤甸潰鐨勫厓绱?
         const pageElements = elements.filter(element => element.group_id === page.id)
-        console.log(`页面 ${page.name} (ID: ${page.id}) 找到 ${pageElements.length} 个关联元素`, pageElements)
+        console.log(`Page ${page.name} (ID: ${page.id}) matched ${pageElements.length} elements`, pageElements)
 
         const elementNodes = pageElements.map(element => {
           attachedElementIds.add(element.id)
           return {
             ...element,
-            type: 'element'
+            type: 'element',
+            disabled: false
           }
         })
 
-        // 将元素添加到页面的子节点中
+        // 灏嗗厓绱犳坊鍔犲埌椤甸潰鐨勫瓙鑺傜偣涓?
         page.children = page.children ? [...page.children, ...elementNodes] : [...elementNodes]
-        console.log(`页面 ${page.name} 现在有 ${page.children.filter(c => c.type === 'element').length} 个子元素`)
+        console.log(`Page ${page.name} now has ${page.children.filter(c => c.type === 'element').length} element children`)
 
-        // 递归处理子页面
+        // 閫掑綊澶勭悊瀛愰〉闈?
         if (page.children) {
           attachElementsToPages(page.children.filter(child => child.type === 'page'))
         }
@@ -665,73 +767,91 @@ const loadElementTree = async () => {
 
     attachElementsToPages(pageNodes)
 
-    // 添加未关联页面的元素到"未关联页面"节点
-    // 包括：1. group_id 为 null/undefined 的元素
-    //       2. group_id 指向的页面不存在的元素
+    // 娣诲姞鏈叧鑱旈〉闈㈢殑鍏冪礌鍒?鏈叧鑱旈〉闈?鑺傜偣
+    // 鍖呮嫭锛?. group_id 涓?null/undefined 鐨勫厓绱?
+    //       2. group_id 鎸囧悜鐨勯〉闈笉瀛樺湪鐨勫厓绱?
     const unassignedElements = elements.filter(element => {
-      // 如果没有group_id，肯定是未关联的
+      // 濡傛灉娌℃湁group_id锛岃偗瀹氭槸鏈叧鑱旂殑
       if (!element.group_id) {
         return true
       }
-      // 如果有group_id但没有被添加到任何页面（页面不存在），也算未关联
+      // 濡傛灉鏈塯roup_id浣嗘病鏈夎娣诲姞鍒颁换浣曢〉闈紙椤甸潰涓嶅瓨鍦級锛屼篃绠楁湭鍏宠仈
       return !attachedElementIds.has(element.id)
     })
 
-    console.log('未关联页面的元素:', unassignedElements)
+    console.log('鏈叧鑱旈〉闈㈢殑鍏冪礌:', unassignedElements)
 
     if (unassignedElements.length > 0) {
       const unassignedPage = {
         id: 'unassigned',
-        name: '未关联页面',
+        name: 'Unassigned',
         type: 'page',
+        disabled: true,
         children: unassignedElements.map(element => ({
           ...element,
-          type: 'element'
+          type: 'element',
+          disabled: false
         }))
       }
-      pageNodes.unshift(unassignedPage) // 添加到列表最前面
-      console.log(`已添加 ${unassignedElements.length} 个未关联元素到"未关联页面"节点`)
-      // 默认展开未关联页面节点
+      pageNodes.unshift(unassignedPage) // 娣诲姞鍒板垪琛ㄦ渶鍓嶉潰
+      console.log(`Added ${unassignedElements.length} unassigned elements to the unassigned node`)
+      // 榛樿灞曞紑鏈叧鑱旈〉闈㈣妭鐐?
       expandedKeys.value.push('unassigned')
     }
 
-    console.log('最终treeData:', pageNodes)
+    console.log('鏈€缁坱reeData:', pageNodes)
     treeData.value = pageNodes
+    const collectElementIds = (nodes, target = new Set()) => {
+      nodes.forEach(node => {
+        if (node.type === 'element') {
+          target.add(node.id)
+        }
+        if (node.children?.length) {
+          collectElementIds(node.children, target)
+        }
+      })
+      return target
+    }
+    const availableElementIds = collectElementIds(pageNodes)
+    checkedElementIds.value = checkedElementIds.value.filter(id => availableElementIds.has(id))
 
-    // 将treeData暴露到window，方便在控制台调试
+    // 灏唗reeData鏆撮湶鍒皐indow锛屾柟渚垮湪鎺у埗鍙拌皟璇?
     if (typeof window !== 'undefined') {
       window.vue_treeData = treeData.value
-      console.log('treeData已挂载到window.vue_treeData，可在控制台查看')
-      console.log('当前treeData结构:', JSON.parse(JSON.stringify(treeData.value)).map(p => ({
+      console.log('treeData宸叉寕杞藉埌window.vue_treeData锛屽彲鍦ㄦ帶鍒跺彴鏌ョ湅')
+      console.log('褰撳墠treeData缁撴瀯:', JSON.parse(JSON.stringify(treeData.value)).map(p => ({
         name: p.name,
         id: p.id,
         children: p.children?.filter(c => c.type === 'element').length || 0
       })))
     }
+    await nextTick()
+    treeRef.value?.setCheckedKeys(checkedElementIds.value)
   } catch (error) {
-    console.error('获取元素树失败:', error)
+    console.error('鑾峰彇鍏冪礌鏍戝け璐?', error)
     treeData.value = []
   }
 }
 
-// 项目切换
+// 椤圭洰鍒囨崲
 const onProjectChange = async () => {
   uiAutomationStore.setSelectedProject(selectedProject.value)
   selectedElement.value = null
+  checkedElementIds.value = []
   suggestions.value = []
 
-  console.log('=== 项目切换调试 ===')
-  console.log('当前项目ID:', selectedProject.value)
+  console.log('=== 椤圭洰鍒囨崲璋冭瘯 ===')
+  console.log('褰撳墠椤圭洰ID:', selectedProject.value)
 
   await Promise.all([
     loadPages(),
     loadElementTree()
   ])
 
-  console.log('项目切换完成，检查treeData:', treeData.value)
-  console.log('treeData长度:', treeData.value.length)
+  console.log('椤圭洰鍒囨崲瀹屾垚锛屾鏌reeData:', treeData.value)
+  console.log('treeData闀垮害:', treeData.value.length)
   if (treeData.value.length > 0) {
-    console.log('第一页信息:', {
+    console.log('绗竴椤典俊鎭?', {
       id: treeData.value[0].id,
       name: treeData.value[0].name,
       type: treeData.value[0].type,
@@ -739,71 +859,270 @@ const onProjectChange = async () => {
     })
   }
 
-  // 项目切换时强制刷新树
+  // 椤圭洰鍒囨崲鏃跺己鍒跺埛鏂版爲
   treeKey.value += 1
 }
 
-// 创建空元素
+const handleTreeCheck = () => {
+  checkedElementIds.value = (treeRef.value?.getCheckedNodes(false, false) || [])
+    .filter(node => node.type === 'element')
+    .map(node => node.id)
+}
+
+// 鍒涘缓绌哄厓绱?
 const createEmptyElement = () => {
   selectedElement.value = {
     name: '',
     element_type: 'BUTTON',
     page: '',
     component_name: '',
-    locator_strategy_id: null, // 使用null而不是空字符串
+    locator_strategy_id: null, // 浣跨敤null鑰屼笉鏄┖瀛楃涓?
     locator_value: '',
     wait_timeout: 5,
-    force_action: false,  // 强制操作选项，默认禁用
+    force_action: false,  // 寮哄埗鎿嶄綔閫夐」锛岄粯璁ょ鐢?
     description: ''
   }
 }
 
-// 验证单个字段（用于失焦验证）
+const getDefaultTargetProjectId = (sourceProjectId = selectedProject.value) => {
+  const otherProject = projects.value.find(project => project.id !== sourceProjectId)
+  return otherProject?.id || sourceProjectId || projects.value[0]?.id || ''
+}
+
+const getDownloadFilename = (contentDisposition, fallbackName) => {
+  if (!contentDisposition) {
+    return fallbackName
+  }
+
+  const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(contentDisposition)
+  if (utf8Match?.[1]) {
+    return decodeURIComponent(utf8Match[1])
+  }
+
+  const plainMatch = /filename="?([^"]+)"?/i.exec(contentDisposition)
+  if (plainMatch?.[1]) {
+    return plainMatch[1]
+  }
+
+  return fallbackName
+}
+
+const downloadBlob = (blob, filename) => {
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  window.URL.revokeObjectURL(url)
+}
+
+const fetchElementManifest = async (ids = []) => {
+  const response = await exportElements({
+    project: selectedProject.value,
+    ids: ids.join(',')
+  })
+  const blob = response.data instanceof Blob
+    ? response.data
+    : new Blob([response.data], { type: response.headers['content-type'] || 'application/json' })
+  const manifestText = await blob.text()
+
+  return {
+    manifest: JSON.parse(manifestText),
+    blob,
+    filename: getDownloadFilename(
+      response.headers['content-disposition'],
+      `ui-elements-project-${selectedProject.value}.json`
+    )
+  }
+}
+
+const openImportDialog = () => {
+  if (!selectedProject.value) {
+    ElMessage.warning('请先选择项目')
+    return
+  }
+
+  importFile.value = null
+  importOverwrite.value = false
+  importTargetProject.value = getDefaultTargetProjectId()
+  showImportDialog.value = true
+}
+
+const handleImportFileChange = (file) => {
+  importFile.value = file.raw
+}
+
+const handleImportFileRemove = () => {
+  importFile.value = null
+}
+
+const submitImportFile = async () => {
+  if (!importTargetProject.value) {
+    ElMessage.warning('请选择目标项目')
+    return
+  }
+
+  if (!importFile.value) {
+    ElMessage.warning('请先选择导入文件')
+    return
+  }
+
+  importing.value = true
+  try {
+    const formData = new FormData()
+    formData.append('project', importTargetProject.value)
+    formData.append('overwrite', importOverwrite.value ? '1' : '0')
+    formData.append('file', importFile.value)
+
+    const response = await importElements(formData)
+    const summary = response.data?.summary || {}
+    ElMessage.success(`导入成功，新增 ${summary.created || 0} 个，更新 ${summary.updated || 0} 个，复用 ${summary.reused || 0} 个`)
+    showImportDialog.value = false
+
+    if (String(importTargetProject.value) === String(selectedProject.value)) {
+      await Promise.all([loadPages(), loadElementTree()])
+      treeKey.value += 1
+    }
+  } catch (error) {
+    console.error('Import elements failed:', error)
+    ElMessage.error(error.response?.data?.detail || error.response?.data?.message || '导入失败')
+  } finally {
+    importing.value = false
+  }
+}
+
+const handleExportSelectedElement = async () => {
+  if (!selectedElementCount.value) {
+    ElMessage.warning('请先勾选要导出的元素')
+    return
+  }
+
+  try {
+    const { blob, filename } = await fetchElementManifest(checkedElementIds.value)
+    downloadBlob(blob, filename)
+    ElMessage.success('导出成功')
+  } catch (error) {
+    console.error('Export current element failed:', error)
+    ElMessage.error('导出失败')
+  }
+}
+
+const handleExportAllElements = async () => {
+  if (!selectedProject.value) {
+    ElMessage.warning('请先选择项目')
+    return
+  }
+
+  try {
+    const { blob, filename } = await fetchElementManifest([])
+    downloadBlob(blob, filename)
+    ElMessage.success('导出成功')
+  } catch (error) {
+    console.error('Export all elements failed:', error)
+    ElMessage.error('导出失败')
+  }
+}
+
+const openTransferDialog = (scope) => {
+  if (!selectedProject.value) {
+    ElMessage.warning('请先选择项目')
+    return
+  }
+
+  if (scope === 'selected' && !selectedElementCount.value) {
+    ElMessage.warning('请先勾选要复制的元素')
+    return
+  }
+
+  transferScope.value = scope
+  transferOverwrite.value = false
+  transferTargetProject.value = getDefaultTargetProjectId()
+  showTransferDialog.value = true
+}
+
+const submitTransfer = async () => {
+  if (!transferTargetProject.value) {
+    ElMessage.warning('请选择目标项目')
+    return
+  }
+
+  const exportIds = transferScope.value === 'selected' && selectedElementCount.value
+    ? checkedElementIds.value
+    : []
+
+  transferring.value = true
+  try {
+    const { manifest } = await fetchElementManifest(exportIds)
+    const formData = new FormData()
+    formData.append('project', transferTargetProject.value)
+    formData.append('overwrite', transferOverwrite.value ? '1' : '0')
+    formData.append('manifest', JSON.stringify(manifest))
+
+    const response = await importElements(formData)
+    const summary = response.data?.summary || {}
+    ElMessage.success(`复制成功，新增 ${summary.created || 0} 个，更新 ${summary.updated || 0} 个，复用 ${summary.reused || 0} 个`)
+    showTransferDialog.value = false
+
+    if (String(transferTargetProject.value) === String(selectedProject.value)) {
+      await Promise.all([loadPages(), loadElementTree()])
+      treeKey.value += 1
+    }
+  } catch (error) {
+    console.error('Copy elements to project failed:', error)
+    ElMessage.error(error.response?.data?.detail || error.response?.data?.message || '复制失败')
+  } finally {
+    transferring.value = false
+  }
+}
+
+// 楠岃瘉鍗曚釜瀛楁锛堢敤浜庡け鐒﹂獙璇侊級
 const validateField = async (field) => {
   if (!elementFormRef.value) return
   try {
     await elementFormRef.value.validateField(field)
   } catch (error) {
-    // 验证失败，不需要做任何处理，错误会自动显示
+    // 楠岃瘉澶辫触锛屼笉闇€瑕佸仛浠讳綍澶勭悊锛岄敊璇細鑷姩鏄剧ず
   }
 }
 
-// 验证头部表单字段（元素名称）
+// 楠岃瘉澶撮儴琛ㄥ崟瀛楁锛堝厓绱犲悕绉帮級
 const validateHeaderField = async (field) => {
   if (!elementHeaderFormRef.value) return
   try {
     await elementHeaderFormRef.value.validateField(field)
   } catch (error) {
-    // 验证失败，不需要做任何处理，错误会自动显示
+    // 楠岃瘉澶辫触锛屼笉闇€瑕佸仛浠讳綍澶勭悊锛岄敊璇細鑷姩鏄剧ず
   }
 }
 
-// 验证整个元素表单
+// 楠岃瘉鏁翠釜鍏冪礌琛ㄥ崟
 const validateElementForm = async () => {
   const results = await Promise.allSettled([
     elementHeaderFormRef.value?.validate() ?? Promise.resolve(),
     elementFormRef.value?.validate() ?? Promise.resolve()
   ])
 
-  // 检查是否有验证失败的情况
+  // 妫€鏌ユ槸鍚︽湁楠岃瘉澶辫触鐨勬儏鍐?
   const hasFailed = results.some(result => result.status === 'rejected')
   return !hasFailed
 }
 
-// 创建页面
+// 鍒涘缓椤甸潰
 const createPage = async () => {
   const validate = await pageFormRef.value.validate()
   if (!validate) return
 
   try {
-    // 构建创建页面的参数，正确处理父页面参数
+    // 鏋勫缓鍒涘缓椤甸潰鐨勫弬鏁帮紝姝ｇ‘澶勭悊鐖堕〉闈㈠弬鏁?
     const pageData = {
       name: pageForm.name,
       description: pageForm.description,
       project: selectedProject.value
     }
 
-    // 只有当父页面ID存在且不为空时才添加parent_group字段
+    // 鍙湁褰撶埗椤甸潰ID瀛樺湪涓斾笉涓虹┖鏃舵墠娣诲姞parent_group瀛楁
     if (pageForm.parent_page) {
       pageData.parent_group = pageForm.parent_page
     }
@@ -813,84 +1132,84 @@ const createPage = async () => {
     ElMessage.success(t('uiAutomation.element.messages.pageCreateSuccess'))
     showCreatePageDialog.value = false
 
-    // 重置表单
+    // 閲嶇疆琛ㄥ崟
     Object.assign(pageForm, {
       name: '',
       description: '',
       parent_page: null
     })
 
-    // 重新加载页面和树
+    // 閲嶆柊鍔犺浇椤甸潰鍜屾爲
     await Promise.all([
       loadPages(),
       loadElementTree()
     ])
 
-    // 强制刷新树组件
+    // 寮哄埗鍒锋柊鏍戠粍浠?
     treeKey.value += 1
   } catch (error) {
-    console.error('创建页面失败:', error)
+    console.error('鍒涘缓椤甸潰澶辫触:', error)
     ElMessage.error(t('uiAutomation.element.messages.pageCreateFailed'))
   }
 }
 
-// 节点点击
+// 鑺傜偣鐐瑰嚮
 const onNodeClick = async (data) => {
   if (data.type === 'element') {
     try {
       const response = await getElementDetail(data.id)
       selectedElement.value = response.data
 
-      // 强制刷新表单，确保下拉框正确显示
+      // 寮哄埗鍒锋柊琛ㄥ崟锛岀‘淇濅笅鎷夋姝ｇ‘鏄剧ず
       formKey.value += 1
-      console.log('点击节点时formKey更新为:', formKey.value)
+      console.log('鐐瑰嚮鑺傜偣鏃秄ormKey鏇存柊涓?', formKey.value)
     } catch (error) {
-      console.error('获取元素详情失败:', error)
+      console.error('鑾峰彇鍏冪礌璇︽儏澶辫触:', error)
     }
   }
 }
 
-// 节点右键点击
+// 鑺傜偣鍙抽敭鐐瑰嚮
 const onNodeRightClick = (event, data) => {
   console.log('Node right click event:', event, 'Data:', data)
   event.preventDefault()
 
-  // 隐藏现有菜单
+  // 闅愯棌鐜版湁鑿滃崟
   showContextMenu.value = false
 
-  // 设置右键点击的节点
+  // 璁剧疆鍙抽敭鐐瑰嚮鐨勮妭鐐?
   rightClickedNode.value = data
   console.log('Set right clicked node:', data)
 
-  // 设置菜单位置
+  // 璁剧疆鑿滃崟浣嶇疆
   contextMenuX.value = event.clientX
   contextMenuY.value = event.clientY
 
-  // 显示菜单
+  // 鏄剧ず鑿滃崟
   showContextMenu.value = true
   console.log('Show context menu at:', contextMenuX.value, contextMenuY.value)
 
-  // 添加全局点击监听器以隐藏菜单
+  // 娣诲姞鍏ㄥ眬鐐瑰嚮鐩戝惉鍣ㄤ互闅愯棌鑿滃崟
   const hideMenu = () => {
     console.log('Hide context menu')
     showContextMenu.value = false
     document.removeEventListener('click', hideMenu)
   }
 
-  // 延迟添加监听器，避免立即触发
+  // 寤惰繜娣诲姞鐩戝惉鍣紝閬垮厤绔嬪嵆瑙﹀彂
   setTimeout(() => {
     document.addEventListener('click', hideMenu)
   }, 100)
 }
 
-// 节点展开
+// 鑺傜偣灞曞紑
 const onNodeExpand = (data) => {
   if (!expandedKeys.value.includes(data.id)) {
     expandedKeys.value.push(data.id)
   }
 }
 
-// 节点收起
+// 鑺傜偣鏀惰捣
 const onNodeCollapse = (data) => {
   const index = expandedKeys.value.indexOf(data.id)
   if (index > -1) {
@@ -898,11 +1217,11 @@ const onNodeCollapse = (data) => {
   }
 }
 
-// 保存元素
+// 淇濆瓨鍏冪礌
 const saveElement = async () => {
   if (!selectedElement.value) return
 
-  // 验证表单
+  // 楠岃瘉琛ㄥ崟
   const isValid = await validateElementForm()
   if (!isValid) {
     ElMessage.error(t('uiAutomation.element.messages.saveFailed'))
@@ -911,11 +1230,11 @@ const saveElement = async () => {
 
   try {
     saving.value = true
-    console.log('=== 保存元素调试 ===')
-    console.log('当前选中的元素:', selectedElement.value)
+    console.log('=== 淇濆瓨鍏冪礌璋冭瘯 ===')
+    console.log('褰撳墠閫変腑鐨勫厓绱?', selectedElement.value)
 
     if (selectedElement.value.id) {
-      // 更新元素 - 构建正确的API数据格式
+      // 鏇存柊鍏冪礌 - 鏋勫缓姝ｇ‘鐨凙PI鏁版嵁鏍煎紡
       const elementUpdateData = {
         name: selectedElement.value.name,
         element_type: selectedElement.value.element_type,
@@ -929,11 +1248,11 @@ const saveElement = async () => {
         project_id: selectedProject.value
       }
 
-      // 如果元素有分组（页面），确保传递正确的 group_id
+      // 濡傛灉鍏冪礌鏈夊垎缁勶紙椤甸潰锛夛紝纭繚浼犻€掓纭殑 group_id
       if (selectedElement.value.page) {
-        console.log('更新元素 - 元素关联页面名称:', selectedElement.value.page)
+        console.log('鏇存柊鍏冪礌 - 鍏冪礌鍏宠仈椤甸潰鍚嶇О:', selectedElement.value.page)
 
-        // 通过遍历树形结构查找对应的页面ID
+        // 閫氳繃閬嶅巻鏍戝舰缁撴瀯鏌ユ壘瀵瑰簲鐨勯〉闈D
         const findPageIdByName = (nodes, pageName) => {
           for (const node of nodes) {
             if (node.type === 'page' && node.name === pageName) {
@@ -953,128 +1272,128 @@ const saveElement = async () => {
         }
       }
 
-      console.log('更新元素数据:', elementUpdateData)
+      console.log('鏇存柊鍏冪礌鏁版嵁:', elementUpdateData)
       await updateElement(selectedElement.value.id, elementUpdateData)
 
-      // 重新获取完整的元素详情以确保所有关联字段正确显示
+      // 閲嶆柊鑾峰彇瀹屾暣鐨勫厓绱犺鎯呬互纭繚鎵€鏈夊叧鑱斿瓧娈垫纭樉绀?
       const detailResponse = await getElementDetail(selectedElement.value.id)
       selectedElement.value = detailResponse.data
-      console.log('更新后获取到完整元素详情:', selectedElement.value)
-      console.log('locator_strategy_id值:', selectedElement.value.locator_strategy_id, '类型:', typeof selectedElement.value.locator_strategy_id)
-      console.log('locator_strategy对象:', selectedElement.value.locator_strategy)
-      console.log('当前locatorStrategies:', locatorStrategies.value)
-      console.log('locatorStrategies中是否包含id=' + selectedElement.value.locator_strategy_id + ':',
+      console.log('鏇存柊鍚庤幏鍙栧埌瀹屾暣鍏冪礌璇︽儏:', selectedElement.value)
+      console.log('locator_strategy_id鍊?', selectedElement.value.locator_strategy_id, '绫诲瀷:', typeof selectedElement.value.locator_strategy_id)
+      console.log('locator_strategy瀵硅薄:', selectedElement.value.locator_strategy)
+      console.log('褰撳墠locatorStrategies:', locatorStrategies.value)
+      console.log('locatorStrategies涓槸鍚﹀寘鍚玦d=' + selectedElement.value.locator_strategy_id + ':',
         locatorStrategies.value.find(s => s.id === selectedElement.value.locator_strategy_id))
 
-      // 强制刷新表单，确保下拉框正确显示
+      // 寮哄埗鍒锋柊琛ㄥ崟锛岀‘淇濅笅鎷夋姝ｇ‘鏄剧ず
       formKey.value += 1
-      console.log('formKey更新为:', formKey.value)
+      console.log('formKey鏇存柊涓?', formKey.value)
 
-      // 使用nextTick确保DOM更新
+      // 浣跨敤nextTick纭繚DOM鏇存柊
       await nextTick()
-      console.log('DOM已更新，当前下拉框绑定值:', selectedElement.value.locator_strategy_id)
+      console.log('DOM宸叉洿鏂帮紝褰撳墠涓嬫媺妗嗙粦瀹氬€?', selectedElement.value.locator_strategy_id)
 
       ElMessage.success(t('uiAutomation.element.messages.saveSuccess'))
     } else {
-      // 创建元素
-      // 确保传递正确的字段名 project_id 而不是 project
+      // 鍒涘缓鍏冪礌
+      // 纭繚浼犻€掓纭殑瀛楁鍚?project_id 鑰屼笉鏄?project
       const elementData = {
         ...selectedElement.value,
         project_id: selectedProject.value
       }
 
-      // 如果元素有分组（页面），确保传递 group_id
+      // 濡傛灉鍏冪礌鏈夊垎缁勶紙椤甸潰锛夛紝纭繚浼犻€?group_id
       if (selectedElement.value.page) {
-        console.log('元素关联页面名称:', selectedElement.value.page)
-        console.log('当前treeData结构:', treeData.value)
+        console.log('鍏冪礌鍏宠仈椤甸潰鍚嶇О:', selectedElement.value.page)
+        console.log('褰撳墠treeData缁撴瀯:', treeData.value)
 
-        // 通过遍历树形结构查找对应的页面ID
+        // 閫氳繃閬嶅巻鏍戝舰缁撴瀯鏌ユ壘瀵瑰簲鐨勯〉闈D
         const findPageIdByName = (nodes, pageName) => {
-          console.log(`在 ${nodes.length} 个节点中查找页面名称: ${pageName}`)
+          console.log(`Searching ${nodes.length} nodes for page: ${pageName}`)
           for (const node of nodes) {
-            console.log(`检查节点: ${node.name} (ID: ${node.id}, type: ${node.type})`)
+            console.log(`Checking node ${node.name} (ID: ${node.id}, type: ${node.type})`)
             if (node.type === 'page' && node.name === pageName) {
-              console.log(`找到页面! ID: ${node.id}`)
+              console.log(`鎵惧埌椤甸潰! ID: ${node.id}`)
               return node.id
             }
             if (node.children) {
-              console.log(`检查子节点:`, node.children.map(c => c.name))
+              console.log(`妫€鏌ュ瓙鑺傜偣:`, node.children.map(c => c.name))
               const foundId = findPageIdByName(node.children, pageName)
               if (foundId) return foundId
             }
           }
-          console.log('未找到页面')
+          console.log('Page not found')
           return null
         }
 
         const pageId = findPageIdByName(treeData.value, selectedElement.value.page)
-        console.log('找到的页面ID:', pageId)
+        console.log('鎵惧埌鐨勯〉闈D:', pageId)
 
         if (pageId) {
           elementData.group_id = pageId
-          console.log('设置group_id为:', pageId)
+          console.log('璁剧疆group_id涓?', pageId)
         }
       }
 
-      console.log('创建元素的数据:', elementData)
+      console.log('鍒涘缓鍏冪礌鐨勬暟鎹?', elementData)
       const response = await createElement(elementData)
-      console.log('创建响应:', response)
+      console.log('鍒涘缓鍝嶅簲:', response)
 
-      // 重新获取完整的元素详情以确保所有关联字段正确显示
+      // 閲嶆柊鑾峰彇瀹屾暣鐨勫厓绱犺鎯呬互纭繚鎵€鏈夊叧鑱斿瓧娈垫纭樉绀?
       const detailResponse = await getElementDetail(response.data.id)
       selectedElement.value = detailResponse.data
-      console.log('获取到完整元素详情:', selectedElement.value)
-      console.log('locator_strategy_id值:', selectedElement.value.locator_strategy_id, '类型:', typeof selectedElement.value.locator_strategy_id)
-      console.log('locator_strategy对象:', selectedElement.value.locator_strategy)
-      console.log('当前locatorStrategies:', locatorStrategies.value)
-      console.log('locatorStrategies中是否包含id=' + selectedElement.value.locator_strategy_id + ':',
+      console.log('鑾峰彇鍒板畬鏁村厓绱犺鎯?', selectedElement.value)
+      console.log('locator_strategy_id鍊?', selectedElement.value.locator_strategy_id, '绫诲瀷:', typeof selectedElement.value.locator_strategy_id)
+      console.log('locator_strategy瀵硅薄:', selectedElement.value.locator_strategy)
+      console.log('褰撳墠locatorStrategies:', locatorStrategies.value)
+      console.log('locatorStrategies涓槸鍚﹀寘鍚玦d=' + selectedElement.value.locator_strategy_id + ':',
         locatorStrategies.value.find(s => s.id === selectedElement.value.locator_strategy_id))
-      console.log('el-select绑定的值:', selectedElement.value.locator_strategy_id)
+      console.log('el-select缁戝畾鐨勫€?', selectedElement.value.locator_strategy_id)
 
-      // 强制刷新表单，确保下拉框正确显示
+      // 寮哄埗鍒锋柊琛ㄥ崟锛岀‘淇濅笅鎷夋姝ｇ‘鏄剧ず
       formKey.value += 1
-      console.log('formKey更新为:', formKey.value)
+      console.log('formKey鏇存柊涓?', formKey.value)
 
-      // 使用nextTick确保DOM更新
+      // 浣跨敤nextTick纭繚DOM鏇存柊
       await nextTick()
-      console.log('DOM已更新，当前下拉框绑定值:', selectedElement.value.locator_strategy_id)
+      console.log('DOM宸叉洿鏂帮紝褰撳墠涓嬫媺妗嗙粦瀹氬€?', selectedElement.value.locator_strategy_id)
 
       ElMessage.success(t('uiAutomation.element.messages.createSuccess'))
     }
 
-    // 重新加载树
-    console.log('开始重新加载元素树...')
+    // 閲嶆柊鍔犺浇鏍?
+    console.log('寮€濮嬮噸鏂板姞杞藉厓绱犳爲...')
     await loadElementTree()
-    console.log('元素树重新加载完成')
+    console.log('Element tree reloaded')
 
-    // 强制重新渲染树组件
+    // 寮哄埗閲嶆柊娓叉煋鏍戠粍浠?
     treeKey.value += 1
-    console.log('树组件key更新为:', treeKey.value)
+    console.log('鏍戠粍浠秌ey鏇存柊涓?', treeKey.value)
 
-    // 强制触发Vue更新和树组件刷新
+    // 寮哄埗瑙﹀彂Vue鏇存柊鍜屾爲缁勪欢鍒锋柊
     nextTick(() => {
-      console.log('nextTick - 检查treeData:', treeData.value)
+      console.log('nextTick - 妫€鏌reeData:', treeData.value)
       console.log('treeRef:', treeRef.value)
 
-      // 展开新创建元素所在的页面节点
+      // 灞曞紑鏂板垱寤哄厓绱犳墍鍦ㄧ殑椤甸潰鑺傜偣
       if (selectedElement.value && selectedElement.value.group_id) {
-        console.log('展开元素所在页面:', selectedElement.value.group_id)
+        console.log('灞曞紑鍏冪礌鎵€鍦ㄩ〉闈?', selectedElement.value.group_id)
         if (!expandedKeys.value.includes(selectedElement.value.group_id)) {
           expandedKeys.value.push(selectedElement.value.group_id)
         }
       }
 
-      console.log('树数据更新完成，当前expandedKeys:', expandedKeys.value)
+      console.log('鏍戞暟鎹洿鏂板畬鎴愶紝褰撳墠expandedKeys:', expandedKeys.value)
     })
   } catch (error) {
-    console.error('保存元素失败:', error)
+    console.error('淇濆瓨鍏冪礌澶辫触:', error)
     ElMessage.error(t('uiAutomation.element.messages.saveFailed') + ': ' + (error.response?.data?.message || error.message || t('uiAutomation.messages.error.unknown')))
   } finally {
     saving.value = false
   }
 }
 
-// 验证元素
+// 楠岃瘉鍏冪礌
 const validateElement = async () => {
   if (!selectedElement.value) return
 
@@ -1090,13 +1409,13 @@ const validateElement = async () => {
     }
   } catch (error) {
     ElMessage.error(t('uiAutomation.element.messages.validateFailed'))
-    console.error('验证元素失败:', error)
+    console.error('楠岃瘉鍏冪礌澶辫触:', error)
   } finally {
     validating.value = false
   }
 }
 
-// 生成建议
+// 鐢熸垚寤鸿
 const generateSuggestions = async () => {
   if (!selectedElement.value) return
 
@@ -1105,52 +1424,52 @@ const generateSuggestions = async () => {
     const response = await generateElementSuggestions(selectedElement.value.id)
     suggestions.value = response.data.suggestions
   } catch (error) {
-    console.error('生成建议失败:', error)
+    console.error('鐢熸垚寤鸿澶辫触:', error)
   } finally {
     generating.value = false
   }
 }
 
-// 保存页面名称
+// 淇濆瓨椤甸潰鍚嶇О
 const savePageName = () => {
-  // TODO: 实现页面名称保存
+  // TODO: 瀹炵幇椤甸潰鍚嶇О淇濆瓨
   editingNodeId.value = null
 }
 
-// 取消编辑
+// 鍙栨秷缂栬緫
 const cancelEdit = () => {
   editingNodeId.value = null
 }
 
-// 右键菜单操作函数
-// 新增元素
+// 鍙抽敭鑿滃崟鎿嶄綔鍑芥暟
+// 鏂板鍏冪礌
 const addContextElement = () => {
   console.log('Add context element clicked')
   showContextMenu.value = false
   createEmptyElement()
 
-  // 如果右键点击的是页面节点，设置元素的页面
+  // 濡傛灉鍙抽敭鐐瑰嚮鐨勬槸椤甸潰鑺傜偣锛岃缃厓绱犵殑椤甸潰
   if (rightClickedNode.value && rightClickedNode.value.type === 'page') {
-    // 特殊处理：如果是"未关联页面"节点，不设置page和group_id
+    // 鐗规畩澶勭悊锛氬鏋滄槸"鏈叧鑱旈〉闈?鑺傜偣锛屼笉璁剧疆page鍜実roup_id
     if (rightClickedNode.value.id === 'unassigned') {
-      console.log('在未关联页面节点下添加元素，不设置page和group_id')
+      console.log('鍦ㄦ湭鍏宠仈椤甸潰鑺傜偣涓嬫坊鍔犲厓绱狅紝涓嶈缃畃age鍜実roup_id')
       return
     }
 
     if (selectedElement.value) {
       selectedElement.value.page = rightClickedNode.value.name
-      // 同时设置group_id，确保元素能正确关联到页面
+      // 鍚屾椂璁剧疆group_id锛岀‘淇濆厓绱犺兘姝ｇ‘鍏宠仈鍒伴〉闈?
       selectedElement.value.group_id = rightClickedNode.value.id
     }
   }
 }
 
-// 新增子页面
+// 鏂板瀛愰〉闈?
 const addSubPage = () => {
   console.log('Add sub page clicked')
   showContextMenu.value = false
 
-  // 禁止在"未关联页面"节点下创建子页面
+  // 绂佹鍦?鏈叧鑱旈〉闈?鑺傜偣涓嬪垱寤哄瓙椤甸潰
   if (rightClickedNode.value && rightClickedNode.value.id === 'unassigned') {
     ElMessage.warning('未关联页面节点下不能创建子页面')
     return
@@ -1158,13 +1477,13 @@ const addSubPage = () => {
 
   showCreatePageDialog.value = true
 
-  // 如果右键点击的是页面节点，设置父页面
+  // 濡傛灉鍙抽敭鐐瑰嚮鐨勬槸椤甸潰鑺傜偣锛岃缃埗椤甸潰
   if (rightClickedNode.value && rightClickedNode.value.type === 'page') {
     pageForm.parent_page = rightClickedNode.value.id
   }
 }
 
-// 编辑节点
+// 缂栬緫鑺傜偣
 const editNode = async () => {
   console.log('Edit node clicked, rightClickedNode:', rightClickedNode.value)
   showContextMenu.value = false
@@ -1177,14 +1496,14 @@ const editNode = async () => {
   console.log('Editing node:', rightClickedNode.value)
   console.log('Node type:', rightClickedNode.value.type)
 
-  // 禁止编辑"未关联页面"节点
+  // 绂佹缂栬緫"鏈叧鑱旈〉闈?鑺傜偣
   if (rightClickedNode.value.id === 'unassigned') {
     ElMessage.warning('未关联页面节点不能编辑')
     return
   }
 
   if (rightClickedNode.value.type === 'page') {
-    // 编辑页面
+    // 缂栬緫椤甸潰
     console.log('Editing page node')
     editPageForm.id = rightClickedNode.value.id
     editPageForm.name = rightClickedNode.value.name
@@ -1196,17 +1515,17 @@ const editNode = async () => {
     console.log('showEditPageDialog value:', showEditPageDialog.value)
   } else if (rightClickedNode.value.type === 'element') {
     console.log('Editing element node')
-    // 编辑元素 - 通过API获取完整的元素详情，避免使用树节点的复杂数据
+    // 缂栬緫鍏冪礌 - 閫氳繃API鑾峰彇瀹屾暣鐨勫厓绱犺鎯咃紝閬垮厤浣跨敤鏍戣妭鐐圭殑澶嶆潅鏁版嵁
     try {
       const response = await getElementDetail(rightClickedNode.value.id)
       selectedElement.value = response.data
       console.log('Set selected element for editing via API:', selectedElement.value)
 
-      // 强制刷新表单，确保下拉框正确显示
+      // 寮哄埗鍒锋柊琛ㄥ崟锛岀‘淇濅笅鎷夋姝ｇ‘鏄剧ず
       formKey.value += 1
-      console.log('编辑时formKey更新为:', formKey.value)
+      console.log('缂栬緫鏃秄ormKey鏇存柊涓?', formKey.value)
     } catch (error) {
-      console.error('获取元素详情失败:', error)
+      console.error('鑾峰彇鍏冪礌璇︽儏澶辫触:', error)
       ElMessage.error(t('uiAutomation.element.messages.getDetailFailed'))
     }
   } else {
@@ -1214,14 +1533,14 @@ const editNode = async () => {
   }
 }
 
-// 删除节点
+// 鍒犻櫎鑺傜偣
 const deleteNode = async () => {
   console.log('Delete node clicked, rightClickedNode:', rightClickedNode.value)
   showContextMenu.value = false
 
   if (!rightClickedNode.value) return
 
-  // 禁止删除"未关联页面"节点
+  // 绂佹鍒犻櫎"鏈叧鑱旈〉闈?鑺傜偣
   if (rightClickedNode.value.id === 'unassigned') {
     ElMessage.warning('未关联页面节点不能删除')
     return
@@ -1241,16 +1560,16 @@ const deleteNode = async () => {
     console.log('Deleting node:', rightClickedNode.value)
 
     if (rightClickedNode.value.type === 'page') {
-      // 删除页面（分组）
+      // 鍒犻櫎椤甸潰锛堝垎缁勶級
       console.log('Calling deleteElementGroup with id:', rightClickedNode.value.id)
       await deleteElementGroup(rightClickedNode.value.id)
       ElMessage.success(t('uiAutomation.element.messages.pageDeleteSuccess'))
     } else if (rightClickedNode.value.type === 'element') {
-      // 删除元素
+      // 鍒犻櫎鍏冪礌
       console.log('Calling deleteElement with id:', rightClickedNode.value.id)
       await deleteElement(rightClickedNode.value.id)
       ElMessage.success(t('uiAutomation.element.messages.deleteSuccess'))
-      // 如果当前选中的是被删除的元素，清空选中
+      // 濡傛灉褰撳墠閫変腑鐨勬槸琚垹闄ょ殑鍏冪礌锛屾竻绌洪€変腑
       if (selectedElement.value && selectedElement.value.id === rightClickedNode.value.id) {
         selectedElement.value = null
       }
@@ -1258,23 +1577,23 @@ const deleteNode = async () => {
 
     console.log('Reload data after deletion')
 
-    // 重新加载数据
+    // 閲嶆柊鍔犺浇鏁版嵁
     await Promise.all([
       loadPages(),
       loadElementTree()
     ])
 
-    // 强制刷新树组件
+    // 寮哄埗鍒锋柊鏍戠粍浠?
     treeKey.value += 1
   } catch (error) {
     if (error !== 'cancel') {
-      console.error('删除失败:', error)
+      console.error('鍒犻櫎澶辫触:', error)
       ElMessage.error(t('uiAutomation.element.messages.deleteFailed'))
     }
   }
 }
 
-// 更新页面
+// 鏇存柊椤甸潰
 const updatePage = async () => {
   console.log('Update page function called')
   console.log('Edit page form ref:', editPageFormRef.value)
@@ -1294,15 +1613,15 @@ const updatePage = async () => {
   console.log('Updating page with data:', editPageForm)
 
   try {
-    // 构建更新页面的参数，正确处理父页面参数
+    // 鏋勫缓鏇存柊椤甸潰鐨勫弬鏁帮紝姝ｇ‘澶勭悊鐖堕〉闈㈠弬鏁?
     const pageData = {
       name: editPageForm.name,
       description: editPageForm.description,
       project: selectedProject.value
     }
 
-    // 只有当父页面ID存在且不为空时才添加parent_group字段
-    // 如果父页面ID为null，表示取消父页面关联
+    // 鍙湁褰撶埗椤甸潰ID瀛樺湪涓斾笉涓虹┖鏃舵墠娣诲姞parent_group瀛楁
+    // 濡傛灉鐖堕〉闈D涓簄ull锛岃〃绀哄彇娑堢埗椤甸潰鍏宠仈
     if (editPageForm.parent_page !== undefined) {
       pageData.parent_group = editPageForm.parent_page
     }
@@ -1312,16 +1631,16 @@ const updatePage = async () => {
     ElMessage.success(t('uiAutomation.element.messages.pageUpdateSuccess'))
     showEditPageDialog.value = false
 
-    // 重新加载页面和树
+    // 閲嶆柊鍔犺浇椤甸潰鍜屾爲
     await Promise.all([
       loadPages(),
       loadElementTree()
     ])
 
-    // 强制刷新树组件
+    // 寮哄埗鍒锋柊鏍戠粍浠?
     treeKey.value += 1
   } catch (error) {
-    console.error('更新页面失败:', error)
+    console.error('鏇存柊椤甸潰澶辫触:', error)
     ElMessage.error(t('uiAutomation.element.messages.pageUpdateFailed'))
   }
 }
@@ -1396,6 +1715,13 @@ const updatePage = async () => {
   padding: 20px;
 }
 
+.content-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
 .empty-state {
   display: flex;
   align-items: center;
@@ -1425,7 +1751,7 @@ const updatePage = async () => {
   margin-top: 5px;
 }
 
-/* 右键菜单样式 */
+/* 鍙抽敭鑿滃崟鏍峰紡 */
 .context-menu {
   position: fixed;
   z-index: 9999;
@@ -1451,3 +1777,4 @@ const updatePage = async () => {
   color: #409eff;
 }
 </style>
+

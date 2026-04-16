@@ -159,7 +159,7 @@
               </el-button>
               <el-button size="small" v-if="executionResult" @click="toggleView">
                 <el-icon><component :is="showSteps ? 'View' : 'Edit'" /></el-icon>
-                {{ showSteps ? t('uiAutomation.testCase.viewResult') : t('uiAutomation.testCase.editSteps') }}
+                {{ showSteps ? t('uiAutomation.testCase.viewResult') : '返回测试步骤' }}
               </el-button>
               <el-button
                 size="small"
@@ -177,10 +177,23 @@
           <!-- 测试步骤编辑 -->
           <div class="steps-container" v-show="showSteps">
             <div class="steps-header">
-              <h4>{{ t('uiAutomation.testCase.testSteps') }}</h4>
-              <el-button size="small" text @click="expandAllSteps">
-                {{ allStepsExpanded ? t('uiAutomation.testCase.foldAll') : t('uiAutomation.testCase.expandAll') }}
-              </el-button>
+              <div class="steps-header-main">
+                <h4>{{ t('uiAutomation.testCase.testSteps') }}</h4>
+                <span class="steps-selection-summary">已勾选 {{ checkedStepCount }} 个步骤</span>
+              </div>
+              <div class="steps-header-actions">
+                <el-button size="small" :disabled="!checkedStepCount" @click="createTransactionBlock">
+                  <el-icon><FolderAdd /></el-icon>
+                  创建事务块
+                </el-button>
+                <el-button size="small" :disabled="!checkedStepCount" @click="removeSelectedFromTransaction">
+                  <el-icon><FolderOpened /></el-icon>
+                  移出事务块
+                </el-button>
+                <el-button size="small" text @click="expandAllSteps">
+                  {{ allStepsExpanded ? t('uiAutomation.testCase.foldAll') : t('uiAutomation.testCase.expandAll') }}
+                </el-button>
+              </div>
             </div>
 
             <div class="steps-scroll-container">
@@ -189,44 +202,91 @@
                   v-model="currentSteps"
                   item-key="id"
                   handle=".drag-handle"
-                  @change="onStepsReorder"
+                  @change="handleStepsReorder"
                 >
                   <template #item="{ element, index }">
-                    <div class="step-item" :class="{ expanded: element.expanded }">
-                      <div class="step-header">
-                        <div class="step-left">
-                          <el-icon class="drag-handle" @click.stop><Rank /></el-icon>
-                          <span class="step-number">{{ index + 1 }}</span>
-                          <div class="step-summary" @click="element.expanded = !element.expanded">
-                            <div class="step-summary-title">
-                              {{ getStepSummary(element, index) }}
-                            </div>
-                            <div class="step-summary-meta">
-                              <span>{{ getActionTypeText(element.action_type) }}</span>
-                              <span v-if="needsElement(element.action_type)">{{ getStepElementSummary(element) }}</span>
-                              <span v-if="canStoreVariable(element.action_type) && element.save_as">
-                                {{ formatStoredVariable(element.save_as) }}
-                              </span>
-                            </div>
-                          </div>
+                    <div class="step-entry">
+                      <div
+                        v-if="shouldRenderTransactionHeader(index)"
+                        class="transaction-block"
+                        :class="{ collapsed: isTransactionCollapsed(element.transaction_id) }"
+                      >
+                        <div class="transaction-block-main" @click="toggleTransactionCollapse(element.transaction_id)">
+                          <el-icon class="transaction-block-toggle">
+                            <component :is="isTransactionCollapsed(element.transaction_id) ? 'ArrowDown' : 'ArrowUp'" />
+                          </el-icon>
+                          <el-checkbox
+                            class="transaction-block-checkbox"
+                            :model-value="isTransactionFullyChecked(element.transaction_id)"
+                            @click.stop
+                            @change="toggleTransactionSelection(element.transaction_id, $event)"
+                          />
+                          <el-icon class="transaction-block-icon"><Folder /></el-icon>
+                          <span class="transaction-block-name">{{ element.transaction_name }}</span>
+                          <el-tag size="small" type="info">{{ getTransactionStepCount(element.transaction_id) }} 步</el-tag>
+                          <span class="transaction-block-summary">{{ getTransactionSummary(element.transaction_id) }}</span>
                         </div>
-                        <div class="step-right" @click.stop>
-                          <el-button
-                            size="small"
-                            text
-                            @click="element.expanded = !element.expanded"
-                          >
-                            <el-icon>
-                              <component :is="element.expanded ? 'ArrowUp' : 'ArrowDown'" />
-                            </el-icon>
+                        <div class="transaction-block-actions" @click.stop>
+                          <el-button size="small" text @click="renameTransactionBlock(element.transaction_id)">
+                            重命名
                           </el-button>
-                          <el-button size="small" text type="danger" @click="removeStep(index)">
-                            <el-icon><Delete /></el-icon>
+                          <el-button size="small" text type="danger" @click="clearTransactionBlock(element.transaction_id)">
+                            解散事务块
                           </el-button>
                         </div>
                       </div>
 
-                      <div v-if="element.expanded" class="step-content">
+                      <div
+                        v-if="!shouldHideStepItem(element)"
+                        class="step-item"
+                        :class="{
+                          expanded: element.expanded,
+                          selected: isSelectedStep(element.id),
+                          'step-item--in-transaction': hasTransaction(element)
+                        }"
+                        @click="selectStep(element.id)"
+                      >
+                        <div class="step-header">
+                          <div class="step-left">
+                            <el-checkbox
+                              class="step-select-checkbox"
+                              :model-value="isStepChecked(element.id)"
+                              @click.stop
+                              @change="toggleStepChecked(element.id, $event)"
+                            />
+                            <el-icon class="drag-handle" @click.stop><Rank /></el-icon>
+                            <span class="step-number">{{ index + 1 }}</span>
+                            <div class="step-summary" @click="element.expanded = !element.expanded">
+                              <div class="step-summary-title">
+                                {{ getStepSummary(element, index) }}
+                              </div>
+                              <div class="step-summary-meta">
+                                <span>{{ getActionTypeText(element.action_type) }}</span>
+                                <span v-if="needsElement(element.action_type)">{{ getStepElementSummary(element) }}</span>
+                                <span v-if="element.transaction_name">事务块：{{ element.transaction_name }}</span>
+                                <span v-if="canStoreVariable(element.action_type) && element.save_as">
+                                  {{ formatStoredVariable(element.save_as) }}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                          <div class="step-right" @click.stop>
+                            <el-button
+                              size="small"
+                              text
+                              @click="element.expanded = !element.expanded"
+                            >
+                              <el-icon>
+                                <component :is="element.expanded ? 'ArrowUp' : 'ArrowDown'" />
+                              </el-icon>
+                            </el-button>
+                            <el-button size="small" text type="danger" @click="removeStep(index)">
+                              <el-icon><Delete /></el-icon>
+                            </el-button>
+                          </div>
+                        </div>
+
+                        <div v-if="element.expanded" class="step-content">
                         <div class="step-param">
                           <label>{{ t('uiAutomation.testCase.stepDescription') }}</label>
                           <el-input
@@ -372,6 +432,7 @@
                         </div>
 
                         <!-- 步骤描述 -->
+                        </div>
                       </div>
                     </div>
                   </template>
@@ -383,10 +444,18 @@
           <!-- 执行结果 -->
           <div v-if="executionResult" class="execution-result" v-show="!showSteps">
             <div class="result-header">
-              <h4>{{ t('uiAutomation.testCase.executionResult') }}</h4>
-              <el-tag :type="executionResult.success ? 'success' : 'danger'">
-                {{ executionResult.success ? t('uiAutomation.testCase.executionSuccess') : t('uiAutomation.testCase.executionFailed') }}
-              </el-tag>
+              <div class="result-header-main">
+                <h4>{{ t('uiAutomation.testCase.executionResult') }}</h4>
+                <el-tag :type="executionResult.success ? 'success' : 'danger'">
+                  {{ executionResult.success ? t('uiAutomation.testCase.executionSuccess') : t('uiAutomation.testCase.executionFailed') }}
+                </el-tag>
+              </div>
+              <div class="result-header-actions">
+                <el-button size="small" @click="returnToTestSteps">
+                  <el-icon><ArrowLeft /></el-icon>
+                  返回测试步骤
+                </el-button>
+              </div>
             </div>
             <div class="result-content">
               <el-tabs v-model="resultActiveTab">
@@ -755,7 +824,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Search, Plus, Edit, Delete, Check, CaretRight, ArrowUp, ArrowDown, Rank, Picture, Warning, View, ZoomIn, Refresh, WarningFilled, MagicStick, CopyDocument, FolderAdd, FolderOpened, Folder, Document
+  Search, Plus, Edit, Delete, Check, CaretRight, ArrowUp, ArrowDown, Rank, Picture, Warning, View, ZoomIn, Refresh, WarningFilled, MagicStick, CopyDocument, FolderAdd, FolderOpened, Folder, Document, ArrowLeft
 } from '@element-plus/icons-vue'
 import draggable from 'vuedraggable'
 import DataFactorySelector from '@/components/DataFactorySelector.vue'
@@ -823,6 +892,9 @@ const elementGroups = ref([])
 const selectedTestCase = ref(null)
 const selectedCaseIds = ref([])
 const currentSteps = ref([])
+const selectedStepId = ref(null)
+const checkedStepIds = ref([])
+const transactionCollapseState = ref({})
 const availableElements = ref([])
 const searchKeyword = ref('')
 const folderFilter = ref('all')
@@ -1071,8 +1143,306 @@ const createStepDraft = (step = {}, expanded = false) => ({
   assert_value: step.assert_value || '',
   description: step.description || '',
   save_as: step.save_as || '',
+  transaction_id: String(step.transaction_id || '').trim(),
+  transaction_name: String(step.transaction_name || '').trim(),
   expanded
 })
+
+const createTransactionId = () => {
+  return `tx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+const getTransactionId = (step) => {
+  return String(step?.transaction_id || '').trim()
+}
+
+const getTransactionName = (step) => {
+  return String(step?.transaction_name || '').trim()
+}
+
+const hasTransaction = (step) => {
+  return Boolean(getTransactionId(step))
+}
+
+const isStepChecked = (stepId) => {
+  return checkedStepIds.value.some(id => isSameStepId(id, stepId))
+}
+
+const checkedStepCount = computed(() => checkedStepIds.value.length)
+
+const syncCheckedStepIds = () => {
+  checkedStepIds.value = checkedStepIds.value.filter(id =>
+    currentSteps.value.some(step => isSameStepId(step.id, id))
+  )
+}
+
+const syncTransactionCollapseMap = () => {
+  const validTransactionIds = new Set(
+    currentSteps.value
+      .map(step => getTransactionId(step))
+      .filter(Boolean)
+  )
+
+  transactionCollapseState.value = Object.fromEntries(
+    Object.entries(transactionCollapseState.value).filter(([transactionId]) => validTransactionIds.has(transactionId))
+  )
+}
+
+const normalizeTransactionBlocks = () => {
+  const groups = new Map()
+
+  currentSteps.value.forEach((step) => {
+    const transactionId = getTransactionId(step)
+    const transactionName = getTransactionName(step)
+
+    if (!transactionId || !transactionName) {
+      step.transaction_id = ''
+      step.transaction_name = ''
+      return
+    }
+
+    if (!groups.has(transactionId)) {
+      groups.set(transactionId, [])
+    }
+    groups.get(transactionId).push(step)
+  })
+
+  groups.forEach((steps, transactionId) => {
+    if (steps.length < 2) {
+      steps.forEach((step) => {
+        step.transaction_id = ''
+        step.transaction_name = ''
+      })
+      delete transactionCollapseState.value[transactionId]
+      return
+    }
+
+    const transactionName = steps.map(step => getTransactionName(step)).find(Boolean) || '未命名事务块'
+    steps.forEach((step) => {
+      step.transaction_id = transactionId
+      step.transaction_name = transactionName
+    })
+  })
+
+  syncCheckedStepIds()
+  syncTransactionCollapseMap()
+}
+
+const toggleStepChecked = (stepId, checked) => {
+  if (checked) {
+    if (!isStepChecked(stepId)) {
+      checkedStepIds.value.push(stepId)
+    }
+    return
+  }
+
+  checkedStepIds.value = checkedStepIds.value.filter(id => !isSameStepId(id, stepId))
+}
+
+const getTransactionSteps = (transactionId) => {
+  return currentSteps.value.filter(step => getTransactionId(step) === String(transactionId || ''))
+}
+
+const getCheckedStepIndices = () => {
+  return currentSteps.value.reduce((result, step, index) => {
+    if (isStepChecked(step.id)) {
+      result.push(index)
+    }
+    return result
+  }, [])
+}
+
+const areCheckedStepsConsecutive = () => {
+  const indices = getCheckedStepIndices()
+  if (indices.length < 2) {
+    return true
+  }
+
+  return indices.every((stepIndex, index) => index === 0 || stepIndex === indices[index - 1] + 1)
+}
+
+const shouldRenderTransactionHeader = (index) => {
+  const currentStep = currentSteps.value[index]
+  if (!hasTransaction(currentStep)) {
+    return false
+  }
+
+  const previousStep = currentSteps.value[index - 1]
+  return getTransactionId(previousStep) !== getTransactionId(currentStep)
+}
+
+const isTransactionCollapsed = (transactionId) => {
+  return Boolean(transactionCollapseState.value[String(transactionId || '')])
+}
+
+const shouldHideStepItem = (step) => {
+  return hasTransaction(step) && isTransactionCollapsed(getTransactionId(step))
+}
+
+const toggleTransactionCollapse = (transactionId) => {
+  const normalizedId = String(transactionId || '')
+  transactionCollapseState.value = {
+    ...transactionCollapseState.value,
+    [normalizedId]: !isTransactionCollapsed(normalizedId)
+  }
+}
+
+const getTransactionStepCount = (transactionId) => {
+  return getTransactionSteps(transactionId).length
+}
+
+const getTransactionSummary = (transactionId) => {
+  const steps = getTransactionSteps(transactionId)
+  const labels = steps
+    .map((step, index) => String(step.description || '').trim() || `${getActionTypeText(step.action_type)} ${index + 1}`)
+    .slice(0, 3)
+
+  if (!labels.length) {
+    return '点击展开查看事务块步骤'
+  }
+
+  return labels.length < steps.length
+    ? `${labels.join(' / ')} 等`
+    : labels.join(' / ')
+}
+
+const isTransactionFullyChecked = (transactionId) => {
+  const steps = getTransactionSteps(transactionId)
+  return steps.length > 0 && steps.every(step => isStepChecked(step.id))
+}
+
+const toggleTransactionSelection = (transactionId, checked) => {
+  const transactionStepIds = getTransactionSteps(transactionId).map(step => step.id)
+  if (checked) {
+    transactionStepIds.forEach((stepId) => {
+      if (!isStepChecked(stepId)) {
+        checkedStepIds.value.push(stepId)
+      }
+    })
+    return
+  }
+
+  checkedStepIds.value = checkedStepIds.value.filter(id =>
+    !transactionStepIds.some(stepId => isSameStepId(stepId, id))
+  )
+}
+
+const createTransactionBlock = async () => {
+  if (!checkedStepCount.value) {
+    ElMessage.warning('请先勾选要归入事务块的步骤')
+    return
+  }
+
+  if (!areCheckedStepsConsecutive()) {
+    ElMessage.warning('事务块内的步骤必须连续，请重新勾选连续的步骤')
+    return
+  }
+
+  try {
+    const { value } = await ElMessageBox.prompt('请输入事务块名称，例如“登录功能”', '创建事务块', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      inputPlaceholder: '请输入事务块名称',
+      inputValidator: (inputValue) => String(inputValue || '').trim() ? true : '事务块名称不能为空'
+    })
+
+    const transactionId = createTransactionId()
+    const transactionName = String(value || '').trim()
+
+    currentSteps.value.forEach((step) => {
+      if (isStepChecked(step.id)) {
+        step.transaction_id = transactionId
+        step.transaction_name = transactionName
+      }
+    })
+
+    transactionCollapseState.value = {
+      ...transactionCollapseState.value,
+      [transactionId]: false
+    }
+    normalizeTransactionBlocks()
+    ElMessage.success(`已创建事务块“${transactionName}”`)
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error('创建事务块失败')
+    }
+  }
+}
+
+const removeSelectedFromTransaction = () => {
+  if (!checkedStepCount.value) {
+    ElMessage.warning('请先勾选要移出的步骤')
+    return
+  }
+
+  currentSteps.value.forEach((step) => {
+    if (isStepChecked(step.id)) {
+      step.transaction_id = ''
+      step.transaction_name = ''
+    }
+  })
+
+  normalizeTransactionBlocks()
+  ElMessage.success('已将选中步骤移出事务块')
+}
+
+const renameTransactionBlock = async (transactionId) => {
+  const steps = getTransactionSteps(transactionId)
+  if (!steps.length) {
+    return
+  }
+
+  try {
+    const { value } = await ElMessageBox.prompt('请输入新的事务块名称', '重命名事务块', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      inputValue: steps[0].transaction_name || '',
+      inputPlaceholder: '请输入事务块名称',
+      inputValidator: (inputValue) => String(inputValue || '').trim() ? true : '事务块名称不能为空'
+    })
+
+    const transactionName = String(value || '').trim()
+    steps.forEach((step) => {
+      step.transaction_name = transactionName
+    })
+    normalizeTransactionBlocks()
+    ElMessage.success('事务块名称已更新')
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error('重命名事务块失败')
+    }
+  }
+}
+
+const clearTransactionBlock = (transactionId) => {
+  getTransactionSteps(transactionId).forEach((step) => {
+    step.transaction_id = ''
+    step.transaction_name = ''
+  })
+
+  normalizeTransactionBlocks()
+  ElMessage.success('已解散事务块')
+}
+
+const isSameStepId = (left, right) => {
+  if (left === null || left === undefined || right === null || right === undefined) {
+    return false
+  }
+
+  return String(left) === String(right)
+}
+
+const isSelectedStep = (stepId) => {
+  return isSameStepId(stepId, selectedStepId.value)
+}
+
+const selectStep = (stepId) => {
+  selectedStepId.value = stepId
+}
+
+const getSelectedStepIndex = () => {
+  return currentSteps.value.findIndex(step => isSameStepId(step.id, selectedStepId.value))
+}
 
 const buildStepPayload = (step, index) => ({
   id: step.id,
@@ -1086,7 +1456,9 @@ const buildStepPayload = (step, index) => ({
   assert_type: step.action_type === 'assert' ? (step.assert_type || 'textContains') : '',
   assert_value: step.action_type === 'assert' ? (step.assert_value || '') : '',
   description: String(step.description || '').trim(),
-  save_as: canStoreVariable(step.action_type) ? String(step.save_as || '').trim() : ''
+  save_as: canStoreVariable(step.action_type) ? String(step.save_as || '').trim() : '',
+  transaction_id: getTransactionId(step),
+  transaction_name: getTransactionName(step)
 })
 
 const formatStoredVariable = (name) => {
@@ -1321,14 +1693,27 @@ const syncSelectedTestCase = () => {
   if (!latestCase) {
     selectedTestCase.value = null
     currentSteps.value = []
+    selectedStepId.value = null
+    checkedStepIds.value = []
+    transactionCollapseState.value = {}
     executionResult.value = null
     return
   }
 
   selectedTestCase.value = latestCase
+  const previousSelectedStepId = selectedStepId.value
+  const previousCheckedStepIds = [...checkedStepIds.value]
   currentSteps.value = (latestCase.steps || []).map(step =>
     createStepDraft(step, currentSteps.value.find(item => item.id === step.id)?.expanded || false)
   )
+  normalizeTransactionBlocks()
+  selectedStepId.value = currentSteps.value.some(step => isSameStepId(step.id, previousSelectedStepId))
+    ? previousSelectedStepId
+    : null
+  checkedStepIds.value = previousCheckedStepIds.filter(id =>
+    currentSteps.value.some(step => isSameStepId(step.id, id))
+  )
+  syncTransactionCollapseMap()
 }
 
 const loadLocalRunnerList = async () => {
@@ -1399,6 +1784,9 @@ const loadTestCases = async () => {
   if (!projectId.value) {
     testCases.value = []
     selectedCaseIds.value = []
+    selectedStepId.value = null
+    checkedStepIds.value = []
+    transactionCollapseState.value = {}
     return
   }
 
@@ -1462,6 +1850,9 @@ const onProjectChange = async () => {
   selectedTestCase.value = null
   selectedCaseIds.value = []
   currentSteps.value = []
+  selectedStepId.value = null
+  checkedStepIds.value = []
+  transactionCollapseState.value = {}
   executionResult.value = null
   folderFilter.value = 'all'
   availableElements.value = []
@@ -1664,6 +2055,10 @@ const selectTestCase = (testCase) => {
   } else {
     currentSteps.value = []
   }
+  normalizeTransactionBlocks()
+  selectedStepId.value = null
+  checkedStepIds.value = []
+  transactionCollapseState.value = {}
   allStepsExpanded.value = false
   // 只有在切换到不同用例时才清空执行结果
   executionResult.value = null
@@ -1672,16 +2067,50 @@ const selectTestCase = (testCase) => {
 
 const addStep = () => {
   const newStep = createStepDraft({}, true)
-  currentSteps.value.push(newStep)
+  const selectedIndex = getSelectedStepIndex()
+
+  if (selectedIndex >= 0) {
+    const selectedStep = currentSteps.value[selectedIndex]
+    const nextStep = currentSteps.value[selectedIndex + 1]
+    if (
+      hasTransaction(selectedStep) &&
+      (!nextStep || getTransactionId(nextStep) === getTransactionId(selectedStep))
+    ) {
+      newStep.transaction_id = selectedStep.transaction_id
+      newStep.transaction_name = selectedStep.transaction_name
+    }
+  }
+
+  if (selectedIndex >= 0) {
+    currentSteps.value.splice(selectedIndex + 1, 0, newStep)
+  } else {
+    currentSteps.value.push(newStep)
+  }
+
+  selectedStepId.value = newStep.id
+  checkedStepIds.value = [newStep.id]
+  normalizeTransactionBlocks()
   allStepsExpanded.value = false
 }
 
 const removeStep = (index) => {
-  currentSteps.value.splice(index, 1)
+  const [removedStep] = currentSteps.value.splice(index, 1)
+
+  if (removedStep && isSameStepId(removedStep.id, selectedStepId.value)) {
+    selectedStepId.value = currentSteps.value[index]?.id ?? currentSteps.value[index - 1]?.id ?? null
+  }
+
+  checkedStepIds.value = checkedStepIds.value.filter(id => !isSameStepId(id, removedStep?.id))
+  normalizeTransactionBlocks()
 }
 
 const onStepsReorder = () => {
   // 步骤重新排序后的处理
+  console.log('步骤已重新排序')
+}
+
+const handleStepsReorder = () => {
+  normalizeTransactionBlocks()
   console.log('步骤已重新排序')
 }
 
@@ -1762,6 +2191,7 @@ const expandAllSteps = () => {
 
 const saveTestCase = async () => {
   if (!selectedTestCase.value) return
+  normalizeTransactionBlocks()
   if (!validateCurrentSteps()) return
 
   try {
@@ -1862,6 +2292,10 @@ const toggleView = () => {
   showSteps.value = !showSteps.value
 }
 
+const returnToTestSteps = () => {
+  showSteps.value = true
+}
+
 const editTestCase = (testCase) => {
   editingTestCase.value = testCase
   testCaseForm.name = testCase.name
@@ -1896,6 +2330,9 @@ const deleteTestCase = async (testCase) => {
     if (selectedTestCase.value?.id === testCase.id) {
       selectedTestCase.value = null
       currentSteps.value = []
+      selectedStepId.value = null
+      checkedStepIds.value = []
+      transactionCollapseState.value = {}
       executionResult.value = null
     }
   } catch (error) {
@@ -2542,15 +2979,39 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
   margin-bottom: 15px;
+  border-bottom: 1px solid #e6e6e6;
+  background: #fff;
+}
+
+.steps-header-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
 }
 
 .steps-header h4 {
   margin: 0;
 }
 
+.steps-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.steps-selection-summary {
+  color: #606266;
+  font-size: 13px;
+}
+
 .steps-list {
-  padding: 10px;
+  padding: 0;
   padding-bottom: 20px;
 }
 
@@ -2558,7 +3019,7 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   flex: 1;
   min-height: 0;
-  padding: 10px;
+  padding: 12px;
   padding-right: 5px;
 }
 
@@ -2580,16 +3041,89 @@ onBeforeUnmount(() => {
   background: #999;
 }
 
+.step-entry {
+  margin-bottom: 10px;
+}
+
+.transaction-block {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #d9ecff;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #f5f9ff 0%, #eef6ff 100%);
+  margin-bottom: 8px;
+}
+
+.transaction-block.collapsed {
+  margin-bottom: 10px;
+}
+
+.transaction-block-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex: 1;
+  cursor: pointer;
+}
+
+.transaction-block-toggle,
+.transaction-block-icon {
+  color: #409eff;
+}
+
+.transaction-block-checkbox {
+  flex-shrink: 0;
+}
+
+.transaction-block-name {
+  color: #303133;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.transaction-block-summary {
+  min-width: 0;
+  color: #606266;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.transaction-block-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
 .step-item {
   border: 1px solid #e6e6e6;
   border-radius: 6px;
-  margin-bottom: 10px;
   background: white;
   transition: all 0.3s;
 }
 
 .step-item:hover {
   border-color: #409eff;
+}
+
+.step-item--in-transaction {
+  margin-left: 20px;
+  border-color: #d9ecff;
+}
+
+.step-item.selected {
+  border-color: #409eff;
+  box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.12);
+}
+
+.step-item.selected .step-header {
+  background: #ecf5ff;
 }
 
 .step-header {
@@ -2607,6 +3141,10 @@ onBeforeUnmount(() => {
   gap: 10px;
   min-width: 0;
   flex: 1;
+}
+
+.step-select-checkbox {
+  flex-shrink: 0;
 }
 
 .drag-handle {
@@ -2828,10 +3366,29 @@ onBeforeUnmount(() => {
 }
 
 .execution-result .result-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   padding: 15px;
   border-bottom: 1px solid #e6e6e6;
   background: #fafafa;
   border-radius: 6px 6px 0 0;
+}
+
+.result-header-main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.result-header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
 .execution-result .result-content {
