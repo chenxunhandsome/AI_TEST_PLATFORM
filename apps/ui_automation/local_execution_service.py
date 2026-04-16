@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 import time
 import traceback
 from types import SimpleNamespace
@@ -11,14 +12,59 @@ from .models import TestCaseStep
 from .playwright_engine import PlaywrightTestEngine
 from .selenium_engine import SeleniumTestEngine
 from .variable_resolver import resolve_variables, set_runtime_variable
-from .project_runtime import initialize_project_runtime_variables
+from .project_runtime import build_project_runtime_variables, initialize_project_runtime_variables
 
 logger = logging.getLogger(__name__)
+RUNTIME_VARIABLE_PLACEHOLDER_RE = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}')
+
+
+def _normalize_runtime_variable_name(value):
+    return str(value or '').strip()
+
+
+def _replace_known_runtime_variables(text, runtime_variables):
+    """Expand only known project/step variables and keep dynamic functions intact."""
+    if not isinstance(text, str) or not text or not runtime_variables:
+        return text
+
+    def replace(match):
+        variable_name = match.group(1)
+        if variable_name not in runtime_variables:
+            return match.group(0)
+
+        value = runtime_variables.get(variable_name)
+        return '' if value is None else str(value)
+
+    return RUNTIME_VARIABLE_PLACEHOLDER_RE.sub(replace, text)
+
+
+def _build_serialized_step_payload(step, runtime_variables):
+    resolved_input_value = _replace_known_runtime_variables(step.input_value or '', runtime_variables)
+    resolved_assert_value = _replace_known_runtime_variables(step.assert_value or '', runtime_variables)
+    save_as = _normalize_runtime_variable_name(step.save_as)
+
+    if save_as:
+        if step.action_type in {'fill', 'switchTab'}:
+            runtime_variables[save_as] = resolved_input_value
+        elif step.action_type == 'assert':
+            runtime_variables[save_as] = resolved_assert_value
+
+    return {
+        'step_number': step.step_number,
+        'action_type': step.action_type,
+        'description': step.description or '',
+        'save_as': save_as,
+        'input_value': resolved_input_value,
+        'wait_time': step.wait_time,
+        'assert_type': step.assert_type or '',
+        'assert_value': resolved_assert_value,
+    }
 
 
 def build_test_case_payload(test_case):
     """将数据库中的测试用例转换为可在本地 runner 上执行的 payload。"""
     steps = []
+    runtime_variables = build_project_runtime_variables(project=test_case.project)
     for step in test_case.steps.all().order_by('step_number'):
         element_data = None
         if step.element:
@@ -30,17 +76,9 @@ def build_test_case_payload(test_case):
                 'force_action': step.element.force_action,
             }
 
-        steps.append({
-            'step_number': step.step_number,
-            'action_type': step.action_type,
-            'description': step.description or '',
-            'save_as': step.save_as or '',
-            'input_value': step.input_value or '',
-            'wait_time': step.wait_time,
-            'assert_type': step.assert_type or '',
-            'assert_value': step.assert_value or '',
-            'element_data': element_data,
-        })
+        step_payload = _build_serialized_step_payload(step, runtime_variables)
+        step_payload['element_data'] = element_data
+        steps.append(step_payload)
 
     return {
         'test_case_id': test_case.id,
