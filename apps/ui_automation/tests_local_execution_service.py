@@ -1,7 +1,8 @@
 from types import SimpleNamespace
 from unittest import TestCase
+from unittest.mock import patch
 
-from apps.ui_automation.local_execution_service import build_test_case_payload
+from apps.ui_automation.local_execution_service import build_test_case_payload, execute_serialized_test_case
 
 
 class FakeStepQuerySet:
@@ -53,17 +54,18 @@ class BuildTestCasePayloadTests(TestCase):
         payload = build_test_case_payload(test_case)
 
         self.assertEqual(payload['steps'][0]['input_value'], 'http://service.local/login')
-        self.assertEqual(payload['steps'][1]['input_value'], 'http://service.local/login?next=${timestamp()}')
+        self.assertTrue(payload['steps'][1]['input_value'].startswith('http://service.local/login?next='))
+        self.assertNotIn('${timestamp()}', payload['steps'][1]['input_value'])
 
-    def test_build_test_case_payload_pre_resolves_assert_saved_variables(self):
+    def test_build_test_case_payload_keeps_assert_saved_variables_available(self):
         project = SimpleNamespace(
-            id=2,
+            id=3,
             name='demo-project',
             base_url='http://example.com',
             global_variables=[],
         )
         test_case = SimpleNamespace(
-            id=12,
+            id=13,
             name='assert-case',
             project_id=project.id,
             project=project,
@@ -77,3 +79,53 @@ class BuildTestCasePayloadTests(TestCase):
 
         self.assertEqual(payload['steps'][0]['assert_value'], 'expected-token')
         self.assertEqual(payload['steps'][1]['input_value'], 'Bearer expected-token')
+
+    def test_local_execution_keeps_runtime_variable_value_consistent_for_dynamic_functions(self):
+        project = SimpleNamespace(
+            id=2,
+            name='demo-project',
+            base_url='http://example.com',
+            global_variables=[],
+        )
+        test_case = SimpleNamespace(
+            id=12,
+            name='assert-case',
+            project_id=project.id,
+            project=project,
+            steps=FakeStepQuerySet([
+                make_step(1, 'fill', input_value='${random_string(8, all, 1)}', save_as='data_abc'),
+                make_step(2, 'fill', input_value='${data_abc}'),
+            ]),
+        )
+
+        payload = build_test_case_payload(test_case)
+        self.assertEqual(payload['steps'][0]['input_value'], payload['steps'][1]['input_value'])
+
+        captured_inputs = []
+
+        class DummyEngine:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+            async def navigate(self, url):
+                return True, f'navigate:{url}'
+
+            async def execute_step(self, step, element_data):
+                captured_inputs.append(step.input_value)
+                return True, 'ok', None
+
+            async def capture_screenshot(self):
+                return None
+
+        with patch('apps.ui_automation.local_execution_service.PlaywrightTestEngine', DummyEngine):
+            result = execute_serialized_test_case(payload, engine_type='playwright')
+
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(len(captured_inputs), 2)
+        self.assertEqual(captured_inputs[0], captured_inputs[1])
