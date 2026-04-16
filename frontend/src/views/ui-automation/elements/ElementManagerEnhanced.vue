@@ -30,7 +30,6 @@
             :props="treeProps"
             node-key="id"
             show-checkbox
-            check-strictly
             :default-checked-keys="checkedElementIds"
             :expand-on-click-node="false"
             :default-expanded-keys="expandedKeys"
@@ -683,7 +682,7 @@ const loadPageTree = async () => {
       return groups.map(group => ({
         ...group,
         type: 'page',
-        disabled: true,
+        disabled: false,
         children: group.children ? buildTree(group.children) : []
       }))
     }
@@ -714,7 +713,7 @@ const loadElementTree = async () => {
       return groups.map(group => ({
         ...group,
         type: 'page',
-        disabled: true,
+        disabled: false,
         children: group.children ? buildTree(group.children) : []
       }))
     }
@@ -786,7 +785,7 @@ const loadElementTree = async () => {
         id: 'unassigned',
         name: 'Unassigned',
         type: 'page',
-        disabled: true,
+        disabled: false,
         children: unassignedElements.map(element => ({
           ...element,
           type: 'element',
