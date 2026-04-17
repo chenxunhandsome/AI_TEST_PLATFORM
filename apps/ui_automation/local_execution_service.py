@@ -37,7 +37,7 @@ def _resolve_serialized_step_payload(step):
 
     save_as = _normalize_runtime_variable_name(step.save_as)
     if save_as:
-        if step.action_type in {'fill', 'switchTab'}:
+        if step.action_type in {'fill', 'fillAndEnter', 'switchTab'}:
             set_runtime_variable(save_as, resolved_input_value)
         elif step.action_type == 'assert':
             set_runtime_variable(save_as, resolved_assert_value)
@@ -207,7 +207,7 @@ def _store_step_runtime_variable(step, resolved_input_value, resolved_assert_val
     if not save_as:
         return
 
-    if step.action_type in {'fill', 'switchTab'}:
+    if step.action_type in {'fill', 'fillAndEnter', 'switchTab'}:
         set_runtime_variable(save_as, resolved_input_value)
     elif step.action_type == 'assert':
         set_runtime_variable(save_as, resolved_assert_value)

@@ -414,6 +414,7 @@ const getActionText = (actionType) => {
   const actionMap = {
     'click': t('uiAutomation.actionTypes.click'),
     'fill': t('uiAutomation.actionTypes.fill'),
+    'fillAndEnter': t('uiAutomation.actionTypes.fillAndEnter'),
     'getText': t('uiAutomation.actionTypes.getText'),
     'waitFor': t('uiAutomation.actionTypes.waitFor'),
     'hover': t('uiAutomation.actionTypes.hover'),

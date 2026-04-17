@@ -689,6 +689,26 @@ class PlaywrightTestEngine:
                 log += f"  - 执行时间: {execution_time}秒"
                 return True, log, None
 
+            elif action_type == 'fillAndEnter':
+                await locator.fill(resolved_input_value, timeout=timeout_ms, force=force_action)
+                await locator.press('Enter', timeout=timeout_ms)
+                execution_time = round(time.time() - start_time, 2)
+
+                # 输入回车后短暂等待，确保页面或表单事件有时间响应
+                await asyncio.sleep(0.3)
+
+                log = f"✓ 在元素 '{element_name}' 中输入文本并按回车成功\n"
+                log += f"  - 定位器: {locator_strategy}={locator_value}\n"
+                if resolved_input_value != step.input_value:
+                    log += f"  - 变量解析: '{step.input_value}' => '{resolved_input_value}'\n"
+                log += f"  - 输入内容: '{resolved_input_value}'\n"
+                log += "  - 按键: Enter\n"
+                log += f"  - 超时设置: {timeout_ms/1000}秒\n"
+                if force_action:
+                    log += "  - 强制操作: 是（fill 时使用 force）\n"
+                log += f"  - 执行时间: {execution_time}秒"
+                return True, log, None
+
             elif action_type == 'getText':
                 text = await locator.inner_text(timeout=timeout_ms)
                 execution_time = round(time.time() - start_time, 2)

@@ -80,6 +80,29 @@ class BuildTestCasePayloadTests(TestCase):
         self.assertEqual(payload['steps'][0]['assert_value'], 'expected-token')
         self.assertEqual(payload['steps'][1]['input_value'], 'Bearer expected-token')
 
+    def test_build_test_case_payload_keeps_fill_and_enter_saved_variables_available(self):
+        project = SimpleNamespace(
+            id=4,
+            name='demo-project',
+            base_url='http://example.com',
+            global_variables=[],
+        )
+        test_case = SimpleNamespace(
+            id=14,
+            name='fill-enter-case',
+            project_id=project.id,
+            project=project,
+            steps=FakeStepQuerySet([
+                make_step(1, 'fillAndEnter', input_value='hello world', save_as='keyword'),
+                make_step(2, 'fill', input_value='search=${keyword}'),
+            ]),
+        )
+
+        payload = build_test_case_payload(test_case)
+
+        self.assertEqual(payload['steps'][0]['input_value'], 'hello world')
+        self.assertEqual(payload['steps'][1]['input_value'], 'search=hello world')
+
     def test_local_execution_keeps_runtime_variable_value_consistent_for_dynamic_functions(self):
         project = SimpleNamespace(
             id=2,
@@ -129,3 +152,67 @@ class BuildTestCasePayloadTests(TestCase):
         self.assertEqual(result['status'], 'passed')
         self.assertEqual(len(captured_inputs), 2)
         self.assertEqual(captured_inputs[0], captured_inputs[1])
+
+    def test_local_execution_fill_and_enter_keeps_runtime_variable_value_consistent(self):
+        payload = {
+            'test_case_id': 21,
+            'test_case_name': 'fill-enter-runtime-case',
+            'project_id': 2,
+            'project_name': 'demo-project',
+            'base_url': 'http://example.com',
+            'project_global_variables': [],
+            'steps': [
+                {
+                    'step_number': 1,
+                    'action_type': 'fillAndEnter',
+                    'description': 'fill and enter',
+                    'save_as': 'query_value',
+                    'input_value': '${random_string(8, all, 1)}',
+                    'wait_time': 1000,
+                    'assert_type': '',
+                    'assert_value': '',
+                    'element_data': None,
+                },
+                {
+                    'step_number': 2,
+                    'action_type': 'fill',
+                    'description': 'reuse query',
+                    'save_as': '',
+                    'input_value': '${query_value}',
+                    'wait_time': 1000,
+                    'assert_type': '',
+                    'assert_value': '',
+                    'element_data': None,
+                },
+            ],
+        }
+
+        captured_inputs = []
+
+        class DummyEngine:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+            async def navigate(self, url):
+                return True, f'navigate:{url}'
+
+            async def execute_step(self, step, element_data):
+                captured_inputs.append((step.action_type, step.input_value))
+                return True, 'ok', None
+
+            async def capture_screenshot(self):
+                return None
+
+        with patch('apps.ui_automation.local_execution_service.PlaywrightTestEngine', DummyEngine):
+            result = execute_serialized_test_case(payload, engine_type='playwright')
+
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(len(captured_inputs), 2)
+        self.assertEqual(captured_inputs[0][0], 'fillAndEnter')
+        self.assertEqual(captured_inputs[0][1], captured_inputs[1][1])

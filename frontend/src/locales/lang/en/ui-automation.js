@@ -1110,6 +1110,7 @@ export default {
     selectAction: 'Select Action',
     actionClick: 'Click',
     actionFill: 'Fill Text',
+    actionFillAndEnter: 'Fill And Press Enter',
     actionGetText: 'Get Text',
     actionWaitFor: 'Wait For Element',
     actionHover: 'Hover',
@@ -1237,6 +1238,7 @@ export default {
     actionType: {
       click: 'Click',
       fill: 'Fill',
+      fillAndEnter: 'Fill And Press Enter',
       getText: 'Get Text',
       waitFor: 'Wait For',
       hover: 'Hover',
@@ -1250,6 +1252,7 @@ export default {
     actionText: {
       click: 'Click',
       fill: 'Fill Text',
+      fillAndEnter: 'Fill And Press Enter',
       getText: 'Get Text',
       waitFor: 'Wait For',
       hover: 'Hover',
@@ -1303,6 +1306,7 @@ export default {
   actionTypes: {
     click: 'Click',
     fill: 'Fill',
+    fillAndEnter: 'Fill And Press Enter',
     getText: 'Get Text',
     waitFor: 'Wait For',
     hover: 'Hover',

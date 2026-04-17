@@ -426,7 +426,7 @@ def store_step_runtime_variable(step, action_type, resolved_input_value, resolve
         return None
 
     value_to_store = None
-    if action_type in {'fill', 'switchTab'}:
+    if action_type in {'fill', 'fillAndEnter', 'switchTab'}:
         value_to_store = resolved_input_value
     elif action_type == 'assert':
         value_to_store = resolved_assert_value
@@ -1758,6 +1758,15 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                 log_parts.append(f"- 文本输入成功 - 耗时 {execution_time}s")
             else:
                 log_parts.append(f"- 文本输入失败 - 元素未找到或不可编辑")
+
+        elif step.action_type == 'fillAndEnter':
+            log_parts.append(f"在元素 '{element_name}' 中输入文本并按回车")
+            log_parts.append(f"- 使用定位器: {locator_info}")
+            log_parts.append(f"- 输入值: '{step.input_value}'")
+            if step_result == 'success':
+                log_parts.append(f"- 输入并回车成功 - 耗时 {execution_time}s")
+            else:
+                log_parts.append(f"- 输入并回车失败 - 元素未找到、不可编辑或未响应回车")
 
         elif step.action_type == 'getText':
             log_parts.append(f"获取元素 '{element_name}' 的文本内容")
