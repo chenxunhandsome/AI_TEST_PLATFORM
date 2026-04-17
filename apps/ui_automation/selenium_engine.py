@@ -204,41 +204,15 @@ class SeleniumTestEngine:
                 options = Options()
                 if self.headless:
                     options.add_argument('--headless')
-                options.add_argument('--disable-blink-features=AutomationControlled')
-                options.add_argument('--disable-gpu')
-                options.add_argument('--no-sandbox')
-                options.add_argument('--disable-dev-shm-usage')
-                options.add_argument('--window-size=1920,1080')
+                for argument in get_chromium_browser_arguments():
+                    options.add_argument(argument)
                 
                 # 禁用自动化特征检测
-                options.add_experimental_option('excludeSwitches', ['enable-automation'])
+                options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
                 options.add_experimental_option('useAutomationExtension', False)
                 
                 # 禁用密码保存和泄露提醒（解决弹框遮挡元素的问题）
-                prefs = {
-                    'credentials_enable_service': False,  # 禁用密码保存服务
-                    'profile.password_manager_enabled': False,  # 禁用密码管理器
-                    'profile.default_content_setting_values.notifications': 2,  # 禁用通知
-                    'autofill.profile_enabled': False,  # 禁用自动填充
-                    'profile.default_content_setting_values.automatic_downloads': 1,  # 允许自动下载
-                    'password_manager_leak_detection': False,  # 禁用密码泄露检测（prefs级别）
-                    'safebrowsing.enabled': False,  # 禁用安全浏览（可能触发密码警告）
-                }
-                options.add_experimental_option('prefs', prefs)
-                
-                # 禁用密码泄露检查和其他安全警告（更全面的设置）
-                options.add_argument('--disable-features=PasswordLeakDetection')  # 禁用密码泄露检测
-                options.add_argument('--disable-features=PrivacySandboxSettings4')  # 禁用隐私沙盒
-                options.add_argument('--disable-features=TranslateUI')  # 禁用翻译提示
-                options.add_argument('--disable-infobars')  # 禁用信息栏
-                options.add_argument('--disable-save-password-bubble')  # 禁用保存密码气泡
-                options.add_argument('--disable-password-generation')  # 禁用密码生成
-                options.add_argument('--disable-password-manager-reauthentication')  # 禁用密码管理器重新认证
-                
-                # 额外的安全警告抑制
-                options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
-                options.add_argument('--disable-popup-blocking')  # 禁用弹窗拦截（避免某些警告）
-                options.add_argument('--disable-notifications')  # 禁用所有通知
+                options.add_experimental_option('prefs', get_chromium_browser_prefs())
 
                 # 使用缓存优先策略
                 service = Service(ChromeDriverManager().install())
@@ -282,8 +256,11 @@ class SeleniumTestEngine:
                 options = Options()
                 if self.headless:
                     options.add_argument('--headless')
-                options.add_argument('--disable-blink-features=AutomationControlled')
-                options.add_argument('--window-size=1920,1080')
+                for argument in get_chromium_browser_arguments():
+                    options.add_argument(argument)
+                options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
+                options.add_experimental_option('useAutomationExtension', False)
+                options.add_experimental_option('prefs', get_chromium_browser_prefs())
 
                 # 使用缓存优先策略，7天内不重新下载
                 service = Service(EdgeChromiumDriverManager().install())
@@ -318,31 +295,15 @@ class SeleniumTestEngine:
                 options = Options()
                 if self.headless:
                     options.add_argument('--headless')
-                options.add_argument('--disable-blink-features=AutomationControlled')
-                options.add_argument('--disable-gpu')
-                options.add_argument('--no-sandbox')
-                options.add_argument('--disable-dev-shm-usage')
-                options.add_argument('--window-size=1920,1080')
+                for argument in get_chromium_browser_arguments():
+                    options.add_argument(argument)
                 
                 # 禁用自动化特征检测
-                options.add_experimental_option('excludeSwitches', ['enable-automation'])
+                options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
                 options.add_experimental_option('useAutomationExtension', False)
                 
                 # 禁用密码保存和泄露提醒（解决弹框遮挡元素的问题）
-                prefs = {
-                    'credentials_enable_service': False,  # 禁用密码保存服务
-                    'profile.password_manager_enabled': False,  # 禁用密码管理器
-                    'profile.default_content_setting_values.notifications': 2,  # 禁用通知
-                    'autofill.profile_enabled': False,  # 禁用自动填充
-                    'profile.default_content_setting_values.automatic_downloads': 1,  # 允许自动下载
-                }
-                options.add_experimental_option('prefs', prefs)
-                
-                # 禁用密码泄露检查和其他安全警告
-                options.add_argument('--disable-features=PasswordLeakDetection')  # 禁用密码泄露检测
-                options.add_argument('--disable-features=PrivacySandboxSettings4')  # 禁用隐私沙盒
-                options.add_argument('--disable-features=TranslateUI')  # 禁用翻译提示
-                options.add_argument('--disable-infobars')  # 禁用信息栏
+                options.add_experimental_option('prefs', get_chromium_browser_prefs())
 
                 service = Service(ChromeDriverManager().install())
                 self.driver = webdriver.Chrome(service=service, options=options)
