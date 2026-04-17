@@ -22,6 +22,17 @@ import logging
 
 logger = logging.getLogger(__name__)
 RUNTIME_VARIABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+CHROMIUM_DISABLED_FEATURES = (
+    'PasswordLeakDetection',
+    'PrivacySandboxSettings4',
+    'Translate',
+    'TranslateUI',
+    'SavePasswordBubble',
+    'AutofillServerCommunication',
+    'CreditCardSave',
+    'HeaderUI',
+    'AccountConsistency',
+)
 
 
 def append_runtime_variable_log(step, log, value):
@@ -34,6 +45,49 @@ def append_runtime_variable_log(step, log, value):
 
     set_runtime_variable(save_as, value)
     return f"{log}\n  - 已存储变量: ${{{save_as}}} = '{value}'"
+
+
+def get_chromium_browser_prefs():
+    return {
+        'credentials_enable_service': False,
+        'profile.password_manager_enabled': False,
+        'profile.default_content_setting_values.notifications': 2,
+        'autofill.profile_enabled': False,
+        'profile.default_content_setting_values.automatic_downloads': 1,
+        'password_manager_leak_detection': False,
+        'safebrowsing.enabled': False,
+        'safebrowsing.disable_download_protection': True,
+        'intl.accept_languages': 'zh-CN,zh,en-US,en',
+        'translate.enabled': False,
+        'translate': {'enabled': False},
+        'profile.exit_type': 'Normal',
+    }
+
+
+def get_chromium_browser_arguments():
+    return [
+        '--disable-blink-features=AutomationControlled',
+        '--disable-gpu',
+        '--no-sandbox',
+        '--disable-dev-shm-usage',
+        '--window-size=1920,1080',
+        f'--disable-features={",".join(CHROMIUM_DISABLED_FEATURES)}',
+        '--disable-translate',
+        '--lang=zh-CN',
+        '--disable-infobars',
+        '--disable-save-password-bubble',
+        '--disable-password-generation',
+        '--disable-password-manager-reauthentication',
+        '--disable-popup-blocking',
+        '--disable-notifications',
+        '--no-default-browser-check',
+        '--no-first-run',
+        '--password-store=basic',
+        '--use-mock-keychain',
+        '--disable-background-timer-throttling',
+        '--disable-renderer-backgrounding',
+        '--disable-device-discovery-notifications',
+    ]
 
 
 class SeleniumTestEngine:

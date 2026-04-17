@@ -62,6 +62,46 @@ def normalize_runtime_variable_name(value):
     return str(value or '').strip()
 
 
+def _record_step_failure(
+    execution_result,
+    detailed_errors,
+    screenshots,
+    execution_logs,
+    *,
+    step_number,
+    step_count,
+    action_type_text,
+    element_data,
+    description,
+    step_log,
+    screenshot_base64=None,
+):
+    execution_result['status'] = 'failed'
+    execution_result['error_message'] = step_log
+
+    element_info = element_data['name'] if element_data else "未知元素"
+    detailed_errors.append({
+        'step_number': step_number,
+        'action_type': action_type_text,
+        'element': element_info,
+        'message': f"步骤 {step_number}/{step_count} 执行失败",
+        'details': step_log,
+        'description': description or ''
+    })
+
+    if screenshot_base64:
+        screenshots.append({
+            'url': screenshot_base64,
+            'description': f'步骤 {step_number} 失败截图: {description or action_type_text}',
+            'step_number': step_number,
+            'timestamp': timezone.now().isoformat()
+        })
+        execution_logs.append("  📸 失败截图已捕获")
+
+    execution_logs.append("  [调试] 步骤失败,准备退出执行...")
+    return False
+
+
 def get_accessible_projects_for_user(user):
     return UiProject.objects.filter(
         models.Q(owner=user) | models.Q(members=user)
@@ -2181,34 +2221,24 @@ class TestCaseViewSet(viewsets.ModelViewSet):
 
                                     if not success:
                                         logger.info(f"[调试-Selenium] 步骤 {i} 执行失败，设置状态为 failed")
-                                        execution_result['status'] = 'failed'
-                                        element_info = element_data['name'] if element_data else "未知元素"
-                                        execution_result['error_message'] = step_log  # 使用step_log作为错误信息
                                         logger.info(f"[调试-Selenium] execution_result = {execution_result}")
-
-                                        detailed_errors.append({
-                                            'step_number': i,
-                                            'action_type': action_type_text,
-                                            'element': element_info,
-                                            'message': f"步骤 {i}/{step_count} 执行失败",
-                                            'details': step_log,
-                                            'description': description or ''
-                                        })
 
                                         if not screenshot_base64:
                                             screenshot_base64 = engine.capture_screenshot()
 
-                                        if screenshot_base64:
-                                            screenshots.append({
-                                                'url': screenshot_base64,
-                                                'description': f'步骤 {i} 失败截图: {description or action_type_text}',
-                                                'step_number': i,
-                                                'timestamp': timezone.now().isoformat()
-                                                # 移除 loaded 和 error 字段，让前端自行处理
-                                            })
-                                            execution_logs.append(f"  📸 失败截图已捕获")
-
-                                        return False
+                                        return _record_step_failure(
+                                            execution_result,
+                                            detailed_errors,
+                                            screenshots,
+                                            execution_logs,
+                                            step_number=i,
+                                            step_count=step_count,
+                                            action_type_text=action_type_text,
+                                            element_data=element_data,
+                                            description=description,
+                                            step_log=step_log,
+                                            screenshot_base64=screenshot_base64,
+                                        )
 
                                     if action_type == 'screenshot' and screenshot_base64:
                                         screenshots.append({
@@ -2384,39 +2414,24 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                                         # 如果步骤失败,保存截图
                                         if not success:
                                             execution_logs.append(f"  [调试] 检测到步骤失败,准备处理...")
-                                            execution_result['status'] = 'failed'
-
-                                            # 获取失败的元素信息
-                                            element_info = element_data['name'] if element_data else "未知元素"
-
-                                            execution_result['error_message'] = step_log  # 使用step_log作为错误信息
-
-                                            # 添加详细错误信息
-                                            detailed_errors.append({
-                                                'step_number': i,
-                                                'action_type': action_type_text,
-                                                'element': element_info,
-                                                'message': f"步骤 {i}/{step_count} 执行失败",
-                                                'details': step_log,  # 包含详细的错误日志
-                                                'description': description or ''
-                                            })
 
                                             # 如果没有截图,捕获一张
                                             if not screenshot_base64:
                                                 screenshot_base64 = await engine.capture_screenshot()
 
-                                        if screenshot_base64:
-                                            screenshots.append({
-                                                'url': screenshot_base64,
-                                                'description': f'步骤 {i} 失败截图: {description or action_type_text}',
-                                                'step_number': i,
-                                                'timestamp': timezone.now().isoformat()
-                                                # 移除 loaded 和 error 字段，让前端自行处理
-                                            })
-                                            execution_logs.append(f"  📸 失败截图已捕获")
-
-                                            execution_logs.append(f"  [调试] 步骤失败,准备退出执行...")
-                                            return False
+                                            return _record_step_failure(
+                                                execution_result,
+                                                detailed_errors,
+                                                screenshots,
+                                                execution_logs,
+                                                step_number=i,
+                                                step_count=step_count,
+                                                action_type_text=action_type_text,
+                                                element_data=element_data,
+                                                description=description,
+                                                step_log=step_log,
+                                                screenshot_base64=screenshot_base64,
+                                            )
 
                                         # 如果是截图步骤且成功,也保存截图
                                         if action_type == 'screenshot' and screenshot_base64:
@@ -3013,20 +3028,22 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                             })
 
                                             if not success:
-                                                execution_result['status'] = 'failed'
-                                                execution_result['error_message'] = step_log
-
                                                 if not screenshot_base64:
                                                     screenshot_base64 = engine.capture_screenshot()
 
-                                                if screenshot_base64:
-                                                    screenshots.append({
-                                                        'url': screenshot_base64,
-                                                        'description': f'步骤 {i} 失败截图',
-                                                        'step_number': i,
-                                                        'timestamp': timezone.now().isoformat()
-                                                    })
-
+                                                _record_step_failure(
+                                                    execution_result,
+                                                    detailed_errors=[],
+                                                    screenshots=screenshots,
+                                                    execution_logs=execution_logs,
+                                                    step_number=i,
+                                                    step_count=len(steps_data),
+                                                    action_type_text=action_type,
+                                                    element_data=element_data,
+                                                    description=step_info['description'],
+                                                    step_log=step_log,
+                                                    screenshot_base64=screenshot_base64,
+                                                )
                                                 break
 
                                             if action_type == 'screenshot' and screenshot_base64:
@@ -3101,21 +3118,22 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                                 })
 
                                                 if not success:
-                                                    execution_result['status'] = 'failed'
-                                                    execution_result['error_message'] = step_log
-
                                                     if not screenshot_base64:
                                                         screenshot_base64 = await engine.capture_screenshot()
 
-                                                    if screenshot_base64:
-                                                        screenshots.append({
-                                                            'url': screenshot_base64,
-                                                            'description': f'步骤 {i} 失败截图',
-                                                            'step_number': i,
-                                                            'timestamp': timezone.now().isoformat()
-                                                        })
-
-                                                    return False
+                                                    return _record_step_failure(
+                                                        execution_result,
+                                                        detailed_errors=[],
+                                                        screenshots=screenshots,
+                                                        execution_logs=execution_logs,
+                                                        step_number=i,
+                                                        step_count=len(steps_data),
+                                                        action_type_text=action_type,
+                                                        element_data=element_data,
+                                                        description=step_info['description'],
+                                                        step_log=step_log,
+                                                        screenshot_base64=screenshot_base64,
+                                                    )
 
                                                 if action_type == 'screenshot' and screenshot_base64:
                                                     screenshots.append({

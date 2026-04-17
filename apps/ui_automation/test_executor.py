@@ -5,6 +5,7 @@ UI自动化测试执行服务
 import re
 import time
 import json
+import base64
 from datetime import datetime
 from django.utils import timezone
 from django.db import connection
@@ -50,6 +51,16 @@ def _store_runtime_variable_for_step(step_data, resolved_input_value=None, resol
         return
 
     set_runtime_variable(save_as, value_to_store)
+
+
+def _normalize_step_result(step_result):
+    if step_result.get('error'):
+        step_result['success'] = False
+    return step_result
+
+
+def _to_data_url(screenshot_bytes):
+    return f"data:image/png;base64,{base64.b64encode(screenshot_bytes).decode('utf-8')}"
 
 
 def _resolve_drag_target_payload(raw_input):
@@ -325,6 +336,9 @@ class TestExecutor:
                         '--ignore-certificate-errors',  # 忽略证书错误
                         '--allow-insecure-localhost',  # 允许不安全localhost
                         '--disable-web-security',  # 禁用web安全限制（跨域）
+                        '--disable-translate',
+                        '--disable-features=Translate,TranslateUI',
+                        '--lang=zh-CN',
                     ]
                     # 选择浏览器
                     if self.browser == 'firefox':
@@ -343,7 +357,9 @@ class TestExecutor:
                     # 配置上下文（User Agent 和 Viewport）
                     self.context = browser.new_context(
                         viewport={'width': 1920, 'height': 1080},
-                        user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+                        user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                        locale='zh-CN',
+                        extra_http_headers={'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'}
                     )
                     self.current_page = self.context.new_page()
 
@@ -496,6 +512,14 @@ class TestExecutor:
                 print(f"   使用的page 标题: {self.current_page.title()}")
 
                 result['steps'].append(step_result)
+
+                if step_data['action_type'] == 'screenshot' and step_result.get('screenshot'):
+                    result['screenshots'].append({
+                        'url': step_result['screenshot'],
+                        'description': f'步骤 {step_data["step_number"]}: {step_data.get("description", "") or "手动截图"}',
+                        'step_number': step_data['step_number'],
+                        'timestamp': datetime.now().isoformat()
+                    })
 
                 # 显式更新self.current_page，确保引用正确
                 if step_result.get('switched_page'):
@@ -1063,9 +1087,8 @@ class TestExecutor:
                     step_result['success'] = True
 
                 elif step_data['action_type'] == 'screenshot':
-                    screenshot_path = f'screenshots/step_{step_data["step_number"]}.png'
-                    self.current_page.screenshot(path=screenshot_path)
-                    step_result['screenshot'] = screenshot_path
+                    screenshot_bytes = self.current_page.screenshot(timeout=step_data.get('wait_time') or 5000)
+                    step_result['screenshot'] = _to_data_url(screenshot_bytes)
                     step_result['success'] = True
 
                 elif step_data['action_type'] == 'assert':
@@ -1240,6 +1263,11 @@ class TestExecutor:
                     self.current_page.wait_for_timeout(step_data['wait_time'])
                     step_result['success'] = True
 
+                elif step_data['action_type'] == 'screenshot':
+                    screenshot_bytes = self.current_page.screenshot(timeout=step_data.get('wait_time') or 5000)
+                    step_result['screenshot'] = _to_data_url(screenshot_bytes)
+                    step_result['success'] = True
+
                 elif step_data['action_type'] == 'switchTab':
                     # 切换标签页 - 同步版本（无需元素）
                     import time as sync_time
@@ -1360,6 +1388,7 @@ class TestExecutor:
                     print(f"  - 页面标题: {self.current_page.title()}")
                     print(f"  - self.current_page已更新为新页面")
 
+            step_result = _normalize_step_result(step_result)
             if step_result['success']:
                 _store_runtime_variable_for_step(step_data, resolved_input_value, resolved_assert_value)
         except Exception as e:
@@ -1414,7 +1443,7 @@ class TestExecutor:
             print(f"   异常类型: {error_type}")
             print(f"   错误信息: {error_str[:500]}")  # 限制长度避免刷屏
 
-        return step_result
+        return _normalize_step_result(step_result)
 
     def run_with_selenium(self):
         """使用 Selenium 执行测试"""
@@ -1753,6 +1782,11 @@ class TestExecutor:
                 'intl.accept_languages': 'zh-CN,zh,en-US,en',  # 设置语言
                 'profile.exit_type': 'Normal',  # 避免"Chrome未正常关闭"提示
             }
+            prefs.update({
+                'translate.enabled': False,
+                'translate': {'enabled': False},
+                'intl.accept_languages': 'zh-CN,zh,en-US,en',
+            })
             options.add_experimental_option('prefs', prefs)
 
             # 禁用密码泄露检查和其他安全警告（更全面的设置）
@@ -1760,6 +1794,7 @@ class TestExecutor:
             disabled_features = [
                 'PasswordLeakDetection',
                 'PrivacySandboxSettings4',
+                'Translate',
                 'TranslateUI',
                 'SavePasswordBubble',
                 'AutofillServerCommunication',
@@ -1768,6 +1803,8 @@ class TestExecutor:
                 'AccountConsistency',
             ]
             options.add_argument(f'--disable-features={",".join(disabled_features)}')
+            options.add_argument('--disable-translate')
+            options.add_argument('--lang=zh-CN')
 
             options.add_argument('--disable-infobars')  # 禁用信息栏
             options.add_argument('--disable-save-password-bubble')  # 禁用保存密码气泡
@@ -1839,6 +1876,9 @@ class TestExecutor:
             options.add_argument('--disable-gpu')
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
+            options.add_argument('--disable-translate')
+            options.add_argument('--disable-features=Translate,TranslateUI')
+            options.add_argument('--lang=zh-CN')
             options.add_argument('--window-size=1920,1080')
 
             # 使用缓存优先策略
@@ -1867,12 +1907,19 @@ class TestExecutor:
                 'autofill.profile_enabled': False,  # 禁用自动填充
                 'profile.default_content_setting_values.automatic_downloads': 1,  # 允许自动下载
             }
+            prefs.update({
+                'translate.enabled': False,
+                'translate': {'enabled': False},
+                'intl.accept_languages': 'zh-CN,zh,en-US,en',
+            })
             options.add_experimental_option('prefs', prefs)
 
             # 禁用密码泄露检查和其他安全警告
             options.add_argument('--disable-features=PasswordLeakDetection')  # 禁用密码泄露检测
             options.add_argument('--disable-features=PrivacySandboxSettings4')  # 禁用隐私沙盒
             options.add_argument('--disable-features=TranslateUI')  # 禁用翻译提示
+            options.add_argument('--disable-translate')
+            options.add_argument('--lang=zh-CN')
             options.add_argument('--disable-infobars')  # 禁用信息栏
 
             # 使用缓存优先策略
@@ -1904,6 +1951,14 @@ class TestExecutor:
             for step_data in case_data['steps']:
                 step_result = self.execute_step_selenium(driver, step_data)
                 result['steps'].append(step_result)
+
+                if step_data['action_type'] == 'screenshot' and step_result.get('screenshot'):
+                    result['screenshots'].append({
+                        'url': step_result['screenshot'],
+                        'description': f'步骤 {step_data["step_number"]}: {step_data.get("description", "") or "手动截图"}',
+                        'step_number': step_data['step_number'],
+                        'timestamp': datetime.now().isoformat()
+                    })
 
                 # 步骤执行完后添加短暂延迟，确保页面状态稳定
                 # 特别是点击操作后，可能触发动画、下拉框展开等
@@ -2405,9 +2460,8 @@ class TestExecutor:
                     step_result['success'] = True
 
                 elif step_data['action_type'] == 'screenshot':
-                    screenshot_path = f'screenshots/step_{step_data["step_number"]}.png'
-                    driver.save_screenshot(screenshot_path)
-                    step_result['screenshot'] = screenshot_path
+                    screenshot_bytes = driver.get_screenshot_as_png()
+                    step_result['screenshot'] = _to_data_url(screenshot_bytes)
                     step_result['success'] = True
 
                 elif step_data['action_type'] == 'assert':
@@ -2452,6 +2506,11 @@ class TestExecutor:
                     time.sleep(step_data['wait_time'] / 1000)
                     step_result['success'] = True
 
+                elif step_data['action_type'] == 'screenshot':
+                    screenshot_bytes = driver.get_screenshot_as_png()
+                    step_result['screenshot'] = _to_data_url(screenshot_bytes)
+                    step_result['success'] = True
+
                 elif step_data['action_type'] == 'switchTab':
                     # Selenium 切换标签页逻辑
                     try:
@@ -2480,6 +2539,7 @@ class TestExecutor:
                         step_result['error'] = f"切换标签页失败: {str(e)}"
                         step_result['success'] = False
 
+            step_result = _normalize_step_result(step_result)
             if step_result['success']:
                 _store_runtime_variable_for_step(step_data, resolved_input_value, resolved_assert_value)
         except TimeoutException as e:
@@ -2667,4 +2727,4 @@ class TestExecutor:
             print(f"   异常类型: {error_type}")
             print(f"   错误信息: {error_msg[:500]}")  # 限制长度避免刷屏
 
-        return step_result
+        return _normalize_step_result(step_result)
