@@ -1,8 +1,9 @@
 from types import SimpleNamespace
 from unittest import TestCase
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from apps.ui_automation.local_execution_service import build_test_case_payload, execute_serialized_test_case
+from apps.ui_automation.playwright_engine import PlaywrightTestEngine
 
 
 class FakeStepQuerySet:
@@ -216,3 +217,42 @@ class BuildTestCasePayloadTests(TestCase):
         self.assertEqual(len(captured_inputs), 2)
         self.assertEqual(captured_inputs[0][0], 'fillAndEnter')
         self.assertEqual(captured_inputs[0][1], captured_inputs[1][1])
+
+
+class PlaywrightNavigateTests(TestCase):
+    def test_navigate_treats_networkidle_timeout_as_non_fatal_after_domcontentloaded(self):
+        class FakeResponse:
+            status = 200
+
+        class FakePage:
+            def __init__(self):
+                self.goto_calls = []
+                self.wait_calls = []
+
+            async def goto(self, url, wait_until, timeout):
+                self.goto_calls.append((url, wait_until, timeout))
+                return FakeResponse()
+
+            async def wait_for_load_state(self, state, timeout):
+                self.wait_calls.append((state, timeout))
+                if state == 'networkidle':
+                    raise RuntimeError('page keeps polling')
+
+        engine = PlaywrightTestEngine()
+        engine.page = FakePage()
+
+        with patch('apps.ui_automation.playwright_engine.asyncio.sleep', new=AsyncMock()) as sleep_mock:
+            with patch('platform.system', return_value='Linux'):
+                import asyncio
+                success, log = asyncio.run(engine.navigate('http://example.com'))
+
+        self.assertTrue(success)
+        self.assertEqual(
+            engine.page.goto_calls,
+            [('http://example.com', 'domcontentloaded', 30000)]
+        )
+        self.assertIn(('load', 10000), engine.page.wait_calls)
+        self.assertIn(('networkidle', 5000), engine.page.wait_calls)
+        self.assertIn('domcontentloaded', log)
+        self.assertIn('networkidle未稳定', log)
+        sleep_mock.assert_awaited()

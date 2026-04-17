@@ -900,8 +900,21 @@ class PlaywrightTestEngine:
             import platform
             is_linux = platform.system() == 'Linux'
 
-            # 使用 networkidle 等待页面加载完成
-            await self.page.goto(url, wait_until='networkidle', timeout=30000)
+            # 先等待首屏 DOM 就绪，避免 SPA 的轮询/WebSocket 导致 networkidle 永远等不到
+            response = await self.page.goto(url, wait_until='domcontentloaded', timeout=30000)
+
+            load_state_notes = []
+            try:
+                await self.page.wait_for_load_state('load', timeout=10000)
+                load_state_notes.append('load')
+            except Exception as load_error:
+                load_state_notes.append(f"load未完全稳定: {str(load_error)}")
+
+            try:
+                await self.page.wait_for_load_state('networkidle', timeout=5000)
+                load_state_notes.append('networkidle')
+            except Exception as idle_error:
+                load_state_notes.append(f"networkidle未稳定: {str(idle_error)}")
 
             # 额外等待，确保动态内容加载（Vue/React等SPA应用）
             # 服务器无头模式需要更长的等待时间
@@ -909,7 +922,15 @@ class PlaywrightTestEngine:
             await asyncio.sleep(extra_wait)
 
             log = f"✓ 成功导航到: {url}\n"
-            log += f"  - 等待页面加载完成（networkidle + 额外{extra_wait}秒）"
+            if response is not None:
+                try:
+                    log += f"  - 首次响应状态码: {response.status}\n"
+                except Exception:
+                    pass
+            log += "  - 页面等待策略: domcontentloaded"
+            if load_state_notes:
+                log += f" -> {'; '.join(load_state_notes)}"
+            log += f" + 额外{extra_wait}秒"
             return True, log
         except Exception as e:
             log = f"✗ 导航失败: {url}\n  - 错误: {str(e)}"
