@@ -62,21 +62,34 @@ class PlaywrightTestEngine:
                 browser_launcher = self.playwright.chromium
 
             # 启动浏览器
+            launch_args = [
+                '--disable-blink-features=AutomationControlled',  # 避免被检测
+                '--ignore-certificate-errors',  # 忽略证书错误
+                '--allow-insecure-localhost',  # 允许不安全localhost
+                '--disable-web-security',  # 禁用web安全限制（跨域）
+            ]
+            if self.browser_type == 'chromium':
+                launch_args.extend([
+                    '--disable-translate',
+                    '--disable-features=Translate,TranslateUI',
+                    '--lang=zh-CN',
+                ])
             self.browser = await browser_launcher.launch(
                 headless=self.headless,
-                args=[
-                    '--disable-blink-features=AutomationControlled',  # 避免被检测
-                    '--ignore-certificate-errors',  # 忽略证书错误
-                    '--allow-insecure-localhost',  # 允许不安全localhost
-                    '--disable-web-security',  # 禁用web安全限制（跨域）
-                ]
+                args=launch_args
             )
 
             # 创建浏览器上下文
-            self.context = await self.browser.new_context(
-                viewport={'width': 1920, 'height': 1080},
-                user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
-            )
+            context_options = {
+                'viewport': {'width': 1920, 'height': 1080},
+                'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                'locale': 'zh-CN',
+            }
+            if self.browser_type == 'chromium':
+                context_options['extra_http_headers'] = {
+                    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
+                }
+            self.context = await self.browser.new_context(**context_options)
 
             # 创建页面
             self.page = await self.context.new_page()

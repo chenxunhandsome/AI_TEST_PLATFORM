@@ -56,7 +56,7 @@ class PlaywrightBrowserConfigurationTests(IsolatedAsyncioTestCase):
 
         engine = PlaywrightTestEngine(browser_type='chromium', headless=True)
 
-        with patch('apps.ui_automation.async_playwright', return_value=FakeAsyncPlaywrightFactory()):
+        with patch('apps.ui_automation.playwright_engine.async_playwright', return_value=FakeAsyncPlaywrightFactory()):
             await engine.start()
 
         self.assertTrue(launch_call['headless'])
