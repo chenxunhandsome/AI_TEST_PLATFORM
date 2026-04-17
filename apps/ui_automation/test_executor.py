@@ -356,9 +356,19 @@ class TestExecutor:
                             import platform
                             is_linux = platform.system() == 'Linux'
 
-                            # 使用 networkidle 等待页面加载完成
-                            self.current_page.goto(self.test_suite.project.base_url, wait_until='networkidle',
+                            # 先等待首屏 DOM 就绪，避免 SPA 的轮询/WebSocket 导致 networkidle 永远等不到
+                            self.current_page.goto(self.test_suite.project.base_url, wait_until='domcontentloaded',
                                                    timeout=30000)
+
+                            try:
+                                self.current_page.wait_for_load_state('load', timeout=10000)
+                            except Exception as load_error:
+                                print(f"⚠️ load 状态未完全稳定: {str(load_error)}")
+
+                            try:
+                                self.current_page.wait_for_load_state('networkidle', timeout=5000)
+                            except Exception as idle_error:
+                                print(f"⚠️ networkidle 未稳定，按页面已可用继续: {str(idle_error)}")
 
                             # 额外等待，确保动态内容加载（Vue/React等SPA应用）
                             # 服务器无头模式需要更长的等待时间

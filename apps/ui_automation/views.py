@@ -2123,7 +2123,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
 
                             if not success:
                                 execution_result['status'] = 'failed'
-                                execution_result['error_message'] = "导航到测试页面失败"
+                                execution_result['error_message'] = nav_log
                                 return False
 
                         if steps_data:
@@ -2318,7 +2318,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
 
                                 if not success:
                                     execution_result['status'] = 'failed'
-                                    execution_result['error_message'] = "导航到测试页面失败"
+                                    execution_result['error_message'] = nav_log
                                     return False
 
                             if steps_data:
@@ -2982,8 +2982,8 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                             execution_logs.append(nav_log)
                                             if not success:
                                                 execution_result['status'] = 'failed'
-                                                execution_result['error_message'] = "导航到测试页面失败"
-                                                raise Exception("导航到测试页面失败")
+                                                execution_result['error_message'] = nav_log
+                                                raise Exception(nav_log)
 
                                         # 执行测试步骤
                                         for i, step_info in enumerate(steps_data, 1):
@@ -3070,7 +3070,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                                 execution_logs.append(nav_log)
                                                 if not success:
                                                     execution_result['status'] = 'failed'
-                                                    execution_result['error_message'] = "导航到测试页面失败"
+                                                    execution_result['error_message'] = nav_log
                                                     return False
 
                                             # 执行测试步骤
