@@ -1110,6 +1110,7 @@ export default {
     selectAction: '选择操作',
     actionClick: '点击',
     actionFill: '输入文本',
+    actionFillAndEnter: '\u8f93\u5165\u5e76\u56de\u8f66',
     actionGetText: '获取文本',
     actionWaitFor: '等待元素',
     actionHover: '悬停',
@@ -1230,6 +1231,7 @@ export default {
     actionType: {
       click: '点击',
       fill: '填写',
+      fillAndEnter: '\u8f93\u5165\u5e76\u56de\u8f66',
       getText: '获取文本',
       waitFor: '等待元素',
       hover: '悬停',
@@ -1242,6 +1244,7 @@ export default {
     actionText: {
       click: '点击',
       fill: '输入文本',
+      fillAndEnter: '\u8f93\u5165\u5e76\u56de\u8f66',
       getText: '获取文本',
       waitFor: '等待元素',
       hover: '悬停',
@@ -1301,6 +1304,7 @@ export default {
   actionTypes: {
     click: '点击',
     fill: '填写',
+    fillAndEnter: '\u8f93\u5165\u5e76\u56de\u8f66',
     getText: '获取文本',
     waitFor: '等待元素',
     hover: '悬停',

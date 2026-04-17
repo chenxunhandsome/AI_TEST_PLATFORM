@@ -16,6 +16,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
 from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementNotInteractableException
 import logging
 
@@ -679,6 +680,66 @@ class SeleniumTestEngine:
                         else:
                             raise
 
+            elif action_type == 'fillAndEnter':
+                # 清空并输入文本后回车（添加 stale element 重试）
+                from selenium.common.exceptions import StaleElementReferenceException
+                for attempt in range(max_retries):
+                    try:
+                        if force_action or not element.is_displayed():
+                            safe_value = json.dumps(str(resolved_input_value))
+                            self.driver.execute_script(f"arguments[0].value = {safe_value};", element)
+                            self.driver.execute_script("""
+                                arguments[0].dispatchEvent(new Event('input', { bubbles: true }));
+                                arguments[0].dispatchEvent(new Event('change', { bubbles: true }));
+                                ['keydown', 'keypress', 'keyup'].forEach(function(eventName) {
+                                    arguments[0].dispatchEvent(new KeyboardEvent(eventName, {
+                                        bubbles: true,
+                                        cancelable: true,
+                                        key: 'Enter',
+                                        code: 'Enter',
+                                        keyCode: 13,
+                                        which: 13
+                                    }));
+                                });
+                            """, element)
+                            execution_time = round(time.time() - start_time, 2)
+                            log = f"✓ 在元素 '{element_name}' 中输入文本并按回车成功（使用JavaScript）\n"
+                            log += f"  - 定位器: {locator_strategy}={locator_value}\n"
+                            if resolved_input_value != step.input_value:
+                                log += f"  - 变量解析: '{step.input_value}' => '{resolved_input_value}'\n"
+                            log += f"  - 输入内容: '{resolved_input_value}'\n"
+                            log += "  - 按键: Enter\n"
+                            log += f"  - 超时设置: {timeout_seconds}秒\n"
+                            if force_action:
+                                log += "  - 强制操作: 是（使用JavaScript输入和回车事件）\n"
+                            log += f"  - 执行时间: {execution_time}秒"
+                        else:
+                            element.clear()
+                            element.send_keys(resolved_input_value, Keys.ENTER)
+                            execution_time = round(time.time() - start_time, 2)
+                            log = f"✓ 在元素 '{element_name}' 中输入文本并按回车成功\n"
+                            log += f"  - 定位器: {locator_strategy}={locator_value}\n"
+                            if resolved_input_value != step.input_value:
+                                log += f"  - 变量解析: '{step.input_value}' => '{resolved_input_value}'\n"
+                            log += f"  - 输入内容: '{resolved_input_value}'\n"
+                            log += "  - 按键: Enter\n"
+                            log += f"  - 超时设置: {timeout_seconds}秒\n"
+                            log += f"  - 执行时间: {execution_time}秒"
+
+                        time.sleep(0.3)
+                        return True, log, None
+                    except StaleElementReferenceException:
+                        if attempt < max_retries - 1:
+                            logger.warning(f"⚠️ 元素过期（Stale Element），正在重试... (尝试 {attempt + 2}/{max_retries})")
+                            wait_time = 1.0 if attempt == 0 else 1.5
+                            logger.info(f"等待 {wait_time}秒 让页面稳定...")
+                            time.sleep(wait_time)
+                            element = wait.until(EC.presence_of_element_located((by_type, by_value)))
+                            time.sleep(0.3)  # 确保元素状态稳定
+                            logger.info("✓ 元素重新定位成功")
+                        else:
+                            raise
+
             elif action_type == 'getText':
                 # 获取文本（添加 stale element 重试）
                 from selenium.common.exceptions import StaleElementReferenceException
@@ -933,7 +994,7 @@ class SeleniumTestEngine:
                 # 添加操作相关的上下文
                 if action_type == 'click':
                     error_parts.append(f"等待元素可点击失败（超时{timeout_seconds}秒）")
-                elif action_type == 'fill':
+                elif action_type in {'fill', 'fillAndEnter'}:
                     error_parts.append(f"等待输入框可用失败（超时{timeout_seconds}秒）")
                 elif action_type == 'waitFor':
                     error_parts.append(f"等待元素出现失败（超时{timeout_seconds}秒）")

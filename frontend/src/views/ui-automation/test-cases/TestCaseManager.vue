@@ -307,6 +307,7 @@
                           >
                             <el-option :label="t('uiAutomation.testCase.actionClick')" value="click" />
                             <el-option :label="t('uiAutomation.testCase.actionFill')" value="fill" />
+                            <el-option :label="t('uiAutomation.testCase.actionFillAndEnter')" value="fillAndEnter" />
                             <el-option :label="t('uiAutomation.testCase.actionGetText')" value="getText" />
                             <el-option :label="t('uiAutomation.testCase.actionWaitFor')" value="waitFor" />
                             <el-option :label="t('uiAutomation.testCase.actionHover')" value="hover" />
@@ -1096,7 +1097,7 @@ const filteredElementTreeOptions = computed(() => {
 
 // 方法定义
 const canStoreVariable = (actionType) => {
-  return ['fill', 'switchTab', 'assert'].includes(actionType)
+  return ['fill', 'fillAndEnter', 'switchTab', 'assert'].includes(actionType)
 }
 
 const parseDragTargetPayload = (inputValue) => {
@@ -2285,7 +2286,7 @@ const handleElementTreeNodeClick = (node) => {
 }
 
 const needsInputValue = (actionType) => {
-  return ['fill', 'switchTab'].includes(actionType)
+  return ['fill', 'fillAndEnter', 'switchTab'].includes(actionType)
 }
 
 const needsWaitTime = (actionType) => {
@@ -2749,6 +2750,7 @@ const getActionTypeText = (actionType) => {
   const textMap = {
     'click': t('uiAutomation.testCase.actionType.click'),
     'fill': t('uiAutomation.testCase.actionType.fill'),
+    'fillAndEnter': t('uiAutomation.testCase.actionType.fillAndEnter'),
     'getText': t('uiAutomation.testCase.actionType.getText'),
     'waitFor': t('uiAutomation.testCase.actionType.waitFor'),
     'hover': t('uiAutomation.testCase.actionType.hover'),
@@ -2773,6 +2775,7 @@ const getActionText = (actionType) => {
   const actionMap = {
     'click': t('uiAutomation.testCase.actionText.click'),
     'fill': t('uiAutomation.testCase.actionText.fill'),
+    'fillAndEnter': t('uiAutomation.testCase.actionText.fillAndEnter'),
     'getText': t('uiAutomation.testCase.actionText.getText'),
     'waitFor': t('uiAutomation.testCase.actionText.waitFor'),
     'hover': t('uiAutomation.testCase.actionText.hover'),

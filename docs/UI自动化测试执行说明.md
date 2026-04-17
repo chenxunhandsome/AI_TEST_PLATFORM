@@ -55,6 +55,7 @@ playwright install chromium firefox webkit
 ### 基本操作
 - **click**: 点击元素
 - **fill**: 填写输入框
+- **fillAndEnter**: 输入内容后按回车键
 - **getText**: 获取文本内容
 - **waitFor**: 等待元素出现
 - **hover**: 鼠标悬停

@@ -12,6 +12,7 @@ from playwright.sync_api import sync_playwright
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options as ChromeOptions
@@ -40,7 +41,7 @@ def _store_runtime_variable_for_step(step_data, resolved_input_value=None, resol
         return
 
     value_to_store = None
-    if step_data.get('action_type') in {'fill', 'switchTab'}:
+    if step_data.get('action_type') in {'fill', 'fillAndEnter', 'switchTab'}:
         value_to_store = resolved_input_value
     elif step_data.get('action_type') == 'assert':
         value_to_store = resolved_assert_value
@@ -497,7 +498,7 @@ class TestExecutor:
 
                 # 步骤执行完后添加短暂延迟，确保页面状态稳定
                 # 特别是点击操作后，可能触发动画、下拉框展开等
-                if step_result['success'] and step_data['action_type'] in ['click', 'fill', 'hover']:
+                if step_result['success'] and step_data['action_type'] in ['click', 'fill', 'fillAndEnter', 'hover']:
                     import asyncio
                     import time as sync_time
                     # 点击操作后等待更长时间（下拉框展开动画）
@@ -948,6 +949,28 @@ class TestExecutor:
                         self.current_page.fill(selector, resolved_input_value, timeout=extended_timeout)
                     else:
                         self.current_page.fill(selector, resolved_input_value, timeout=step_data['wait_time'])
+
+                    step_result['success'] = True
+                    # 记录解析后的值（用于调试）
+                    if resolved_input_value != step_data['input_value']:
+                        step_result['resolved_value'] = resolved_input_value
+                        print(f"  ✓ 变量解析: {step_data['input_value']} -> {resolved_input_value}")
+
+
+                elif step_data['action_type'] == 'fillAndEnter':
+                    # 解析输入值中的变量表达式
+                    resolved_input_value = resolve_variables(step_data['input_value'])
+
+                    # 如果刚切换了标签页，增加超时时间
+                    if step_data.get('_just_switched_tab'):
+                        # 确保页面保持在前台
+                        self.current_page.bring_to_front()
+                        extended_timeout = max(step_data['wait_time'], 10000)
+                        self.current_page.fill(selector, resolved_input_value, timeout=extended_timeout)
+                        self.current_page.press(selector, 'Enter', timeout=extended_timeout)
+                    else:
+                        self.current_page.fill(selector, resolved_input_value, timeout=step_data['wait_time'])
+                        self.current_page.press(selector, 'Enter', timeout=step_data['wait_time'])
 
                     step_result['success'] = True
                     # 记录解析后的值（用于调试）
@@ -1874,7 +1897,7 @@ class TestExecutor:
 
                 # 步骤执行完后添加短暂延迟，确保页面状态稳定
                 # 特别是点击操作后，可能触发动画、下拉框展开等
-                if step_result['success'] and step_data['action_type'] in ['click', 'fill', 'hover']:
+                if step_result['success'] and step_data['action_type'] in ['click', 'fill', 'fillAndEnter', 'hover']:
                     # 点击操作后等待更长时间（下拉框展开动画）
                     if step_data['action_type'] == 'click':
                         time.sleep(0.8)  # 等待800ms，确保下拉框完全展开
@@ -2250,6 +2273,38 @@ class TestExecutor:
                             else:
                                 raise
 
+                elif step_data['action_type'] == 'fillAndEnter':
+                    # 先定位元素
+                    element_obj = wait.until(EC.presence_of_element_located((by, locator_value)))
+
+                    # 解析输入值中的变量表达式
+                    resolved_input_value = resolve_variables(step_data['input_value'])
+
+                    for attempt in range(max_retries):
+                        try:
+                            element_obj.clear()
+                            element_obj.send_keys(resolved_input_value, Keys.ENTER)
+                            step_result['success'] = True
+
+                            # 记录解析后的值（用于调试）
+                            if resolved_input_value != step_data['input_value']:
+                                step_result['resolved_value'] = resolved_input_value
+                                print(f"  ✓ 变量解析: {step_data['input_value']} -> {resolved_input_value}")
+
+                            break
+                        except StaleElementReferenceException:
+                            if attempt < max_retries - 1:
+                                print(f"⚠️  元素过期（Stale Element），正在重试... (尝试 {attempt + 2}/{max_retries})")
+                                # 增加等待时间，让页面 DOM 稳定
+                                wait_time = 1.0 if attempt == 0 else 1.5
+                                print(f"等待 {wait_time}秒 让页面稳定...")
+                                time.sleep(wait_time)
+                                element_obj = wait.until(EC.presence_of_element_located((by, locator_value)))
+                                time.sleep(0.3)  # 确保元素状态稳定
+                                print(f"✓ 元素重新定位成功")
+                            else:
+                                raise
+
                 elif step_data['action_type'] == 'getText':
                     # 先定位元素
                     element_obj = wait.until(EC.presence_of_element_located((by, locator_value)))
@@ -2491,7 +2546,7 @@ class TestExecutor:
                 action_type_str = step_data.get('action_type', '') if isinstance(step_data, dict) else ''
                 if action_type_str == 'click':
                     error_parts.append(f"等待元素可点击失败（超时{timeout_seconds}秒）")
-                elif action_type_str == 'fill':
+                elif action_type_str in {'fill', 'fillAndEnter'}:
                     error_parts.append(f"等待输入框可用失败（超时{timeout_seconds}秒）")
                 elif action_type_str == 'waitFor':
                     error_parts.append(f"等待元素出现失败（超时{timeout_seconds}秒）")
