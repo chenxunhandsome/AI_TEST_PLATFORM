@@ -45,6 +45,95 @@ class PlaywrightTestEngine:
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
+        self._recent_dialog = None
+
+    async def _handle_dialog(self, dialog):
+        self._recent_dialog = {
+            'type': getattr(dialog, 'type', 'dialog'),
+            'message': getattr(dialog, 'message', ''),
+            'timestamp': time.time(),
+        }
+        try:
+            await dialog.dismiss()
+        except Exception:
+            await dialog.accept()
+
+    def _register_page_handlers(self, page: Optional[Page]):
+        if page is None or not hasattr(page, 'on'):
+            return
+        page.on('dialog', lambda dialog: asyncio.create_task(self._handle_dialog(dialog)))
+
+    def _register_context_handlers(self):
+        if self.context is None or not hasattr(self.context, 'on'):
+            return
+        self.context.on('page', self._register_page_handlers)
+
+    def _consume_recent_dialog(self, window_seconds: float = 2.0):
+        dialog = self._recent_dialog
+        self._recent_dialog = None
+        if not dialog:
+            return None
+        if time.time() - dialog.get('timestamp', 0) > window_seconds:
+            return None
+        return dialog
+
+    async def _close_current_page(self, start_time: float):
+        recent_dialog = self._consume_recent_dialog()
+        if recent_dialog:
+            execution_time = round(time.time() - start_time, 2)
+            log = "✓ 已关闭浏览器弹窗\n"
+            log += f"  - 弹窗类型: {recent_dialog['type']}\n"
+            log += f"  - 弹窗内容: {recent_dialog['message']}\n"
+            log += f"  - 执行时间: {execution_time}秒"
+            return True, log, None
+
+        if self.context is None or self.page is None:
+            return False, "✗ 当前没有可关闭的页面", None
+
+        current_page = self.page
+        pages = [page for page in self.context.pages if not page.is_closed()]
+        if current_page.is_closed():
+            if not pages:
+                return False, "✗ 当前页面已关闭，且没有可切换的页面", None
+            self.page = pages[-1]
+            await self.page.bring_to_front()
+            execution_time = round(time.time() - start_time, 2)
+            log = "✓ 当前页面已关闭，已切换到可用页面\n"
+            log += f"  - 页面数量: {len(pages)}\n"
+            log += f"  - 执行时间: {execution_time}秒"
+            return True, log, None
+
+        closed_url = current_page.url
+        if len(pages) <= 1:
+            replacement_page = await self.context.new_page()
+            self._register_page_handlers(replacement_page)
+            try:
+                await replacement_page.goto('about:blank', wait_until='domcontentloaded', timeout=5000)
+            except Exception:
+                pass
+            await current_page.close()
+            self.page = replacement_page
+            await self.page.bring_to_front()
+            execution_time = round(time.time() - start_time, 2)
+            log = "✓ 已关闭当前页面并保留会话\n"
+            log += f"  - 已关闭页面: {closed_url}\n"
+            log += f"  - 当前页面: {self.page.url}\n"
+            log += f"  - 执行时间: {execution_time}秒"
+            return True, log, None
+
+        await current_page.close()
+        remaining_pages = [page for page in self.context.pages if not page.is_closed()]
+        if not remaining_pages:
+            return False, "✗ 当前页面关闭后未找到可用页面", None
+
+        self.page = remaining_pages[-1]
+        await self.page.bring_to_front()
+        execution_time = round(time.time() - start_time, 2)
+        log = "✓ 已关闭当前页面\n"
+        log += f"  - 已关闭页面: {closed_url}\n"
+        log += f"  - 当前页面: {self.page.url}\n"
+        log += f"  - 执行时间: {execution_time}秒"
+        return True, log, None
 
     async def start(self):
         """启动浏览器"""
@@ -93,6 +182,8 @@ class PlaywrightTestEngine:
 
             # 创建页面
             self.page = await self.context.new_page()
+            self._register_context_handlers()
+            self._register_page_handlers(self.page)
 
             logger.info(f"浏览器启动成功: {self.browser_type}, headless={self.headless}")
 
@@ -296,6 +387,9 @@ class PlaywrightTestEngine:
                 log += f"  - 页面标题: {await self.page.title()}\n"
                 log += f"  - 执行时间: {execution_time}秒"
                 return True, log, None
+
+            elif action_type == 'closeCurrentPage':
+                return await self._close_current_page(start_time)
 
             # 其他操作需要元素定位器
             # 获取元素定位器

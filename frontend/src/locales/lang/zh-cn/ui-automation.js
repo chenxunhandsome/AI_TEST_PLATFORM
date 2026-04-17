@@ -1119,6 +1119,7 @@ export default {
     actionAssert: '断言',
     actionWait: '等待',
     actionSwitchTab: '切换标签页',
+    actionCloseCurrentPage: '关闭当前页面',
     selectElement: '选择元素',
     inputValue: '输入值：',
     inputPlaceholder: '请输入内容，支持变量如 \'{random_phone()}\'',
@@ -1238,7 +1239,8 @@ export default {
       scroll: '滚动',
       screenshot: '截图',
       assert: '断言',
-      wait: '等待'
+      wait: '等待',
+      closeCurrentPage: '关闭当前页面'
     },
     // 操作文本（用于执行日志中显示操作描述）
     actionText: {
@@ -1251,7 +1253,8 @@ export default {
       scroll: '滚动',
       screenshot: '截图',
       assert: '断言',
-      wait: '等待'
+      wait: '等待',
+      closeCurrentPage: '关闭当前页面'
     },
     // 状态文本
     status: {
@@ -1311,7 +1314,8 @@ export default {
     scroll: '滚动',
     screenshot: '截图',
     assert: '断言',
-    wait: '等待'
+    wait: '等待',
+    closeCurrentPage: '关闭当前页面'
   },
 
   // 消息提示

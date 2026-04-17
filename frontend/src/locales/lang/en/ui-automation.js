@@ -1119,6 +1119,7 @@ export default {
     actionAssert: 'Assert',
     actionWait: 'Wait',
     actionSwitchTab: 'Switch Tab',
+    actionCloseCurrentPage: 'Close Current Page',
     selectElement: 'Select Element',
     inputValue: 'Input Value:',
     inputPlaceholder: 'Enter content, supports variables like \'{random_phone()}\'',
@@ -1246,7 +1247,8 @@ export default {
       screenshot: 'Screenshot',
       assert: 'Assert',
       wait: 'Wait',
-      switchTab: 'Switch Tab'
+      switchTab: 'Switch Tab',
+      closeCurrentPage: 'Close Current Page'
     },
     // Action text (for displaying action descriptions in execution logs)
     actionText: {
@@ -1260,7 +1262,8 @@ export default {
       screenshot: 'Screenshot',
       assert: 'Assert',
       wait: 'Wait',
-      switchTab: 'Switch Tab'
+      switchTab: 'Switch Tab',
+      closeCurrentPage: 'Close Current Page'
     },
     // Status text
     status: {
@@ -1313,7 +1316,8 @@ export default {
     scroll: 'Scroll',
     screenshot: 'Screenshot',
     assert: 'Assert',
-    wait: 'Wait'
+    wait: 'Wait',
+    closeCurrentPage: 'Close Current Page'
   },
 
   // Messages
