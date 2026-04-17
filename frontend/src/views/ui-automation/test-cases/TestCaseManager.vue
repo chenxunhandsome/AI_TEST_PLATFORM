@@ -317,6 +317,7 @@
                             <el-option :label="t('uiAutomation.testCase.actionAssert')" value="assert" />
                             <el-option :label="t('uiAutomation.testCase.actionWait')" value="wait" />
                             <el-option :label="t('uiAutomation.testCase.actionSwitchTab')" value="switchTab" />
+                            <el-option :label="t('uiAutomation.testCase.actionCloseCurrentPage')" value="closeCurrentPage" />
                           </el-select>
                         </div>
 
@@ -2294,7 +2295,7 @@ const needsWaitTime = (actionType) => {
 }
 
 const needsElement = (actionType) => {
-  return !['wait', 'switchTab', 'screenshot'].includes(actionType)
+  return !['wait', 'switchTab', 'screenshot', 'closeCurrentPage'].includes(actionType)
 }
 
 const expandAllSteps = () => {
@@ -2759,7 +2760,8 @@ const getActionTypeText = (actionType) => {
     'screenshot': t('uiAutomation.testCase.actionType.screenshot'),
     'assert': t('uiAutomation.testCase.actionType.assert'),
     'wait': t('uiAutomation.testCase.actionType.wait'),
-    'switchTab': t('uiAutomation.testCase.actionSwitchTab')
+    'switchTab': t('uiAutomation.testCase.actionSwitchTab'),
+    'closeCurrentPage': t('uiAutomation.testCase.actionCloseCurrentPage')
   }
   return textMap[actionType] || actionType
 }
@@ -2784,7 +2786,8 @@ const getActionText = (actionType) => {
     'screenshot': t('uiAutomation.testCase.actionText.screenshot'),
     'assert': t('uiAutomation.testCase.actionText.assert'),
     'wait': t('uiAutomation.testCase.actionText.wait'),
-    'switchTab': t('uiAutomation.testCase.actionSwitchTab')
+    'switchTab': t('uiAutomation.testCase.actionSwitchTab'),
+    'closeCurrentPage': t('uiAutomation.testCase.actionCloseCurrentPage')
   }
   return actionMap[actionType] || actionType
 }

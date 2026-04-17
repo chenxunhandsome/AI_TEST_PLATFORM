@@ -422,7 +422,8 @@ const getActionText = (actionType) => {
     'drag': '拖拽',
     'screenshot': t('uiAutomation.actionTypes.screenshot'),
     'assert': t('uiAutomation.actionTypes.assert'),
-    'wait': t('uiAutomation.actionTypes.wait')
+    'wait': t('uiAutomation.actionTypes.wait'),
+    'closeCurrentPage': t('uiAutomation.actionTypes.closeCurrentPage')
   }
   return actionMap[actionType] || actionType
 }

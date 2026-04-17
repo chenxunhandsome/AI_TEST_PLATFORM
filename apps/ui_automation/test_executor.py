@@ -98,6 +98,144 @@ def _resolve_drag_target_payload(raw_input):
     }
 
 
+def _record_recent_playwright_dialog(executor, dialog):
+    executor._recent_playwright_dialog = {
+        'type': getattr(dialog, 'type', 'dialog'),
+        'message': getattr(dialog, 'message', ''),
+        'timestamp': time.time(),
+    }
+    try:
+        dialog.dismiss()
+    except Exception:
+        dialog.accept()
+
+
+def _register_playwright_page_handlers(executor, page):
+    if page is None or not hasattr(page, 'on'):
+        return
+    page.on('dialog', lambda dialog: _record_recent_playwright_dialog(executor, dialog))
+
+
+def _consume_recent_playwright_dialog(executor, window_seconds=2.0):
+    dialog = getattr(executor, '_recent_playwright_dialog', None)
+    executor._recent_playwright_dialog = None
+    if not dialog:
+        return None
+    if time.time() - dialog.get('timestamp', 0) > window_seconds:
+        return None
+    return dialog
+
+
+def _close_current_playwright_page(executor):
+    recent_dialog = _consume_recent_playwright_dialog(executor)
+    if recent_dialog:
+        return {
+            'success': True,
+            'detail': (
+                f"已关闭浏览器弹窗: {recent_dialog['type']} "
+                f"({recent_dialog['message']})"
+            ),
+        }
+
+    current_page = getattr(executor, 'current_page', None)
+    if current_page is None:
+        return {'success': False, 'error': '当前没有可关闭的页面'}
+
+    context = getattr(current_page, 'context', None)
+    if context is None:
+        return {'success': False, 'error': '当前页面缺少浏览器上下文，无法关闭'}
+
+    is_closed = getattr(current_page, 'is_closed', None)
+    if callable(is_closed) and is_closed():
+        pages = [page for page in context.pages if not getattr(page, 'is_closed', lambda: False)()]
+        if not pages:
+            return {'success': False, 'error': '当前页面已关闭，且没有可切换的页面'}
+        executor.current_page = pages[-1]
+        if hasattr(executor.current_page, 'bring_to_front'):
+            executor.current_page.bring_to_front()
+        return {'success': True, 'detail': '当前页面已关闭，已切换到可用页面'}
+
+    closed_url = getattr(current_page, 'url', '')
+    pages = [page for page in context.pages if not getattr(page, 'is_closed', lambda: False)()]
+    if len(pages) <= 1:
+        replacement_page = context.new_page()
+        _register_playwright_page_handlers(executor, replacement_page)
+        try:
+            replacement_page.goto('about:blank', wait_until='domcontentloaded', timeout=5000)
+        except Exception:
+            pass
+        current_page.close()
+        executor.current_page = replacement_page
+        if hasattr(executor.current_page, 'bring_to_front'):
+            executor.current_page.bring_to_front()
+        return {
+            'success': True,
+            'detail': f'已关闭当前页面并保留会话: {closed_url}',
+        }
+
+    current_page.close()
+    remaining_pages = [page for page in context.pages if not getattr(page, 'is_closed', lambda: False)()]
+    if not remaining_pages:
+        return {'success': False, 'error': '当前页面关闭后未找到可用页面'}
+
+    executor.current_page = remaining_pages[-1]
+    if hasattr(executor.current_page, 'bring_to_front'):
+        executor.current_page.bring_to_front()
+    return {
+        'success': True,
+        'detail': f'已关闭当前页面: {closed_url}',
+    }
+
+
+def _close_current_selenium_page(driver):
+    try:
+        alert = driver.switch_to.alert
+        alert_text = alert.text
+        try:
+            alert.dismiss()
+        except Exception:
+            alert.accept()
+        return {
+            'success': True,
+            'detail': f'已关闭浏览器弹窗: {alert_text}',
+        }
+    except Exception:
+        pass
+
+    handles = list(driver.window_handles)
+    if not handles:
+        return {'success': False, 'error': '当前没有可关闭的窗口'}
+
+    current_handle = driver.current_window_handle
+    current_url = driver.current_url
+
+    if len(handles) <= 1:
+        driver.switch_to.new_window('tab')
+        replacement_handle = driver.current_window_handle
+        try:
+            driver.get('about:blank')
+        except Exception:
+            pass
+        driver.switch_to.window(current_handle)
+        driver.close()
+        driver.switch_to.window(replacement_handle)
+        return {
+            'success': True,
+            'detail': f'已关闭当前页面并保留会话: {current_url}',
+        }
+
+    driver.close()
+    remaining_handles = list(driver.window_handles)
+    if not remaining_handles:
+        return {'success': False, 'error': '当前窗口关闭后未找到可用窗口'}
+
+    driver.switch_to.window(remaining_handles[-1])
+    return {
+        'success': True,
+        'detail': f'已关闭当前页面: {current_url}',
+    }
+
+
 class TestExecutor:
     """测试执行器基类"""
 
@@ -110,6 +248,7 @@ class TestExecutor:
         self.execution = None
         self.test_cases = []
         self.results = []
+        self._recent_playwright_dialog = None
 
     def create_execution_record(self):
         """创建测试执行记录"""
@@ -362,6 +501,9 @@ class TestExecutor:
                         extra_http_headers={'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'}
                     )
                     self.current_page = self.context.new_page()
+                    if hasattr(self.context, 'on'):
+                        self.context.on('page', lambda page: _register_playwright_page_handlers(self, page))
+                    _register_playwright_page_handlers(self, self.current_page)
 
                     # 导航到项目基础URL
                     if self.test_suite.project.base_url:
@@ -719,7 +861,14 @@ class TestExecutor:
 
         try:
             # 获取元素定位器
-            if step_data['element']:
+            if step_data['action_type'] == 'closeCurrentPage':
+                close_result = _close_current_playwright_page(self)
+                step_result['success'] = close_result.get('success', False)
+                if close_result.get('error'):
+                    step_result['error'] = close_result['error']
+                if close_result.get('detail'):
+                    step_result['detail'] = close_result['detail']
+            elif step_data['element']:
                 element = step_data['element']
                 locator_value = element['locator_value']
                 locator_strategy = element['locator_strategy'].lower()
@@ -2091,7 +2240,14 @@ class TestExecutor:
         resolved_assert_value = step_data.get('assert_value')
 
         try:
-            if step_data['element']:
+            if step_data['action_type'] == 'closeCurrentPage':
+                close_result = _close_current_selenium_page(driver)
+                step_result['success'] = close_result.get('success', False)
+                if close_result.get('error'):
+                    step_result['error'] = close_result['error']
+                if close_result.get('detail'):
+                    step_result['detail'] = close_result['detail']
+            elif step_data['element']:
                 element = step_data['element']
                 locator_value = element['locator_value']
                 locator_strategy = element['locator_strategy'].lower()

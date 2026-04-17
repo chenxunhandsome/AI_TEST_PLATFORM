@@ -670,6 +670,7 @@ class TestCaseStep(models.Model):
         ('assert', '断言'),
         ('wait', '等待'),
         ('switchTab', '切换标签页'),
+        ('closeCurrentPage', '关闭当前页面'),
     ]
 
     ASSERT_TYPE_CHOICES = [

@@ -17,7 +17,12 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
-from selenium.common.exceptions import TimeoutException, NoSuchElementException, ElementNotInteractableException
+from selenium.common.exceptions import (
+    TimeoutException,
+    NoSuchElementException,
+    ElementNotInteractableException,
+    NoAlertPresentException,
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -104,6 +109,63 @@ class SeleniumTestEngine:
         self.browser_type = browser_type
         self.headless = headless
         self.driver = None
+
+    def _close_current_page(self, start_time: float):
+        if self.driver is None:
+            return False, "✗ 当前没有可关闭的页面", None
+
+        try:
+            alert = self.driver.switch_to.alert
+            alert_text = alert.text
+            try:
+                alert.dismiss()
+            except Exception:
+                alert.accept()
+
+            execution_time = round(time.time() - start_time, 2)
+            log = "✓ 已关闭浏览器弹窗\n"
+            log += f"  - 弹窗内容: {alert_text}\n"
+            log += f"  - 执行时间: {execution_time}秒"
+            return True, log, None
+        except NoAlertPresentException:
+            pass
+
+        handles = list(self.driver.window_handles)
+        if not handles:
+            return False, "✗ 当前没有可关闭的窗口", None
+
+        current_handle = self.driver.current_window_handle
+        current_url = self.driver.current_url
+
+        if len(handles) <= 1:
+            self.driver.switch_to.new_window('tab')
+            replacement_handle = self.driver.current_window_handle
+            try:
+                self.driver.get('about:blank')
+            except Exception:
+                pass
+            self.driver.switch_to.window(current_handle)
+            self.driver.close()
+            self.driver.switch_to.window(replacement_handle)
+            execution_time = round(time.time() - start_time, 2)
+            log = "✓ 已关闭当前页面并保留会话\n"
+            log += f"  - 已关闭页面: {current_url}\n"
+            log += f"  - 当前页面: {self.driver.current_url}\n"
+            log += f"  - 执行时间: {execution_time}秒"
+            return True, log, None
+
+        self.driver.close()
+        remaining_handles = list(self.driver.window_handles)
+        if not remaining_handles:
+            return False, "✗ 当前窗口关闭后未找到可用窗口", None
+
+        self.driver.switch_to.window(remaining_handles[-1])
+        execution_time = round(time.time() - start_time, 2)
+        log = "✓ 已关闭当前页面\n"
+        log += f"  - 已关闭页面: {current_url}\n"
+        log += f"  - 当前页面: {self.driver.current_url}\n"
+        log += f"  - 执行时间: {execution_time}秒"
+        return True, log, None
 
     @staticmethod
     def check_browser_available(browser_type='chrome'):
@@ -516,6 +578,9 @@ class SeleniumTestEngine:
                 log += f"  - 当前标题: {self.driver.title}\n"
                 log += f"  - 执行时间: {execution_time}秒"
                 return True, log, None
+
+            elif action_type == 'closeCurrentPage':
+                return self._close_current_page(start_time)
 
             # 其他操作需要元素定位器
             locator_strategy = element_data.get('locator_strategy', 'css')
