@@ -79,13 +79,13 @@ class PlaywrightTestEngine:
 
     async def _close_current_page(self, start_time: float):
         recent_dialog = self._consume_recent_dialog()
+        dialog_log_lines = []
         if recent_dialog:
-            execution_time = round(time.time() - start_time, 2)
-            log = "✓ 已关闭浏览器弹窗\n"
-            log += f"  - 弹窗类型: {recent_dialog['type']}\n"
-            log += f"  - 弹窗内容: {recent_dialog['message']}\n"
-            log += f"  - 执行时间: {execution_time}秒"
-            return True, log, None
+            dialog_log_lines = [
+                "✓ 已关闭浏览器弹窗",
+                f"  - 弹窗类型: {recent_dialog['type']}",
+                f"  - 弹窗内容: {recent_dialog['message']}",
+            ]
 
         if self.context is None or self.page is None:
             return False, "✗ 当前没有可关闭的页面", None
@@ -115,7 +115,10 @@ class PlaywrightTestEngine:
             self.page = replacement_page
             await self.page.bring_to_front()
             execution_time = round(time.time() - start_time, 2)
-            log = "✓ 已关闭当前页面并保留会话\n"
+            log = ""
+            if dialog_log_lines:
+                log += "\n".join(dialog_log_lines) + "\n"
+            log += "✓ 已关闭当前页面并保留会话\n"
             log += f"  - 已关闭页面: {closed_url}\n"
             log += f"  - 当前页面: {self.page.url}\n"
             log += f"  - 执行时间: {execution_time}秒"
@@ -129,7 +132,10 @@ class PlaywrightTestEngine:
         self.page = remaining_pages[-1]
         await self.page.bring_to_front()
         execution_time = round(time.time() - start_time, 2)
-        log = "✓ 已关闭当前页面\n"
+        log = ""
+        if dialog_log_lines:
+            log += "\n".join(dialog_log_lines) + "\n"
+        log += "✓ 已关闭当前页面\n"
         log += f"  - 已关闭页面: {closed_url}\n"
         log += f"  - 当前页面: {self.page.url}\n"
         log += f"  - 执行时间: {execution_time}秒"

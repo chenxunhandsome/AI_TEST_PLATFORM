@@ -178,8 +178,13 @@ class FakeSyncPlaywrightContext:
 
 
 class CloseCurrentPageEngineTests(IsolatedAsyncioTestCase):
-    async def test_playwright_close_current_page_consumes_recent_dialog(self):
+    async def test_playwright_close_current_page_closes_dialog_and_page(self):
         engine = PlaywrightTestEngine()
+        context = FakeAsyncPlaywrightContext()
+        current_page = FakeAsyncPlaywrightPage(context, 'http://example.com/dialog')
+        context.pages.append(current_page)
+        engine.context = context
+        engine.page = current_page
         engine._recent_dialog = {
             'type': 'alert',
             'message': 'Need close',
@@ -190,8 +195,12 @@ class CloseCurrentPageEngineTests(IsolatedAsyncioTestCase):
 
         self.assertTrue(success)
         self.assertIsNone(screenshot)
+        self.assertTrue(current_page.closed)
+        self.assertIsNot(engine.page, current_page)
+        self.assertEqual(engine.page.url, 'about:blank')
         self.assertIn('已关闭浏览器弹窗', log)
         self.assertIn('Need close', log)
+        self.assertIn('保留会话', log)
 
     async def test_playwright_close_current_page_keeps_session_alive_for_last_page(self):
         engine = PlaywrightTestEngine()

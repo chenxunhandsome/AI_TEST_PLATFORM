@@ -142,3 +142,60 @@ class LocalExecutionCloseCurrentPageRegressionTests(TestCase):
         self.assertTrue(next_page.closed)
         self.assertIs(engine.page, current_page)
         self.assertIn(1500, next_page.wait_timeout_calls)
+
+    def test_local_execution_close_current_page_does_not_stop_after_recent_dialog(self):
+        payload = {
+            'test_case_id': 32,
+            'test_case_name': 'close-page-after-dialog-local',
+            'project_id': 5,
+            'project_name': 'demo-project',
+            'base_url': '',
+            'project_global_variables': [],
+            'steps': [
+                {
+                    'step_number': 1,
+                    'action_type': 'closeCurrentPage',
+                    'description': 'close current page after dialog',
+                    'save_as': '',
+                    'input_value': '',
+                    'wait_time': 1000,
+                    'assert_type': '',
+                    'assert_value': '',
+                    'element_data': None,
+                },
+            ],
+        }
+
+        async def fake_start(self):
+            DummyEngine.last_instance = self
+            self.context = FakeAsyncPlaywrightContext()
+            self.page = FakeAsyncPlaywrightPage(self.context, 'http://example.com/dialog')
+            self.context.pages.append(self.page)
+            self._recent_dialog = {
+                'type': 'alert',
+                'message': 'Need close',
+                'timestamp': 0.0,
+            }
+            self._register_context_handlers()
+            self._register_page_handlers(self.page)
+
+        with patch.object(DummyEngine, 'start', new=fake_start):
+            with patch('apps.ui_automation.local_execution_service.PlaywrightTestEngine', DummyEngine):
+                with patch('apps.ui_automation.playwright_engine.time.time', new=lambda: 0.1):
+                    result = execute_serialized_test_case(payload, engine_type='playwright')
+
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(result['error_message'], '')
+        self.assertEqual(result['errors'], [])
+
+        step_results = json.loads(result['logs'])
+        self.assertEqual(len(step_results), 1)
+        self.assertTrue(step_results[0]['success'])
+
+        engine = DummyEngine.last_instance
+        self.assertIsNotNone(engine)
+        original_page = engine.context.pages[0]
+        replacement_page = engine.context.pages[1]
+
+        self.assertTrue(original_page.closed)
+        self.assertIs(engine.page, replacement_page)
