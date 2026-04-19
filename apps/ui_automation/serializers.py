@@ -170,6 +170,7 @@ class ElementSerializer(serializers.ModelSerializer):
         # 处理外键字段
         project_id = validated_data.pop('project_id', None)
         locator_strategy_id = validated_data.pop('locator_strategy_id', None)
+        has_group_id = 'group_id' in validated_data
         group_id = validated_data.pop('group_id', None)
 
         if project_id:
@@ -178,7 +179,7 @@ class ElementSerializer(serializers.ModelSerializer):
         if locator_strategy_id:
             validated_data['locator_strategy'] = LocatorStrategy.objects.get(id=locator_strategy_id)
 
-        if group_id is not None:  # 允许设置为None来清除分组
+        if has_group_id:  # 允许设置为None来清除分组
             if group_id:
                 validated_data['group'] = ElementGroup.objects.get(id=group_id)
             else:
@@ -441,7 +442,9 @@ class ElementEnhancedSerializer(serializers.ModelSerializer):
         # 处理外键字段
         project_id = validated_data.pop('project_id', None)
         locator_strategy_id = validated_data.pop('locator_strategy_id', None)
+        has_group_id = 'group_id' in validated_data
         group_id = validated_data.pop('group_id', None)
+        has_parent_element_id = 'parent_element_id' in validated_data
         parent_element_id = validated_data.pop('parent_element_id', None)
 
         if project_id:
@@ -450,13 +453,13 @@ class ElementEnhancedSerializer(serializers.ModelSerializer):
         if locator_strategy_id:
             validated_data['locator_strategy'] = LocatorStrategy.objects.get(id=locator_strategy_id)
 
-        if group_id is not None:  # 允许设置为None来清除分组
+        if has_group_id:  # 允许设置为None来清除分组
             if group_id:
                 validated_data['group'] = ElementGroup.objects.get(id=group_id)
             else:
                 validated_data['group'] = None
 
-        if parent_element_id is not None:  # 允许设置为None来清除父元素
+        if has_parent_element_id:  # 允许设置为None来清除父元素
             if parent_element_id:
                 validated_data['parent_element'] = Element.objects.get(id=parent_element_id)
             else:
