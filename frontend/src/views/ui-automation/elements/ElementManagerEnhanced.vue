@@ -130,14 +130,20 @@
               <el-row :gutter="20">
                 <el-col :span="12">
                   <el-form-item :label="$t('uiAutomation.element.page')">
-                    <el-select v-model="selectedElement.page" :placeholder="$t('uiAutomation.element.selectPage')">
-                      <el-option
-                        v-for="page in pages"
-                        :key="page.id"
-                        :label="page.name"
-                        :value="page.name"
-                      />
-                    </el-select>
+                    <el-tree-select
+                      v-model="selectedElement.group_id"
+                      :data="pageTreeOptions"
+                      :props="pageSelectProps"
+                      node-key="id"
+                      check-strictly
+                      clearable
+                      filterable
+                      default-expand-all
+                      :render-after-expand="false"
+                      :placeholder="$t('uiAutomation.element.selectPage')"
+                      style="width: 100%"
+                      @change="handleElementPageChange"
+                    />
                   </el-form-item>
                 </el-col>
                 <el-col :span="12">
@@ -215,14 +221,19 @@
           <el-input v-model="pageForm.name" :placeholder="$t('uiAutomation.element.pageNamePlaceholder')" />
         </el-form-item>
         <el-form-item :label="$t('uiAutomation.element.parentPage')">
-          <el-select v-model="pageForm.parent_page" :placeholder="$t('uiAutomation.element.selectParentPage')" clearable>
-            <el-option
-              v-for="page in getAllPages()"
-              :key="page.id"
-              :label="page.name"
-              :value="page.id"
-            />
-          </el-select>
+          <el-tree-select
+            v-model="pageForm.parent_page"
+            :data="pageTreeOptions"
+            :props="pageSelectProps"
+            node-key="id"
+            check-strictly
+            clearable
+            filterable
+            default-expand-all
+            :render-after-expand="false"
+            :placeholder="$t('uiAutomation.element.selectParentPage')"
+            style="width: 100%"
+          />
         </el-form-item>
         <el-form-item :label="$t('uiAutomation.common.description')" prop="description">
           <el-input v-model="pageForm.description" type="textarea" :rows="3" :placeholder="$t('uiAutomation.element.descriptionPlaceholder')" />
@@ -258,14 +269,19 @@
           <el-input v-model="editPageForm.name" :placeholder="$t('uiAutomation.element.pageNamePlaceholder')" />
         </el-form-item>
         <el-form-item :label="$t('uiAutomation.element.parentPage')">
-          <el-select v-model="editPageForm.parent_page" :placeholder="$t('uiAutomation.element.selectParentPage')" clearable>
-            <el-option
-              v-for="page in getAllPagesExceptCurrent(editPageForm.id)"
-              :key="page.id"
-              :label="page.name"
-              :value="page.id"
-            />
-          </el-select>
+          <el-tree-select
+            v-model="editPageForm.parent_page"
+            :data="editableParentPageTreeOptions"
+            :props="pageSelectProps"
+            node-key="id"
+            check-strictly
+            clearable
+            filterable
+            default-expand-all
+            :render-after-expand="false"
+            :placeholder="$t('uiAutomation.element.selectParentPage')"
+            style="width: 100%"
+          />
         </el-form-item>
         <el-form-item :label="$t('uiAutomation.common.description')" prop="description">
           <el-input v-model="editPageForm.description" type="textarea" :rows="3" :placeholder="$t('uiAutomation.element.descriptionPlaceholder')" />
@@ -434,6 +450,13 @@ const treeProps = {
   disabled: 'disabled'
 }
 
+const pageSelectProps = {
+  value: 'id',
+  label: 'name',
+  children: 'children',
+  disabled: 'disabled'
+}
+
 // 琛ㄥ崟楠岃瘉瑙勫垯
 const pageRules = computed(() => ({
   name: [
@@ -546,6 +569,98 @@ const transferScopeLabel = computed(() => {
   }
   return '当前项目全部元素'
 })
+
+const pageTreeOptions = computed(() => {
+  const toPageOnlyTree = (nodes = []) => nodes
+    .filter(node => node.type === 'page' && node.id !== 'unassigned')
+    .map(node => ({
+      id: node.id,
+      name: node.name,
+      description: node.description,
+      parent_group: node.parent_group,
+      disabled: false,
+      children: toPageOnlyTree(node.children || [])
+    }))
+
+  return toPageOnlyTree(treeData.value)
+})
+
+const editableParentPageTreeOptions = computed(() => {
+  const excludeCurrentPage = (nodes = [], currentId = editPageForm.id) => nodes
+    .filter(node => node.id !== currentId)
+    .map(node => ({
+      ...node,
+      children: excludeCurrentPage(node.children || [], currentId)
+    }))
+
+  return excludeCurrentPage(pageTreeOptions.value)
+})
+
+const buildPageTreeNodes = (groups = []) => groups.map(group => ({
+  ...group,
+  type: 'page',
+  disabled: false,
+  children: buildPageTreeNodes(group.children || [])
+}))
+
+const findPageNodeById = (nodes, targetId) => {
+  for (const node of nodes) {
+    if (String(node.id) === String(targetId)) {
+      return node
+    }
+    if (node.children?.length) {
+      const matchedNode = findPageNodeById(node.children, targetId)
+      if (matchedNode) {
+        return matchedNode
+      }
+    }
+  }
+  return null
+}
+
+const getPageNameById = (pageId) => {
+  if (!pageId) {
+    return ''
+  }
+
+  const flatPage = pages.value.find(page => String(page.id) === String(pageId))
+  if (flatPage?.name) {
+    return flatPage.name
+  }
+
+  return findPageNodeById(pageTreeOptions.value, pageId)?.name || ''
+}
+
+const normalizeElementForEditing = (elementData) => {
+  if (!elementData) {
+    return null
+  }
+
+  const groupId = elementData.group_id ?? elementData.group?.id ?? null
+  return {
+    ...elementData,
+    group_id: groupId,
+    page: groupId ? (getPageNameById(groupId) || elementData.group?.name || elementData.page || '') : ''
+  }
+}
+
+const buildElementPayload = (elementData) => {
+  const groupId = elementData.group_id || null
+
+  return {
+    name: elementData.name,
+    element_type: elementData.element_type,
+    page: groupId ? getPageNameById(groupId) : '',
+    component_name: elementData.component_name,
+    description: elementData.description,
+    locator_strategy_id: elementData.locator_strategy_id,
+    locator_value: elementData.locator_value,
+    wait_timeout: elementData.wait_timeout,
+    force_action: elementData.force_action,
+    project_id: selectedProject.value,
+    group_id: groupId
+  }
+}
 
 
 // 灏嗗叧閿彉閲忔毚闇插埌window瀵硅薄锛屾柟渚垮湪鎺у埗鍙拌皟璇?
@@ -677,17 +792,7 @@ const loadPageTree = async () => {
 
   try {
     const response = await getElementGroupTree({ project: selectedProject.value })
-    // 鏋勫缓瀹屾暣鐨勬爲褰㈢粨鏋?
-    const buildTree = (groups) => {
-      return groups.map(group => ({
-        ...group,
-        type: 'page',
-        disabled: false,
-        children: group.children ? buildTree(group.children) : []
-      }))
-    }
-
-    treeData.value = buildTree(response.data || [])
+    treeData.value = buildPageTreeNodes(response.data || [])
   } catch (error) {
     console.error('鑾峰彇椤甸潰鏍戝け璐?', error)
     treeData.value = []
@@ -708,17 +813,7 @@ const loadElementTree = async () => {
       getElementTree({ project: selectedProject.value })
     ])
 
-    // 鏋勫缓瀹屾暣鐨勬爲褰㈢粨鏋?
-    const buildTree = (groups) => {
-      return groups.map(group => ({
-        ...group,
-        type: 'page',
-        disabled: false,
-        children: group.children ? buildTree(group.children) : []
-      }))
-    }
-
-    const pageNodes = buildTree(pageTreeResponse.data || [])
+    const pageNodes = buildPageTreeNodes(pageTreeResponse.data || [])
 
     // 璋冭瘯淇℃伅 - 妫€鏌PI杩斿洖鐨勫畬鏁村搷搴旂粨鏋?
     console.log('=== 鍔犺浇鍏冪礌鏍戣皟璇?===')
@@ -873,6 +968,7 @@ const createEmptyElement = () => {
   selectedElement.value = {
     name: '',
     element_type: 'BUTTON',
+    group_id: null,
     page: '',
     component_name: '',
     locator_strategy_id: null, // 浣跨敤null鑰屼笉鏄┖瀛楃涓?
@@ -881,6 +977,15 @@ const createEmptyElement = () => {
     force_action: false,  // 寮哄埗鎿嶄綔閫夐」锛岄粯璁ょ鐢?
     description: ''
   }
+}
+
+const handleElementPageChange = (groupId) => {
+  if (!selectedElement.value) {
+    return
+  }
+
+  selectedElement.value.group_id = groupId || null
+  selectedElement.value.page = getPageNameById(groupId)
 }
 
 const getDefaultTargetProjectId = (sourceProjectId = selectedProject.value) => {
@@ -1157,7 +1262,7 @@ const onNodeClick = async (data) => {
   if (data.type === 'element') {
     try {
       const response = await getElementDetail(data.id)
-      selectedElement.value = response.data
+      selectedElement.value = normalizeElementForEditing(response.data)
 
       // 寮哄埗鍒锋柊琛ㄥ崟锛岀‘淇濅笅鎷夋姝ｇ‘鏄剧ず
       formKey.value += 1
@@ -1233,50 +1338,14 @@ const saveElement = async () => {
     console.log('褰撳墠閫変腑鐨勫厓绱?', selectedElement.value)
 
     if (selectedElement.value.id) {
-      // 鏇存柊鍏冪礌 - 鏋勫缓姝ｇ‘鐨凙PI鏁版嵁鏍煎紡
-      const elementUpdateData = {
-        name: selectedElement.value.name,
-        element_type: selectedElement.value.element_type,
-        page: selectedElement.value.page,
-        component_name: selectedElement.value.component_name,
-        description: selectedElement.value.description,
-        locator_strategy_id: selectedElement.value.locator_strategy_id,
-        locator_value: selectedElement.value.locator_value,
-        wait_timeout: selectedElement.value.wait_timeout,
-        force_action: selectedElement.value.force_action,
-        project_id: selectedProject.value
-      }
-
-      // 濡傛灉鍏冪礌鏈夊垎缁勶紙椤甸潰锛夛紝纭繚浼犻€掓纭殑 group_id
-      if (selectedElement.value.page) {
-        console.log('鏇存柊鍏冪礌 - 鍏冪礌鍏宠仈椤甸潰鍚嶇О:', selectedElement.value.page)
-
-        // 閫氳繃閬嶅巻鏍戝舰缁撴瀯鏌ユ壘瀵瑰簲鐨勯〉闈D
-        const findPageIdByName = (nodes, pageName) => {
-          for (const node of nodes) {
-            if (node.type === 'page' && node.name === pageName) {
-              return node.id
-            }
-            if (node.children) {
-              const foundId = findPageIdByName(node.children, pageName)
-              if (foundId) return foundId
-            }
-          }
-          return null
-        }
-
-        const pageId = findPageIdByName(treeData.value, selectedElement.value.page)
-        if (pageId) {
-          elementUpdateData.group_id = pageId
-        }
-      }
+      const elementUpdateData = buildElementPayload(selectedElement.value)
 
       console.log('鏇存柊鍏冪礌鏁版嵁:', elementUpdateData)
       await updateElement(selectedElement.value.id, elementUpdateData)
 
       // 閲嶆柊鑾峰彇瀹屾暣鐨勫厓绱犺鎯呬互纭繚鎵€鏈夊叧鑱斿瓧娈垫纭樉绀?
       const detailResponse = await getElementDetail(selectedElement.value.id)
-      selectedElement.value = detailResponse.data
+      selectedElement.value = normalizeElementForEditing(detailResponse.data)
       console.log('鏇存柊鍚庤幏鍙栧埌瀹屾暣鍏冪礌璇︽儏:', selectedElement.value)
       console.log('locator_strategy_id鍊?', selectedElement.value.locator_strategy_id, '绫诲瀷:', typeof selectedElement.value.locator_strategy_id)
       console.log('locator_strategy瀵硅薄:', selectedElement.value.locator_strategy)
@@ -1294,45 +1363,7 @@ const saveElement = async () => {
 
       ElMessage.success(t('uiAutomation.element.messages.saveSuccess'))
     } else {
-      // 鍒涘缓鍏冪礌
-      // 纭繚浼犻€掓纭殑瀛楁鍚?project_id 鑰屼笉鏄?project
-      const elementData = {
-        ...selectedElement.value,
-        project_id: selectedProject.value
-      }
-
-      // 濡傛灉鍏冪礌鏈夊垎缁勶紙椤甸潰锛夛紝纭繚浼犻€?group_id
-      if (selectedElement.value.page) {
-        console.log('鍏冪礌鍏宠仈椤甸潰鍚嶇О:', selectedElement.value.page)
-        console.log('褰撳墠treeData缁撴瀯:', treeData.value)
-
-        // 閫氳繃閬嶅巻鏍戝舰缁撴瀯鏌ユ壘瀵瑰簲鐨勯〉闈D
-        const findPageIdByName = (nodes, pageName) => {
-          console.log(`Searching ${nodes.length} nodes for page: ${pageName}`)
-          for (const node of nodes) {
-            console.log(`Checking node ${node.name} (ID: ${node.id}, type: ${node.type})`)
-            if (node.type === 'page' && node.name === pageName) {
-              console.log(`鎵惧埌椤甸潰! ID: ${node.id}`)
-              return node.id
-            }
-            if (node.children) {
-              console.log(`妫€鏌ュ瓙鑺傜偣:`, node.children.map(c => c.name))
-              const foundId = findPageIdByName(node.children, pageName)
-              if (foundId) return foundId
-            }
-          }
-          console.log('Page not found')
-          return null
-        }
-
-        const pageId = findPageIdByName(treeData.value, selectedElement.value.page)
-        console.log('鎵惧埌鐨勯〉闈D:', pageId)
-
-        if (pageId) {
-          elementData.group_id = pageId
-          console.log('璁剧疆group_id涓?', pageId)
-        }
-      }
+      const elementData = buildElementPayload(selectedElement.value)
 
       console.log('鍒涘缓鍏冪礌鐨勬暟鎹?', elementData)
       const response = await createElement(elementData)
@@ -1340,7 +1371,7 @@ const saveElement = async () => {
 
       // 閲嶆柊鑾峰彇瀹屾暣鐨勫厓绱犺鎯呬互纭繚鎵€鏈夊叧鑱斿瓧娈垫纭樉绀?
       const detailResponse = await getElementDetail(response.data.id)
-      selectedElement.value = detailResponse.data
+      selectedElement.value = normalizeElementForEditing(detailResponse.data)
       console.log('鑾峰彇鍒板畬鏁村厓绱犺鎯?', selectedElement.value)
       console.log('locator_strategy_id鍊?', selectedElement.value.locator_strategy_id, '绫诲瀷:', typeof selectedElement.value.locator_strategy_id)
       console.log('locator_strategy瀵硅薄:', selectedElement.value.locator_strategy)
@@ -1517,7 +1548,7 @@ const editNode = async () => {
     // 缂栬緫鍏冪礌 - 閫氳繃API鑾峰彇瀹屾暣鐨勫厓绱犺鎯咃紝閬垮厤浣跨敤鏍戣妭鐐圭殑澶嶆潅鏁版嵁
     try {
       const response = await getElementDetail(rightClickedNode.value.id)
-      selectedElement.value = response.data
+      selectedElement.value = normalizeElementForEditing(response.data)
       console.log('Set selected element for editing via API:', selectedElement.value)
 
       // 寮哄埗鍒锋柊琛ㄥ崟锛岀‘淇濅笅鎷夋姝ｇ‘鏄剧ず
