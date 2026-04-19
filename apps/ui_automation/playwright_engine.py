@@ -327,7 +327,7 @@ class PlaywrightTestEngine:
                 # 切换标签页
                 # 获取超时时间
                 if step.wait_time:
-                    timeout = step.wait_time / 1000
+                    timeout = max(step.wait_time / 1000, 5.0)
                 else:
                     timeout = 5.0
                 
@@ -336,7 +336,14 @@ class PlaywrightTestEngine:
                 target_index = -1
                 
                 while True:
-                    pages = self.context.pages
+                    pages = [page for page in self.context.pages if not page.is_closed()]
+                    if (
+                        not (resolved_input_value and str(resolved_input_value).isdigit())
+                        and current_page in pages
+                        and len(pages) > 1
+                        and pages[-1] == current_page
+                    ):
+                        pages = [current_page] + [page for page in pages if page != current_page]
                     target_index = -1  # 默认切换到最新标签页
                     should_switch = False
                     
@@ -378,6 +385,15 @@ class PlaywrightTestEngine:
 
                 # 将目标页面设为当前活动页面
                 await target_page.bring_to_front()
+                try:
+                    await target_page.wait_for_load_state('networkidle', timeout=10000)
+                except Exception:
+                    try:
+                        await target_page.wait_for_load_state('domcontentloaded', timeout=5000)
+                    except Exception:
+                        pass
+                if hasattr(target_page, 'wait_for_timeout'):
+                    await target_page.wait_for_timeout(1500)
                 # 更新引擎的当前页面引用
                 self.page = target_page
                 

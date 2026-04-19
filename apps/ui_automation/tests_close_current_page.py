@@ -28,6 +28,8 @@ class FakeAsyncPlaywrightPage:
         self.url = url
         self.closed = False
         self.events = {}
+        self.load_state_calls = []
+        self.wait_timeout_calls = []
 
     def on(self, event_name, handler):
         self.events[event_name] = handler
@@ -43,6 +45,15 @@ class FakeAsyncPlaywrightPage:
 
     async def goto(self, url, **kwargs):
         self.url = url
+
+    async def title(self):
+        return 'Fake Async Page'
+
+    async def wait_for_load_state(self, state, timeout):
+        self.load_state_calls.append((state, timeout))
+
+    async def wait_for_timeout(self, timeout):
+        self.wait_timeout_calls.append(timeout)
 
 
 class FakeAsyncPlaywrightContext:
@@ -198,6 +209,37 @@ class CloseCurrentPageEngineTests(IsolatedAsyncioTestCase):
         self.assertEqual(engine.page.url, 'about:blank')
         self.assertEqual(len([page for page in context.pages if not page.is_closed()]), 1)
         self.assertIn('保留会话', log)
+
+
+    async def test_playwright_slow_switch_tab_then_close_current_page_uses_new_page(self):
+        engine = PlaywrightTestEngine()
+        context = FakeAsyncPlaywrightContext()
+        current_page = FakeAsyncPlaywrightPage(context, 'http://example.com/current')
+        next_page = FakeAsyncPlaywrightPage(context, 'http://example.com/next')
+        context.pages.append(current_page)
+        engine.context = context
+        engine.page = current_page
+
+        clock = {'now': 0.0, 'sleep_calls': 0}
+
+        async def fake_sleep(_seconds):
+            clock['sleep_calls'] += 1
+            clock['now'] += 0.6
+            if clock['sleep_calls'] == 3:
+                context.pages.append(next_page)
+
+        with patch('apps.ui_automation.playwright_engine.time.time', new=lambda: clock['now']):
+            with patch('apps.ui_automation.playwright_engine.asyncio.sleep', new=fake_sleep):
+                switch_success, _, _ = await engine.execute_step(make_step('switchTab', wait_time=1000), {})
+                close_success, close_log, _ = await engine.execute_step(make_step('closeCurrentPage'), {})
+
+        self.assertTrue(switch_success)
+        self.assertTrue(close_success)
+        self.assertTrue(next_page.closed)
+        self.assertIs(engine.page, current_page)
+        self.assertGreaterEqual(clock['sleep_calls'], 3)
+        self.assertIn(1500, next_page.wait_timeout_calls)
+        self.assertIn('http://example.com/next', close_log)
 
 
 class CloseCurrentPageSeleniumEngineTests(TestCase):
