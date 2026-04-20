@@ -255,6 +255,67 @@ def _close_current_selenium_page(driver):
     }
 
 
+def _apply_playwright_window_size(executor):
+    current_page = getattr(executor, 'current_page', None)
+    if current_page is None:
+        return
+
+    try:
+        current_page.set_viewport_size({
+            'width': executor.browser_width,
+            'height': executor.browser_height,
+        })
+    except Exception:
+        pass
+
+    if getattr(executor, 'headless', False):
+        return
+
+    context = getattr(executor, 'context', None)
+    if executor.browser in {'chrome', 'edge'} and context is not None and hasattr(context, 'new_cdp_session'):
+        try:
+            session = context.new_cdp_session(current_page)
+            window_info = session.send('Browser.getWindowForTarget')
+            window_id = window_info.get('windowId')
+            if window_id is not None:
+                try:
+                    session.send('Browser.setWindowBounds', {
+                        'windowId': window_id,
+                        'bounds': {'windowState': 'normal'},
+                    })
+                except Exception:
+                    pass
+
+                session.send('Browser.setWindowBounds', {
+                    'windowId': window_id,
+                    'bounds': {
+                        'left': 0,
+                        'top': 0,
+                        'width': executor.browser_width,
+                        'height': executor.browser_height,
+                    },
+                })
+                return
+        except Exception:
+            pass
+
+    try:
+        current_page.evaluate(
+            """([width, height]) => {
+                try {
+                    window.moveTo(0, 0);
+                    window.resizeTo(width, height);
+                    return { outerWidth: window.outerWidth, outerHeight: window.outerHeight };
+                } catch (error) {
+                    return null;
+                }
+            }""",
+            [executor.browser_width, executor.browser_height],
+        )
+    except Exception:
+        pass
+
+
 class TestExecutor:
     """测试执行器基类"""
 
@@ -538,6 +599,7 @@ class TestExecutor:
                     if hasattr(self.context, 'on'):
                         self.context.on('page', lambda page: _register_playwright_page_handlers(self, page))
                     _register_playwright_page_handlers(self, self.current_page)
+                    _apply_playwright_window_size(self)
 
                     # 导航到项目基础URL
                     if self.test_suite.project.base_url:

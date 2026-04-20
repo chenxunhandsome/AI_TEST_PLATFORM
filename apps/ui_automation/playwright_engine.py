@@ -55,6 +55,67 @@ class PlaywrightTestEngine:
         self.page: Optional[Page] = None
         self._recent_dialog = None
 
+    async def _apply_window_size(self):
+        if self.page is None:
+            return
+
+        try:
+            await self.page.set_viewport_size({
+                'width': self.browser_width,
+                'height': self.browser_height,
+            })
+        except Exception:
+            logger.debug("设置 Playwright viewport 失败，保留当前配置", exc_info=True)
+
+        if self.headless:
+            return
+
+        if self.browser_type == 'chromium' and self.context is not None:
+            try:
+                session = await self.context.new_cdp_session(self.page)
+                window_info = await session.send('Browser.getWindowForTarget')
+                window_id = window_info.get('windowId')
+                if window_id is not None:
+                    try:
+                        await session.send(
+                            'Browser.setWindowBounds',
+                            {'windowId': window_id, 'bounds': {'windowState': 'normal'}}
+                        )
+                    except Exception:
+                        logger.debug("恢复 Chromium 窗口到 normal 状态失败，继续尝试设置尺寸", exc_info=True)
+
+                    await session.send(
+                        'Browser.setWindowBounds',
+                        {
+                            'windowId': window_id,
+                            'bounds': {
+                                'left': 0,
+                                'top': 0,
+                                'width': self.browser_width,
+                                'height': self.browser_height,
+                            }
+                        }
+                    )
+                    return
+            except Exception:
+                logger.debug("通过 CDP 设置 Chromium 窗口尺寸失败，回退到 window.resizeTo", exc_info=True)
+
+        try:
+            await self.page.evaluate(
+                """([width, height]) => {
+                    try {
+                        window.moveTo(0, 0);
+                        window.resizeTo(width, height);
+                        return { outerWidth: window.outerWidth, outerHeight: window.outerHeight };
+                    } catch (error) {
+                        return null;
+                    }
+                }""",
+                [self.browser_width, self.browser_height],
+            )
+        except Exception:
+            logger.debug("通过 window.resizeTo 设置浏览器窗口尺寸失败", exc_info=True)
+
     async def _handle_dialog(self, dialog):
         self._recent_dialog = {
             'type': getattr(dialog, 'type', 'dialog'),
@@ -205,6 +266,7 @@ class PlaywrightTestEngine:
             self.page = await self.context.new_page()
             self._register_context_handlers()
             self._register_page_handlers(self.page)
+            await self._apply_window_size()
 
             logger.info(f"浏览器启动成功: {self.browser_type}, headless={self.headless}")
 

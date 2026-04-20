@@ -38,7 +38,8 @@ class PlaywrightBrowserConfigurationTests(IsolatedAsyncioTestCase):
         context_call = {}
 
         class FakePage:
-            pass
+            async def set_viewport_size(self, viewport):
+                self.viewport = viewport
 
         class FakeContext:
             async def new_page(self):
@@ -89,7 +90,8 @@ class PlaywrightBrowserConfigurationTests(IsolatedAsyncioTestCase):
         context_call = {}
 
         class FakePage:
-            pass
+            async def set_viewport_size(self, viewport):
+                self.viewport = viewport
 
         class FakeContext:
             async def new_page(self):
@@ -131,3 +133,84 @@ class PlaywrightBrowserConfigurationTests(IsolatedAsyncioTestCase):
         self.assertEqual(context_call['viewport']['height'], 768)
         self.assertEqual(context_call['screen']['width'], 1366)
         self.assertEqual(context_call['screen']['height'], 768)
+
+    async def test_playwright_start_resizes_headed_chromium_window(self):
+        cdp_calls = []
+
+        class FakePage:
+            def __init__(self):
+                self.viewport = None
+
+            async def set_viewport_size(self, viewport):
+                self.viewport = viewport
+
+        class FakeCdpSession:
+            async def send(self, method, params=None):
+                cdp_calls.append((method, params))
+                if method == 'Browser.getWindowForTarget':
+                    return {'windowId': 99}
+                return {}
+
+        class FakeContext:
+            def __init__(self):
+                self.page = FakePage()
+
+            async def new_page(self):
+                return self.page
+
+            async def new_cdp_session(self, page):
+                return FakeCdpSession()
+
+        class FakeBrowser:
+            def __init__(self):
+                self.context = FakeContext()
+
+            async def new_context(self, **kwargs):
+                return self.context
+
+        class FakeLauncher:
+            async def launch(self, *, headless, args):
+                return FakeBrowser()
+
+        class FakePlaywright:
+            def __init__(self):
+                self.chromium = FakeLauncher()
+                self.firefox = FakeLauncher()
+                self.webkit = FakeLauncher()
+
+        class FakeAsyncPlaywrightFactory:
+            async def start(self):
+                return FakePlaywright()
+
+        engine = PlaywrightTestEngine(
+            browser_type='chromium',
+            headless=False,
+            browser_width=1440,
+            browser_height=900,
+        )
+
+        with patch('apps.ui_automation.playwright_engine.async_playwright', return_value=FakeAsyncPlaywrightFactory()):
+            await engine.start()
+
+        self.assertEqual(engine.page.viewport, {'width': 1440, 'height': 900})
+        self.assertIn(('Browser.getWindowForTarget', None), cdp_calls)
+        self.assertIn(
+            (
+                'Browser.setWindowBounds',
+                {
+                    'windowId': 99,
+                    'bounds': {'windowState': 'normal'}
+                }
+            ),
+            cdp_calls,
+        )
+        self.assertIn(
+            (
+                'Browser.setWindowBounds',
+                {
+                    'windowId': 99,
+                    'bounds': {'left': 0, 'top': 0, 'width': 1440, 'height': 900}
+                }
+            ),
+            cdp_calls,
+        )
