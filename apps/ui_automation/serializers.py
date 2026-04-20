@@ -10,6 +10,12 @@ from .models import (
 )
 from django.contrib.auth import get_user_model
 from .project_runtime import normalize_project_global_variables
+from .browser_config import (
+    MAX_BROWSER_HEIGHT,
+    MAX_BROWSER_WIDTH,
+    MIN_BROWSER_HEIGHT,
+    MIN_BROWSER_WIDTH,
+)
 
 User = get_user_model()
 
@@ -41,6 +47,7 @@ class UiProjectSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'name', 'description', 'status', 'base_url',
             'start_date', 'end_date', 'owner', 'members', 'global_variables',
+            'browser_width', 'browser_height',
             'created_at', 'updated_at'
         )
         read_only_fields = ('created_at', 'updated_at')
@@ -53,10 +60,15 @@ class UiProjectCreateSerializer(serializers.ModelSerializer):
         required=False
     )
     global_variables = serializers.JSONField(required=False)
+    browser_width = serializers.IntegerField(required=False, min_value=MIN_BROWSER_WIDTH, max_value=MAX_BROWSER_WIDTH)
+    browser_height = serializers.IntegerField(required=False, min_value=MIN_BROWSER_HEIGHT, max_value=MAX_BROWSER_HEIGHT)
 
     class Meta:
         model = UiProject
-        fields = ('name', 'description', 'status', 'base_url', 'start_date', 'end_date', 'member_ids', 'global_variables')
+        fields = (
+            'name', 'description', 'status', 'base_url', 'start_date', 'end_date',
+            'member_ids', 'global_variables', 'browser_width', 'browser_height'
+        )
 
     def validate_member_ids(self, value):
         resolve_member_ids(value)
@@ -82,10 +94,15 @@ class UiProjectUpdateSerializer(serializers.ModelSerializer):
         required=False
     )
     global_variables = serializers.JSONField(required=False)
+    browser_width = serializers.IntegerField(required=False, min_value=MIN_BROWSER_WIDTH, max_value=MAX_BROWSER_WIDTH)
+    browser_height = serializers.IntegerField(required=False, min_value=MIN_BROWSER_HEIGHT, max_value=MAX_BROWSER_HEIGHT)
 
     class Meta:
         model = UiProject
-        fields = ('name', 'description', 'status', 'base_url', 'start_date', 'end_date', 'member_ids', 'global_variables')
+        fields = (
+            'name', 'description', 'status', 'base_url', 'start_date', 'end_date',
+            'member_ids', 'global_variables', 'browser_width', 'browser_height'
+        )
 
     def validate_member_ids(self, value):
         resolve_member_ids(value)
