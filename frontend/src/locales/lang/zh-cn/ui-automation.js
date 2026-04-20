@@ -146,6 +146,9 @@ export default {
     projectName: '项目名称',
     projectDesc: '项目描述',
     baseUrl: '基础URL',
+    browserWidth: '浏览器宽度',
+    browserHeight: '浏览器高度',
+    browserResolution: '浏览器分辨率',
     owner: '负责人',
     teamMembers: '团队成员',
     selectMembers: '请选择项目成员',
@@ -167,7 +170,11 @@ export default {
       nameLength: '项目名称长度在 2 到 200 个字符',
       baseUrlRequired: '请输入基础URL',
       baseUrlInvalid: '请输入有效的URL',
-      selectStatus: '请选择项目状态'
+      selectStatus: '请选择项目状态',
+      browserWidthRequired: '请输入浏览器宽度',
+      browserWidthRange: '浏览器宽度需在 320 到 7680 之间',
+      browserHeightRequired: '请输入浏览器高度',
+      browserHeightRange: '浏览器高度需在 240 到 4320 之间'
     },
     messages: {
       loadFailed: '获取项目列表失败',

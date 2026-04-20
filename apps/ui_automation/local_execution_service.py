@@ -90,6 +90,8 @@ def build_test_case_payload(test_case):
         'project_name': test_case.project.name,
         'base_url': test_case.project.base_url,
         'project_global_variables': test_case.project.global_variables or [],
+        'browser_width': getattr(test_case.project, 'browser_width', None),
+        'browser_height': getattr(test_case.project, 'browser_height', None),
         'steps': steps,
     }
 
@@ -238,7 +240,12 @@ def _run_selenium(payload, browser, headless, start_time, step_results, screensh
             'failed',
         )
 
-    engine = SeleniumTestEngine(browser_type=browser, headless=headless)
+    engine = SeleniumTestEngine(
+        browser_type=browser,
+        headless=headless,
+        browser_width=payload.get('browser_width'),
+        browser_height=payload.get('browser_height'),
+    )
     error_message = ''
     status_value = 'passed'
 
@@ -335,7 +342,12 @@ def _run_playwright(payload, browser, headless, start_time, step_results, screen
 
 async def _run_playwright_async(payload, browser, headless, start_time, step_results, screenshots, detailed_errors):
     initialize_project_runtime_variables(global_variables=payload.get('project_global_variables'))
-    engine = PlaywrightTestEngine(browser_type=_browser_map(browser), headless=headless)
+    engine = PlaywrightTestEngine(
+        browser_type=_browser_map(browser),
+        headless=headless,
+        browser_width=payload.get('browser_width'),
+        browser_height=payload.get('browser_height'),
+    )
     error_message = ''
     status_value = 'passed'
 

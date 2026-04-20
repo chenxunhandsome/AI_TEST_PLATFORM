@@ -141,6 +141,34 @@
         <el-form-item :label="$t('uiAutomation.project.baseUrl')" prop="base_url">
           <el-input v-model="createForm.base_url" :placeholder="$t('uiAutomation.project.rules.baseUrlRequired')" />
         </el-form-item>
+        <el-form-item :label="$t('uiAutomation.project.browserResolution')">
+          <el-row :gutter="12" class="resolution-row">
+            <el-col :span="12">
+              <el-form-item prop="browser_width" class="resolution-item">
+                <el-input-number
+                  v-model="createForm.browser_width"
+                  :min="MIN_BROWSER_WIDTH"
+                  :max="MAX_BROWSER_WIDTH"
+                  :placeholder="$t('uiAutomation.project.browserWidth')"
+                  controls-position="right"
+                  style="width: 100%"
+                />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item prop="browser_height" class="resolution-item">
+                <el-input-number
+                  v-model="createForm.browser_height"
+                  :min="MIN_BROWSER_HEIGHT"
+                  :max="MAX_BROWSER_HEIGHT"
+                  :placeholder="$t('uiAutomation.project.browserHeight')"
+                  controls-position="right"
+                  style="width: 100%"
+                />
+              </el-form-item>
+            </el-col>
+          </el-row>
+        </el-form-item>
         <el-form-item :label="$t('uiAutomation.project.teamMembers')" prop="member_ids">
           <el-select
             v-model="createForm.member_ids"
@@ -221,6 +249,34 @@
         <el-form-item :label="$t('uiAutomation.project.baseUrl')" prop="base_url">
           <el-input v-model="editForm.base_url" :placeholder="$t('uiAutomation.project.rules.baseUrlRequired')" />
         </el-form-item>
+        <el-form-item :label="$t('uiAutomation.project.browserResolution')">
+          <el-row :gutter="12" class="resolution-row">
+            <el-col :span="12">
+              <el-form-item prop="browser_width" class="resolution-item">
+                <el-input-number
+                  v-model="editForm.browser_width"
+                  :min="MIN_BROWSER_WIDTH"
+                  :max="MAX_BROWSER_WIDTH"
+                  :placeholder="$t('uiAutomation.project.browserWidth')"
+                  controls-position="right"
+                  style="width: 100%"
+                />
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item prop="browser_height" class="resolution-item">
+                <el-input-number
+                  v-model="editForm.browser_height"
+                  :min="MIN_BROWSER_HEIGHT"
+                  :max="MAX_BROWSER_HEIGHT"
+                  :placeholder="$t('uiAutomation.project.browserHeight')"
+                  controls-position="right"
+                  style="width: 100%"
+                />
+              </el-form-item>
+            </el-col>
+          </el-row>
+        </el-form-item>
         <el-form-item :label="$t('uiAutomation.project.teamMembers')" prop="member_ids">
           <el-select
             v-model="editForm.member_ids"
@@ -288,6 +344,9 @@
           </el-descriptions-item>
           <el-descriptions-item :label="$t('uiAutomation.project.baseUrl')">
             {{ currentProjectDetail.base_url }}
+          </el-descriptions-item>
+          <el-descriptions-item :label="$t('uiAutomation.project.browserResolution')">
+            {{ currentProjectDetail.browser_width }} x {{ currentProjectDetail.browser_height }}
           </el-descriptions-item>
           <el-descriptions-item :label="$t('uiAutomation.project.owner')">
             {{ currentProjectDetail.owner?.username || $t('uiAutomation.project.none') }}
@@ -365,6 +424,12 @@ import { useI18n } from 'vue-i18n'
 
 const { t } = useI18n()
 const userStore = useUserStore()
+const DEFAULT_BROWSER_WIDTH = 1920
+const DEFAULT_BROWSER_HEIGHT = 1060
+const MIN_BROWSER_WIDTH = 320
+const MIN_BROWSER_HEIGHT = 240
+const MAX_BROWSER_WIDTH = 7680
+const MAX_BROWSER_HEIGHT = 4320
 
 const createEmptyGlobalVariable = () => ({
   name: '',
@@ -385,6 +450,8 @@ const buildDefaultForm = () => ({
   description: '',
   status: 'IN_PROGRESS',
   base_url: '',
+  browser_width: DEFAULT_BROWSER_WIDTH,
+  browser_height: DEFAULT_BROWSER_HEIGHT,
   member_ids: [],
   global_variables: [],
   start_date: null,
@@ -425,6 +492,14 @@ const formRules = computed(() => ({
   base_url: [
     { required: true, message: t('uiAutomation.project.rules.baseUrlRequired'), trigger: 'blur' },
     { type: 'url', message: t('uiAutomation.project.rules.baseUrlInvalid'), trigger: 'blur' }
+  ],
+  browser_width: [
+    { required: true, type: 'number', message: t('uiAutomation.project.rules.browserWidthRequired'), trigger: 'change' },
+    { type: 'number', min: MIN_BROWSER_WIDTH, max: MAX_BROWSER_WIDTH, message: t('uiAutomation.project.rules.browserWidthRange'), trigger: 'change' }
+  ],
+  browser_height: [
+    { required: true, type: 'number', message: t('uiAutomation.project.rules.browserHeightRequired'), trigger: 'change' },
+    { type: 'number', min: MIN_BROWSER_HEIGHT, max: MAX_BROWSER_HEIGHT, message: t('uiAutomation.project.rules.browserHeightRange'), trigger: 'change' }
   ]
 }))
 
@@ -581,6 +656,8 @@ const editProject = (project) => {
     description: project.description,
     status: project.status,
     base_url: project.base_url,
+    browser_width: project.browser_width ?? DEFAULT_BROWSER_WIDTH,
+    browser_height: project.browser_height ?? DEFAULT_BROWSER_HEIGHT,
     member_ids: (project.members || []).map(member => member.id),
     global_variables: cloneGlobalVariables(project.global_variables),
     start_date: project.start_date ? new Date(project.start_date) : null,
@@ -741,6 +818,14 @@ onMounted(async () => {
 
 .global-variables-editor {
   width: 100%;
+}
+
+.resolution-row {
+  width: 100%;
+}
+
+.resolution-item {
+  margin-bottom: 0;
 }
 
 .global-variable-row {

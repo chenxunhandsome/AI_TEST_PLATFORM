@@ -24,6 +24,10 @@ from selenium.common.exceptions import (
     NoAlertPresentException,
 )
 import logging
+from .browser_config import (
+    get_chromium_window_size_argument,
+    resolve_browser_resolution,
+)
 
 logger = logging.getLogger(__name__)
 RUNTIME_VARIABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
@@ -69,13 +73,16 @@ def get_chromium_browser_prefs():
     }
 
 
-def get_chromium_browser_arguments():
+def get_chromium_browser_arguments(browser_width=None, browser_height=None):
     return [
         '--disable-blink-features=AutomationControlled',
         '--disable-gpu',
         '--no-sandbox',
         '--disable-dev-shm-usage',
-        '--window-size=1920,1080',
+        get_chromium_window_size_argument(
+            browser_width=browser_width,
+            browser_height=browser_height,
+        ),
         f'--disable-features={",".join(CHROMIUM_DISABLED_FEATURES)}',
         '--disable-translate',
         '--lang=zh-CN',
@@ -98,7 +105,7 @@ def get_chromium_browser_arguments():
 class SeleniumTestEngine:
     """Selenium测试执行引擎"""
 
-    def __init__(self, browser_type='chrome', headless=True):
+    def __init__(self, browser_type='chrome', headless=True, browser_width=None, browser_height=None):
         """
         初始化测试引擎
 
@@ -108,6 +115,10 @@ class SeleniumTestEngine:
         """
         self.browser_type = browser_type
         self.headless = headless
+        self.browser_width, self.browser_height = resolve_browser_resolution(
+            browser_width=browser_width,
+            browser_height=browser_height,
+        )
         self.driver = None
 
     def _close_current_page(self, start_time: float):
@@ -266,7 +277,7 @@ class SeleniumTestEngine:
                 options = Options()
                 if self.headless:
                     options.add_argument('--headless')
-                for argument in get_chromium_browser_arguments():
+                for argument in get_chromium_browser_arguments(self.browser_width, self.browser_height):
                     options.add_argument(argument)
                 
                 # 禁用自动化特征检测
@@ -288,8 +299,8 @@ class SeleniumTestEngine:
                 options = Options()
                 if self.headless:
                     options.add_argument('--headless')
-                options.add_argument('--width=1920')
-                options.add_argument('--height=1080')
+                options.add_argument(f'--width={self.browser_width}')
+                options.add_argument(f'--height={self.browser_height}')
                 
                 # 性能优化：禁用不必要的功能加快启动速度
                 options.set_preference('browser.cache.disk.enable', False)
@@ -318,7 +329,7 @@ class SeleniumTestEngine:
                 options = Options()
                 if self.headless:
                     options.add_argument('--headless')
-                for argument in get_chromium_browser_arguments():
+                for argument in get_chromium_browser_arguments(self.browser_width, self.browser_height):
                     options.add_argument(argument)
                 options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
                 options.add_experimental_option('useAutomationExtension', False)
@@ -334,7 +345,6 @@ class SeleniumTestEngine:
                 # 并在 Safari 设置 -> 开发菜单中启用"允许远程自动化"
                 try:
                     self.driver = webdriver.Safari()
-                    self.driver.set_window_size(1920, 1080)
                 except Exception as e:
                     error_msg = str(e)
                     if 'Could not create a session' in error_msg or 'InvalidSessionIdException' in error_msg:
@@ -357,7 +367,7 @@ class SeleniumTestEngine:
                 options = Options()
                 if self.headless:
                     options.add_argument('--headless')
-                for argument in get_chromium_browser_arguments():
+                for argument in get_chromium_browser_arguments(self.browser_width, self.browser_height):
                     options.add_argument(argument)
                 
                 # 禁用自动化特征检测
@@ -371,6 +381,11 @@ class SeleniumTestEngine:
                 self.driver = webdriver.Chrome(service=service, options=options)
 
             # 设置隐式等待
+            try:
+                self.driver.set_window_size(self.browser_width, self.browser_height)
+            except Exception:
+                logger.debug("设置浏览器窗口尺寸失败，保留驱动默认尺寸", exc_info=True)
+
             self.driver.implicitly_wait(3)
 
             logger.info(f"浏览器启动成功: {self.browser_type}, headless={self.headless}")

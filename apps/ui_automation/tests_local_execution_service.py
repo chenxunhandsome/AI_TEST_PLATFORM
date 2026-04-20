@@ -35,6 +35,28 @@ def make_step(step_number, action_type, input_value='', assert_value='', save_as
 
 
 class BuildTestCasePayloadTests(TestCase):
+    def test_build_test_case_payload_includes_project_browser_resolution(self):
+        project = SimpleNamespace(
+            id=6,
+            name='demo-project',
+            base_url='http://example.com',
+            global_variables=[],
+            browser_width=1600,
+            browser_height=900,
+        )
+        test_case = SimpleNamespace(
+            id=16,
+            name='resolution-case',
+            project_id=project.id,
+            project=project,
+            steps=FakeStepQuerySet([]),
+        )
+
+        payload = build_test_case_payload(test_case)
+
+        self.assertEqual(payload['browser_width'], 1600)
+        self.assertEqual(payload['browser_height'], 900)
+
     def test_build_test_case_payload_pre_resolves_project_and_runtime_variables(self):
         project = SimpleNamespace(
             id=1,
@@ -347,3 +369,91 @@ class PlaywrightNavigateTests(TestCase):
         self.assertIn('domcontentloaded', log)
         self.assertIn('networkidle未稳定', log)
         sleep_mock.assert_awaited()
+
+
+class EngineResolutionForwardingTests(TestCase):
+    def test_playwright_execution_forwards_project_resolution_to_engine(self):
+        captured_kwargs = {}
+
+        class DummyEngine:
+            def __init__(self, *args, **kwargs):
+                captured_kwargs.update(kwargs)
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+            async def navigate(self, url):
+                return True, f'navigate:{url}'
+
+            async def execute_step(self, step, element_data):
+                return True, 'ok', None
+
+            async def capture_screenshot(self):
+                return None
+
+        payload = {
+            'test_case_id': 31,
+            'test_case_name': 'playwright-resolution-case',
+            'project_id': 7,
+            'project_name': 'demo-project',
+            'base_url': '',
+            'project_global_variables': [],
+            'browser_width': 1440,
+            'browser_height': 810,
+            'steps': [],
+        }
+
+        with patch('apps.ui_automation.local_execution_service.PlaywrightTestEngine', DummyEngine):
+            result = execute_serialized_test_case(payload, engine_type='playwright')
+
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(captured_kwargs['browser_width'], 1440)
+        self.assertEqual(captured_kwargs['browser_height'], 810)
+
+    def test_selenium_execution_forwards_project_resolution_to_engine(self):
+        captured_kwargs = {}
+
+        class DummyEngine:
+            def __init__(self, *args, **kwargs):
+                captured_kwargs.update(kwargs)
+
+            @staticmethod
+            def check_browser_available(browser):
+                return True, ''
+
+            def start(self):
+                pass
+
+            def stop(self):
+                pass
+
+            def navigate(self, url):
+                return True, f'navigate:{url}'
+
+            def execute_step(self, step, element_data):
+                return True, 'ok', None
+
+            def capture_screenshot(self):
+                return None
+
+        payload = {
+            'test_case_id': 32,
+            'test_case_name': 'selenium-resolution-case',
+            'project_id': 8,
+            'project_name': 'demo-project',
+            'base_url': '',
+            'project_global_variables': [],
+            'browser_width': 1536,
+            'browser_height': 864,
+            'steps': [],
+        }
+
+        with patch('apps.ui_automation.local_execution_service.SeleniumTestEngine', DummyEngine):
+            result = execute_serialized_test_case(payload, engine_type='selenium')
+
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(captured_kwargs['browser_width'], 1536)
+        self.assertEqual(captured_kwargs['browser_height'], 864)

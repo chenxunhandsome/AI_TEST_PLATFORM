@@ -51,6 +51,7 @@ from .variable_resolver import resolve_variables, set_runtime_variable
 from .project_runtime import (
     initialize_project_runtime_variables,
 )
+from .browser_config import get_browser_resolution_label
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -2141,7 +2142,12 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                     headless = request.data.get('headless', False)
 
                     # 创建Selenium引擎实例
-                    engine = SeleniumTestEngine(browser_type=browser_type, headless=headless)
+                    engine = SeleniumTestEngine(
+                        browser_type=browser_type,
+                        headless=headless,
+                        browser_width=test_case.project.browser_width,
+                        browser_height=test_case.project.browser_height,
+                    )
                     initialize_project_runtime_variables(project=test_case.project)
 
                     try:
@@ -2357,7 +2363,12 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                         headless = request.data.get('headless', False)
 
                         # 创建Playwright引擎实例
-                        engine = PlaywrightTestEngine(browser_type=browser_type, headless=headless)
+                        engine = PlaywrightTestEngine(
+                            browser_type=browser_type,
+                            headless=headless,
+                            browser_width=test_case.project.browser_width,
+                            browser_height=test_case.project.browser_height,
+                        )
                         initialize_project_runtime_variables(project=test_case.project)
 
                         try:
@@ -2567,7 +2578,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
             execution_logs.append("执行环境信息:")
             execution_logs.append(f"- 执行引擎: {engine_type.upper()}")
             execution_logs.append(f"- 浏览器: {request.data.get('browser', 'chrome').capitalize()}")
-            execution_logs.append(f"- 屏幕分辨率: 1920x1080")
+            execution_logs.append(f"- 屏幕分辨率: {get_browser_resolution_label(project=test_case.project)}")
             execution_logs.append(f"- 总执行时间: {total_time}秒")
 
             if screenshots:
@@ -3024,7 +3035,12 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                         continue
 
                                     # 创建Selenium引擎实例并执行
-                                    engine = SeleniumTestEngine(browser_type=task.browser, headless=task.headless)
+                                    engine = SeleniumTestEngine(
+                                        browser_type=task.browser,
+                                        headless=task.headless,
+                                        browser_width=test_case.project.browser_width,
+                                        browser_height=test_case.project.browser_height,
+                                    )
                                     initialize_project_runtime_variables(project=test_case.project)
 
                                     try:
@@ -3123,7 +3139,12 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                         }
                                         browser_type = browser_map.get(task.browser, 'chromium')
 
-                                        engine = PlaywrightTestEngine(browser_type=browser_type, headless=task.headless)
+                                        engine = PlaywrightTestEngine(
+                                            browser_type=browser_type,
+                                            headless=task.headless,
+                                            browser_width=test_case.project.browser_width,
+                                            browser_height=test_case.project.browser_height,
+                                        )
                                         initialize_project_runtime_variables(project=test_case.project)
 
                                         try:

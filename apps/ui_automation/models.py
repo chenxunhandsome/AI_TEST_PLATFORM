@@ -23,6 +23,8 @@ class UiProject(models.Model):
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='owned_ui_projects', verbose_name='负责人')
     members = models.ManyToManyField(User, blank=True, related_name='ui_projects', verbose_name='团队成员')
     global_variables = models.JSONField(default=list, blank=True, verbose_name='项目全局变量')
+    browser_width = models.PositiveIntegerField(default=1920, verbose_name='浏览器宽度')
+    browser_height = models.PositiveIntegerField(default=1060, verbose_name='浏览器高度')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
 
