@@ -102,6 +102,18 @@ def _record_step_failure(
     return False
 
 
+def _append_skipped_step_result(step_results, step_number, action_type, description):
+    step_results.append({
+        'step_number': step_number,
+        'action_type': action_type,
+        'description': description or '',
+        'success': True,
+        'error': None,
+        'status': 'skipped',
+        'message': '步骤已禁用，已跳过执行'
+    })
+
+
 def get_accessible_projects_for_user(user):
     return UiProject.objects.filter(
         models.Q(owner=user) | models.Q(members=user)
@@ -332,6 +344,7 @@ def build_test_case_manifest_item(test_case):
             'step_number': step.step_number,
             'action_type': step.action_type,
             'description': step.description or '',
+            'is_enabled': step.is_enabled,
             'input_value': step.input_value or '',
             'wait_time': step.wait_time,
             'assert_type': step.assert_type or '',
@@ -401,6 +414,7 @@ def resolve_imported_test_case_step(project, step_data, created_by=None, overwri
     return {
         'action_type': step_data.get('action_type', 'click'),
         'description': str(step_data.get('description', '') or '').strip(),
+        'is_enabled': normalize_import_bool(step_data.get('is_enabled', True), True),
         'input_value': input_value,
         'wait_time': normalize_import_int(step_data.get('wait_time'), 1000),
         'assert_type': str(step_data.get('assert_type', '') or '').strip(),
@@ -440,6 +454,7 @@ def validate_test_case_steps_payload(steps_data):
             raise ValidationError(f'步骤 {index} 的事务块名称不能为空')
 
         step_data['description'] = description
+        step_data['is_enabled'] = normalize_import_bool(step_data.get('is_enabled', True), True)
         step_data['save_as'] = save_as
         step_data['transaction_id'] = transaction_id
         step_data['transaction_name'] = transaction_name
@@ -1497,6 +1512,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                         assert_type=step_data.get('assert_type', ''),
                         assert_value=step_data.get('assert_value', ''),
                         description=step_data.get('description', ''),
+                        is_enabled=step_data.get('is_enabled', True),
                         save_as=step_data.get('save_as', ''),
                         transaction_id=step_data.get('transaction_id', ''),
                         transaction_name=step_data.get('transaction_name', '')
@@ -1643,6 +1659,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                         assert_type=resolved_step['assert_type'],
                         assert_value=resolved_step['assert_value'],
                         description=resolved_step['description'],
+                        is_enabled=resolved_step['is_enabled'],
                         save_as=resolved_step['save_as'],
                         transaction_id=resolved_step['transaction_id'],
                         transaction_name=resolved_step['transaction_name'],
@@ -1686,6 +1703,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                     assert_type=step.assert_type,
                     assert_value=step.assert_value,
                     description=step.description,
+                    is_enabled=step.is_enabled,
                     save_as=step.save_as,
                     transaction_id=step.transaction_id,
                     transaction_name=step.transaction_name
@@ -1752,6 +1770,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                         assert_type=step_data.get('assert_type', ''),
                         assert_value=step_data.get('assert_value', ''),
                         description=step_data.get('description', ''),
+                        is_enabled=step_data.get('is_enabled', True),
                         save_as=step_data.get('save_as', ''),
                         transaction_id=step_data.get('transaction_id', ''),
                         transaction_name=step_data.get('transaction_name', '')
@@ -2069,6 +2088,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                     'step': step,
                     'action_type': step.action_type,
                     'description': step.description,
+                    'is_enabled': step.is_enabled,
                     'save_as': step.save_as,
                     'input_value': step.input_value,
                     'wait_time': step.wait_time,
@@ -2195,6 +2215,12 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                                 else:
                                     execution_logs.append(f"  (此步骤不需要元素)")
 
+                                if step_info.get('is_enabled', True) is False:
+                                    execution_logs.append("  步骤已禁用，已跳过执行")
+                                    execution_logs.append("")
+                                    _append_skipped_step_result(step_results, i, action_type, description)
+                                    continue
+
                                 try:
                                     resolved_input_value, resolved_assert_value = resolve_step_runtime_payload(step)
                                     step.input_value = resolved_input_value
@@ -2216,7 +2242,9 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                                         'action_type': action_type,
                                         'description': description or '',
                                         'success': success,
-                                        'error': None if success else step_log
+                                        'error': None if success else step_log,
+                                        'status': 'passed' if success else 'failed',
+                                        'message': ''
                                     })
 
                                     if not success:
@@ -2261,7 +2289,9 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                                         'action_type': action_type,
                                         'description': description or '',
                                         'success': False,
-                                        'error': str(e)
+                                        'error': str(e),
+                                        'status': 'failed',
+                                        'message': ''
                                     })
 
                                     execution_result['status'] = 'failed'
@@ -2382,6 +2412,12 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                                     else:
                                         execution_logs.append(f"  (此步骤不需要元素)")
 
+                                    if step_info.get('is_enabled', True) is False:
+                                        execution_logs.append("  步骤已禁用，已跳过执行")
+                                        execution_logs.append("")
+                                        _append_skipped_step_result(step_results, i, action_type, description)
+                                        continue
+
                                     # 执行步骤
                                     try:
                                         execution_logs.append(f"  [调试] 准备执行步骤...")
@@ -2408,7 +2444,9 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                                             'action_type': action_type,
                                             'description': description or '',
                                             'success': success,
-                                            'error': None if success else step_log
+                                            'error': None if success else step_log,
+                                            'status': 'passed' if success else 'failed',
+                                            'message': ''
                                         })
 
                                         # 如果步骤失败,保存截图
@@ -2458,7 +2496,9 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                                             'action_type': action_type,
                                             'description': description or '',
                                             'success': False,
-                                            'error': str(e)
+                                            'error': str(e),
+                                            'status': 'failed',
+                                            'message': ''
                                         })
 
                                         execution_result['status'] = 'failed'
@@ -2935,6 +2975,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                         'step': step,
                                         'action_type': step.action_type,
                                         'description': step.description,
+                                        'is_enabled': step.is_enabled,
                                         'save_as': step.save_as,
                                         'input_value': step.input_value,
                                         'wait_time': step.wait_time,
@@ -3006,6 +3047,16 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                             action_type = step_info['action_type']
                                             element_data = step_info['element_data']
 
+                                            if step_info.get('is_enabled', True) is False:
+                                                execution_logs.append(f"步骤 {i}: 已禁用，跳过执行")
+                                                _append_skipped_step_result(
+                                                    step_results,
+                                                    i,
+                                                    action_type,
+                                                    step_info['description'],
+                                                )
+                                                continue
+
                                             resolved_input_value, resolved_assert_value = resolve_step_runtime_payload(step)
                                             step.input_value = resolved_input_value
                                             step.assert_value = resolved_assert_value
@@ -3024,7 +3075,9 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                                 'action_type': action_type,
                                                 'description': step_info['description'] or '',
                                                 'success': success,
-                                                'error': None if success else step_log
+                                                'error': None if success else step_log,
+                                                'status': 'passed' if success else 'failed',
+                                                'message': ''
                                             })
 
                                             if not success:
@@ -3096,6 +3149,16 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                                 action_type = step_info['action_type']
                                                 element_data = step_info['element_data']
 
+                                                if step_info.get('is_enabled', True) is False:
+                                                    execution_logs.append(f"步骤 {i}: 已禁用，跳过执行")
+                                                    _append_skipped_step_result(
+                                                        step_results,
+                                                        i,
+                                                        action_type,
+                                                        step_info['description'],
+                                                    )
+                                                    continue
+
                                                 resolved_input_value, resolved_assert_value = resolve_step_runtime_payload(step)
                                                 step.input_value = resolved_input_value
                                                 step.assert_value = resolved_assert_value
@@ -3114,7 +3177,9 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                                     'action_type': action_type,
                                                     'description': step_info['description'] or '',
                                                     'success': success,
-                                                    'error': None if success else step_log
+                                                    'error': None if success else step_log,
+                                                    'status': 'passed' if success else 'failed',
+                                                    'message': ''
                                                 })
 
                                                 if not success:

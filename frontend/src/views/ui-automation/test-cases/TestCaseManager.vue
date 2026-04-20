@@ -242,7 +242,8 @@
                         :class="{
                           expanded: element.expanded,
                           selected: isSelectedStep(element.id),
-                          'step-item--in-transaction': hasTransaction(element)
+                          'step-item--in-transaction': hasTransaction(element),
+                          'step-item--disabled': element.is_enabled === false
                         }"
                         @click="selectStep(element.id)"
                       >
@@ -258,7 +259,10 @@
                             <span class="step-number">{{ index + 1 }}</span>
                             <div class="step-summary" @click="element.expanded = !element.expanded">
                               <div class="step-summary-title">
-                                {{ getStepSummary(element, index) }}
+                                <span>{{ getStepSummary(element, index) }}</span>
+                                <el-tag v-if="element.is_enabled === false" size="small" type="info" effect="plain">
+                                  {{ text.stepDisabled }}
+                                </el-tag>
                               </div>
                               <div class="step-summary-meta">
                                 <span>{{ getActionTypeText(element.action_type) }}</span>
@@ -287,6 +291,19 @@
                         </div>
 
                         <div v-if="element.expanded" class="step-content">
+                        <div class="step-param step-param--toggle">
+                          <label>{{ text.stepEnabledLabel }}</label>
+                          <div class="step-toggle">
+                            <el-switch v-model="element.is_enabled" />
+                            <span
+                              class="step-toggle-status"
+                              :class="element.is_enabled === false ? 'is-disabled' : 'is-enabled'"
+                            >
+                              {{ element.is_enabled === false ? text.stepDisabled : text.stepEnabled }}
+                            </span>
+                          </div>
+                        </div>
+
                         <div class="step-param">
                           <label>{{ t('uiAutomation.testCase.stepDescription') }}</label>
                           <el-input
@@ -466,11 +483,15 @@
                     <div v-if="parsedExecutionLogs.length > 0">
                       <div v-for="(step, index) in parsedExecutionLogs" :key="index" class="log-item">
                         <div class="log-header">
-                          <el-tag :type="step.success ? 'success' : 'danger'" size="small">
-                            {{ t('uiAutomation.testCase.step') }} {{ step.step_number }}
+                          <el-tag :type="getExecutionLogTagType(step)" size="small">
+                            {{ getExecutionLogStatusText(step) }}
                           </el-tag>
+                          <span class="log-step-number">{{ t('uiAutomation.testCase.step') }} {{ step.step_number }}</span>
                           <span class="log-action">{{ getActionText(step.action_type) }}</span>
                           <span class="log-desc">{{ step.description }}</span>
+                        </div>
+                        <div v-if="step.message && !step.error" class="log-message">
+                          {{ step.message }}
                         </div>
                         <div v-if="step.error" class="log-error">
                           <el-icon><WarningFilled /></el-icon>
@@ -882,7 +903,13 @@ const text = {
   selectElementPlaceholder: '\u8bf7\u9009\u62e9\u5143\u7d20',
   searchElementPlaceholder: '\u641c\u7d22\u5143\u7d20\u540d\u79f0\u6216\u5b9a\u4f4d\u5185\u5bb9',
   noMatchedElements: '\u672a\u627e\u5230\u5339\u914d\u7684\u5143\u7d20',
-  ungroupedElements: '\u672a\u5206\u7ec4\u5143\u7d20'
+  ungroupedElements: '\u672a\u5206\u7ec4\u5143\u7d20',
+  stepEnabledLabel: '\u6b65\u9aa4\u72b6\u6001',
+  stepEnabled: '\u5df2\u542f\u7528',
+  stepDisabled: '\u5df2\u7981\u7528',
+  logPassed: '\u5df2\u901a\u8fc7',
+  logFailed: '\u5df2\u5931\u8d25',
+  logSkipped: '\u5df2\u8df3\u8fc7'
 }
 
 // 响应式数据
@@ -1144,6 +1171,7 @@ const createStepDraft = (step = {}, expanded = false) => ({
   assert_type: step.assert_type || 'textContains',
   assert_value: step.assert_value || '',
   description: step.description || '',
+  is_enabled: step.is_enabled !== false,
   save_as: step.save_as || '',
   transaction_id: String(step.transaction_id || '').trim(),
   transaction_name: String(step.transaction_name || '').trim(),
@@ -1556,6 +1584,7 @@ const buildStepPayload = (step, index) => ({
   assert_type: step.action_type === 'assert' ? (step.assert_type || 'textContains') : '',
   assert_value: step.action_type === 'assert' ? (step.assert_value || '') : '',
   description: String(step.description || '').trim(),
+  is_enabled: step.is_enabled !== false,
   save_as: canStoreVariable(step.action_type) ? String(step.save_as || '').trim() : '',
   transaction_id: getTransactionId(step),
   transaction_name: getTransactionName(step)
@@ -2766,6 +2795,29 @@ const getActionTypeText = (actionType) => {
   return textMap[actionType] || actionType
 }
 
+const getExecutionLogStatus = (step) => {
+  if (step?.status) {
+    return step.status
+  }
+  return step?.success ? 'passed' : 'failed'
+}
+
+const getExecutionLogTagType = (step) => {
+  const status = getExecutionLogStatus(step)
+  if (status === 'skipped') {
+    return 'info'
+  }
+  return status === 'passed' ? 'success' : 'danger'
+}
+
+const getExecutionLogStatusText = (step) => {
+  const status = getExecutionLogStatus(step)
+  if (status === 'skipped') {
+    return text.logSkipped
+  }
+  return status === 'passed' ? text.logPassed : text.logFailed
+}
+
 const formatTime = (timestamp) => {
   if (!timestamp) return ''
   const date = new Date(timestamp)
@@ -3237,6 +3289,21 @@ onBeforeUnmount(() => {
   border-color: #d9ecff;
 }
 
+.step-item--disabled {
+  border-style: dashed;
+  border-color: #c0c4cc;
+  background: #fcfcfc;
+  opacity: 0.82;
+}
+
+.step-item--disabled .step-header {
+  background: #f5f7fa;
+}
+
+.step-item--disabled .step-number {
+  background: #909399;
+}
+
 .step-item.selected {
   border-color: #409eff;
   box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.12);
@@ -3292,6 +3359,9 @@ onBeforeUnmount(() => {
 }
 
 .step-summary-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
   color: #303133;
   font-size: 14px;
   font-weight: 600;
@@ -3452,10 +3522,33 @@ onBeforeUnmount(() => {
   align-items: flex-start;
 }
 
+.step-param--toggle {
+  align-items: center;
+}
+
 .step-param label {
   width: 120px;
   font-weight: 500;
   color: #333;
+}
+
+.step-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.step-toggle-status {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.step-toggle-status.is-enabled {
+  color: #67c23a;
+}
+
+.step-toggle-status.is-disabled {
+  color: #909399;
 }
 
 .step-param-main {
@@ -3575,6 +3668,11 @@ onBeforeUnmount(() => {
   margin-bottom: 8px;
 }
 
+.log-step-number {
+  color: #606266;
+  font-size: 13px;
+}
+
 .log-action {
   font-weight: 500;
   color: #606266;
@@ -3583,6 +3681,15 @@ onBeforeUnmount(() => {
 .log-desc {
   color: #909399;
   font-size: 14px;
+}
+
+.log-message {
+  color: #909399;
+  font-size: 13px;
+  line-height: 1.6;
+  background: #f4f4f5;
+  padding: 8px 12px;
+  border-radius: 4px;
 }
 
 .log-error {

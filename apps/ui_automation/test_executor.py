@@ -56,7 +56,21 @@ def _store_runtime_variable_for_step(step_data, resolved_input_value=None, resol
 def _normalize_step_result(step_result):
     if step_result.get('error'):
         step_result['success'] = False
+    step_result['status'] = step_result.get('status') or ('passed' if step_result.get('success') else 'failed')
+    step_result['message'] = step_result.get('message') or ''
     return step_result
+
+
+def _build_skipped_step_result(step_data):
+    return {
+        'step_number': step_data['step_number'],
+        'action_type': step_data['action_type'],
+        'description': step_data.get('description', ''),
+        'success': True,
+        'error': None,
+        'status': 'skipped',
+        'message': '步骤已禁用，已跳过执行',
+    }
 
 
 def _to_data_url(screenshot_bytes):
@@ -414,6 +428,7 @@ class TestExecutor:
                     'step_number': step.step_number,
                     'action_type': step.action_type,
                     'description': step.description,
+                    'is_enabled': step.is_enabled,
                     'save_as': step.save_as or '',
                     'input_value': step.input_value,
                     'wait_time': step.wait_time,
@@ -646,6 +661,10 @@ class TestExecutor:
                 step_data['_just_switched_tab'] = just_switched_tab
                 just_switched_tab = False  # 重置标志
 
+                if step_data.get('is_enabled', True) is False:
+                    result['steps'].append(_build_skipped_step_result(step_data))
+                    continue
+
                 step_result = self.execute_step_playwright(step_data)
 
                 # Debug: Log which page we're using
@@ -807,6 +826,10 @@ class TestExecutor:
         try:
             # 遍历预先准备好的步骤数据
             for step_data in case_data['steps']:
+                if step_data.get('is_enabled', True) is False:
+                    result['steps'].append(_build_skipped_step_result(step_data))
+                    continue
+
                 step_result = self.execute_step_playwright(step_data)
                 result['steps'].append(step_result)
 
@@ -1619,6 +1642,7 @@ class TestExecutor:
                     'step_number': step.step_number,
                     'action_type': step.action_type,
                     'description': step.description,
+                    'is_enabled': step.is_enabled,
                     'save_as': step.save_as or '',
                     'input_value': step.input_value,
                     'wait_time': step.wait_time,
@@ -2098,6 +2122,14 @@ class TestExecutor:
             initialize_project_runtime_variables(global_variables=case_data.get('project_global_variables'))
             # 遍历预先准备好的步骤数据
             for step_data in case_data['steps']:
+                if step_data.get('is_enabled', True) is False:
+                    result['steps'].append(_build_skipped_step_result(step_data))
+                    continue
+
+                if step_data.get('is_enabled', True) is False:
+                    result['steps'].append(_build_skipped_step_result(step_data))
+                    continue
+
                 step_result = self.execute_step_selenium(driver, step_data)
                 result['steps'].append(step_result)
 

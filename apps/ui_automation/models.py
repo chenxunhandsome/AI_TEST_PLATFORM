@@ -690,6 +690,7 @@ class TestCaseStep(models.Model):
     assert_type = models.CharField(max_length=20, choices=ASSERT_TYPE_CHOICES, blank=True, verbose_name='断言类型')
     assert_value = models.TextField(blank=True, verbose_name='断言期望值')
     description = models.TextField(blank=True, verbose_name='步骤描述')
+    is_enabled = models.BooleanField(default=True, verbose_name='是否启用')
     save_as = models.CharField(max_length=100, blank=True, verbose_name='Stored Variable Name')
     transaction_id = models.CharField(max_length=64, blank=True, db_index=True, verbose_name='事务块ID')
     transaction_name = models.CharField(max_length=100, blank=True, verbose_name='事务块名称')
