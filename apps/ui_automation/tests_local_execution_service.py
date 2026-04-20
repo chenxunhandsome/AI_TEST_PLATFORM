@@ -19,11 +19,12 @@ class FakeStepQuerySet:
         return sorted(self._steps, key=lambda item: item.step_number)
 
 
-def make_step(step_number, action_type, input_value='', assert_value='', save_as='', wait_time=1000):
+def make_step(step_number, action_type, input_value='', assert_value='', save_as='', wait_time=1000, is_enabled=True):
     return SimpleNamespace(
         step_number=step_number,
         action_type=action_type,
         description=f'step-{step_number}',
+        is_enabled=is_enabled,
         save_as=save_as,
         input_value=input_value,
         wait_time=wait_time,
@@ -103,6 +104,29 @@ class BuildTestCasePayloadTests(TestCase):
 
         self.assertEqual(payload['steps'][0]['input_value'], 'hello world')
         self.assertEqual(payload['steps'][1]['input_value'], 'search=hello world')
+
+    def test_build_test_case_payload_does_not_publish_runtime_variables_from_disabled_steps(self):
+        project = SimpleNamespace(
+            id=5,
+            name='demo-project',
+            base_url='http://example.com',
+            global_variables=[],
+        )
+        test_case = SimpleNamespace(
+            id=15,
+            name='disabled-step-case',
+            project_id=project.id,
+            project=project,
+            steps=FakeStepQuerySet([
+                make_step(1, 'fill', input_value='disabled-value', save_as='from_disabled', is_enabled=False),
+                make_step(2, 'fill', input_value='reuse=${from_disabled}'),
+            ]),
+        )
+
+        payload = build_test_case_payload(test_case)
+
+        self.assertFalse(payload['steps'][0]['is_enabled'])
+        self.assertEqual(payload['steps'][1]['input_value'], 'reuse=${from_disabled}')
 
     def test_local_execution_keeps_runtime_variable_value_consistent_for_dynamic_functions(self):
         project = SimpleNamespace(
@@ -217,6 +241,73 @@ class BuildTestCasePayloadTests(TestCase):
         self.assertEqual(len(captured_inputs), 2)
         self.assertEqual(captured_inputs[0][0], 'fillAndEnter')
         self.assertEqual(captured_inputs[0][1], captured_inputs[1][1])
+
+    def test_local_execution_skips_disabled_steps(self):
+        payload = {
+            'test_case_id': 22,
+            'test_case_name': 'disabled-step-runtime-case',
+            'project_id': 2,
+            'project_name': 'demo-project',
+            'base_url': 'http://example.com',
+            'project_global_variables': [],
+            'steps': [
+                {
+                    'step_number': 1,
+                    'action_type': 'click',
+                    'description': 'disabled click',
+                    'is_enabled': False,
+                    'save_as': '',
+                    'input_value': '',
+                    'wait_time': 1000,
+                    'assert_type': '',
+                    'assert_value': '',
+                    'element_data': None,
+                },
+                {
+                    'step_number': 2,
+                    'action_type': 'fill',
+                    'description': 'enabled fill',
+                    'is_enabled': True,
+                    'save_as': '',
+                    'input_value': 'active',
+                    'wait_time': 1000,
+                    'assert_type': '',
+                    'assert_value': '',
+                    'element_data': None,
+                },
+            ],
+        }
+
+        executed_steps = []
+
+        class DummyEngine:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+            async def navigate(self, url):
+                return True, f'navigate:{url}'
+
+            async def execute_step(self, step, element_data):
+                executed_steps.append(step.description)
+                return True, 'ok', None
+
+            async def capture_screenshot(self):
+                return None
+
+        with patch('apps.ui_automation.local_execution_service.PlaywrightTestEngine', DummyEngine):
+            result = execute_serialized_test_case(payload, engine_type='playwright')
+
+        self.assertEqual(result['status'], 'passed')
+        self.assertEqual(executed_steps, ['enabled fill'])
+        logs = result['logs']
+        self.assertIn('"status": "skipped"', logs)
+        self.assertIn('步骤已禁用，已跳过执行', logs)
 
 
 class PlaywrightNavigateTests(TestCase):

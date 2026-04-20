@@ -35,8 +35,9 @@ def _resolve_serialized_step_payload(step):
     if step.assert_value:
         resolved_assert_value = resolve_variables(step.assert_value)
 
+    is_enabled = getattr(step, 'is_enabled', True) is not False
     save_as = _normalize_runtime_variable_name(step.save_as)
-    if save_as:
+    if is_enabled and save_as:
         if step.action_type in {'fill', 'fillAndEnter', 'switchTab'}:
             set_runtime_variable(save_as, resolved_input_value)
         elif step.action_type == 'assert':
@@ -46,6 +47,7 @@ def _resolve_serialized_step_payload(step):
         'step_number': step.step_number,
         'action_type': step.action_type,
         'description': step.description or '',
+        'is_enabled': is_enabled,
         'save_as': save_as,
         'input_value': resolved_input_value,
         'wait_time': step.wait_time,
@@ -127,6 +129,7 @@ def _make_step(step_data):
     return SimpleNamespace(
         action_type=step_data.get('action_type', ''),
         description=step_data.get('description', ''),
+        is_enabled=step_data.get('is_enabled', True),
         save_as=step_data.get('save_as', ''),
         input_value=step_data.get('input_value', ''),
         wait_time=step_data.get('wait_time') or 1000,
@@ -156,13 +159,15 @@ def _format_final_result(start_time, step_results, screenshots, detailed_errors,
     }
 
 
-def _append_step_result(step_results, step_number, action_type, description, success, error=None):
+def _append_step_result(step_results, step_number, action_type, description, success, error=None, status=None, message=''):
     step_results.append({
         'step_number': step_number,
         'action_type': action_type,
         'description': description or '',
         'success': success,
         'error': error,
+        'status': status or ('passed' if success else 'failed'),
+        'message': message or '',
     })
 
 
@@ -262,6 +267,20 @@ def _run_selenium(payload, browser, headless, start_time, step_results, screensh
             step = _make_step(step_data)
             element_data = step_data.get('element_data') or {}
             action_text = dict(TestCaseStep.ACTION_TYPE_CHOICES).get(step.action_type, step.action_type)
+
+            if getattr(step, 'is_enabled', True) is False:
+                _append_step_result(
+                    step_results,
+                    index,
+                    step.action_type,
+                    step.description,
+                    True,
+                    None,
+                    status='skipped',
+                    message='步骤已禁用，已跳过执行',
+                )
+                continue
+
             resolved_input_value, resolved_assert_value = _resolve_step_runtime_values(step)
 
             try:
@@ -345,6 +364,20 @@ async def _run_playwright_async(payload, browser, headless, start_time, step_res
             step = _make_step(step_data)
             element_data = step_data.get('element_data') or {}
             action_text = dict(TestCaseStep.ACTION_TYPE_CHOICES).get(step.action_type, step.action_type)
+
+            if getattr(step, 'is_enabled', True) is False:
+                _append_step_result(
+                    step_results,
+                    index,
+                    step.action_type,
+                    step.description,
+                    True,
+                    None,
+                    status='skipped',
+                    message='步骤已禁用，已跳过执行',
+                )
+                continue
+
             resolved_input_value, resolved_assert_value = _resolve_step_runtime_values(step)
 
             try:
