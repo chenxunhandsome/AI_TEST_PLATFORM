@@ -27,11 +27,6 @@ from .models import (
 )
 from .variable_resolver import resolve_variables, set_runtime_variable
 from .project_runtime import initialize_project_runtime_variables
-from .browser_config import (
-    get_browser_resolution_label,
-    get_chromium_window_size_argument,
-    resolve_browser_resolution,
-)
 
 
 RUNTIME_VARIABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
@@ -255,6 +250,57 @@ def _close_current_selenium_page(driver):
     }
 
 
+def _refresh_current_playwright_page(executor, wait_time=1000):
+    current_page = getattr(executor, 'current_page', None)
+    if current_page is None:
+        return {'success': False, 'error': '当前没有可刷新的页面'}
+
+    is_closed = getattr(current_page, 'is_closed', None)
+    if callable(is_closed) and is_closed():
+        return {'success': False, 'error': '当前页面已关闭，无法刷新'}
+
+    try:
+        current_page.reload(wait_until='domcontentloaded', timeout=30000)
+    except TypeError:
+        current_page.reload()
+
+    try:
+        current_page.wait_for_load_state('networkidle', timeout=10000)
+    except Exception:
+        try:
+            current_page.wait_for_load_state('domcontentloaded', timeout=5000)
+        except Exception:
+            pass
+
+    if hasattr(current_page, 'wait_for_timeout'):
+        current_page.wait_for_timeout(max(wait_time or 0, 1000))
+
+    return {
+        'success': True,
+        'detail': f'已刷新当前页面: {getattr(current_page, "url", "")}',
+    }
+
+
+def _refresh_current_selenium_page(driver, wait_time=1000):
+    if driver is None:
+        return {'success': False, 'error': '浏览器尚未启动，无法刷新'}
+
+    driver.refresh()
+    timeout_seconds = max((wait_time or 0) / 1000, 5)
+    try:
+        WebDriverWait(driver, timeout_seconds).until(
+            lambda current_driver: current_driver.execute_script("return document.readyState") == "complete"
+        )
+    except Exception:
+        pass
+
+    time.sleep(0.8)
+    return {
+        'success': True,
+        'detail': f'已刷新当前页面: {getattr(driver, "current_url", "")}',
+    }
+
+
 class TestExecutor:
     """测试执行器基类"""
 
@@ -268,13 +314,6 @@ class TestExecutor:
         self.test_cases = []
         self.results = []
         self._recent_playwright_dialog = None
-        self.browser_width, self.browser_height = resolve_browser_resolution(project=self.test_suite.project)
-
-    def get_browser_resolution_label(self):
-        return get_browser_resolution_label(
-            browser_width=self.browser_width,
-            browser_height=self.browser_height,
-        )
 
     def create_execution_record(self):
         """创建测试执行记录"""
@@ -506,12 +545,6 @@ class TestExecutor:
                         '--disable-features=Translate,TranslateUI',
                         '--lang=zh-CN',
                     ]
-                    common_args.append(
-                        get_chromium_window_size_argument(
-                            browser_width=self.browser_width,
-                            browser_height=self.browser_height,
-                        )
-                    )
                     # 选择浏览器
                     if self.browser == 'firefox':
                         browser = p.firefox.launch(headless=self.headless, args=common_args)
@@ -528,8 +561,7 @@ class TestExecutor:
 
                     # 配置上下文（User Agent 和 Viewport）
                     self.context = browser.new_context(
-                        viewport={'width': self.browser_width, 'height': self.browser_height},
-                        screen={'width': self.browser_width, 'height': self.browser_height},
+                        viewport={'width': 1920, 'height': 1080},
                         user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
                         locale='zh-CN',
                         extra_http_headers={'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'}
@@ -910,6 +942,13 @@ class TestExecutor:
                     step_result['error'] = close_result['error']
                 if close_result.get('detail'):
                     step_result['detail'] = close_result['detail']
+            elif step_data['action_type'] == 'refreshCurrentPage':
+                refresh_result = _refresh_current_playwright_page(self, step_data.get('wait_time', 1000))
+                step_result['success'] = refresh_result.get('success', False)
+                if refresh_result.get('error'):
+                    step_result['error'] = refresh_result['error']
+                if refresh_result.get('detail'):
+                    step_result['detail'] = refresh_result['detail']
             elif step_data['element']:
                 element = step_data['element']
                 locator_value = element['locator_value']
@@ -1955,12 +1994,7 @@ class TestExecutor:
             options.add_argument('--disable-gpu')
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
-            options.add_argument(
-                get_chromium_window_size_argument(
-                    browser_width=self.browser_width,
-                    browser_height=self.browser_height,
-                )
-            )
+            options.add_argument('--window-size=1920,1080')
 
             # 禁用自动化特征检测
             options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
@@ -2026,8 +2060,8 @@ class TestExecutor:
             options = FirefoxOptions()
             if self.headless:
                 options.add_argument('--headless')
-            options.add_argument(f'--width={self.browser_width}')
-            options.add_argument(f'--height={self.browser_height}')
+            options.add_argument('--width=1920')
+            options.add_argument('--height=1080')
 
             # 性能优化：禁用不必要的功能加快启动速度
             options.set_preference('browser.cache.disk.enable', False)
@@ -2053,6 +2087,7 @@ class TestExecutor:
             # 并在 Safari 设置 -> 开发菜单中启用"允许远程自动化"
             try:
                 driver = webdriver.Safari()
+                driver.set_window_size(1920, 1080)
             except Exception as e:
                 error_msg = str(e)
                 if 'Could not create a session' in error_msg or 'InvalidSessionIdException' in error_msg:
@@ -2075,12 +2110,7 @@ class TestExecutor:
             options.add_argument('--disable-translate')
             options.add_argument('--disable-features=Translate,TranslateUI')
             options.add_argument('--lang=zh-CN')
-            options.add_argument(
-                get_chromium_window_size_argument(
-                    browser_width=self.browser_width,
-                    browser_height=self.browser_height,
-                )
-            )
+            options.add_argument('--window-size=1920,1080')
 
             # 使用缓存优先策略
             service = EdgeService(EdgeChromiumDriverManager().install())
@@ -2094,12 +2124,7 @@ class TestExecutor:
             options.add_argument('--disable-gpu')
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
-            options.add_argument(
-                get_chromium_window_size_argument(
-                    browser_width=self.browser_width,
-                    browser_height=self.browser_height,
-                )
-            )
+            options.add_argument('--window-size=1920,1080')
 
             # 禁用自动化特征检测
             options.add_experimental_option('excludeSwitches', ['enable-automation'])
@@ -2132,11 +2157,6 @@ class TestExecutor:
             service = ChromeService(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=options)
 
-        try:
-            driver.set_window_size(self.browser_width, self.browser_height)
-        except Exception:
-            pass
-
         return driver
 
     def execute_test_case_selenium_no_db(self, driver, case_data):
@@ -2160,6 +2180,10 @@ class TestExecutor:
             initialize_project_runtime_variables(global_variables=case_data.get('project_global_variables'))
             # 遍历预先准备好的步骤数据
             for step_data in case_data['steps']:
+                if step_data.get('is_enabled', True) is False:
+                    result['steps'].append(_build_skipped_step_result(step_data))
+                    continue
+
                 if step_data.get('is_enabled', True) is False:
                     result['steps'].append(_build_skipped_step_result(step_data))
                     continue
@@ -2313,6 +2337,13 @@ class TestExecutor:
                     step_result['error'] = close_result['error']
                 if close_result.get('detail'):
                     step_result['detail'] = close_result['detail']
+            elif step_data['action_type'] == 'refreshCurrentPage':
+                refresh_result = _refresh_current_selenium_page(driver, step_data.get('wait_time', 1000))
+                step_result['success'] = refresh_result.get('success', False)
+                if refresh_result.get('error'):
+                    step_result['error'] = refresh_result['error']
+                if refresh_result.get('detail'):
+                    step_result['detail'] = refresh_result['detail']
             elif step_data['element']:
                 element = step_data['element']
                 locator_value = element['locator_value']

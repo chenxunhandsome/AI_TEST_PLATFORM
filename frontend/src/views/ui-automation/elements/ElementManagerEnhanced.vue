@@ -2,7 +2,7 @@
   <div class="element-manager">
     <div class="element-layout">
       <!-- 宸︿晶椤甸潰鏍?-->
-      <div class="sidebar">
+      <div class="sidebar" :style="{ width: `${sidebarWidth}px` }">
         <div class="sidebar-header">
           <el-select v-model="selectedProject" :placeholder="$t('common.selectProject')" @change="onProjectChange">
             <el-option
@@ -71,6 +71,15 @@
           </el-tree>
         </div>
       </div>
+
+      <div
+        class="sidebar-resizer"
+        role="separator"
+        aria-orientation="vertical"
+        tabindex="0"
+        @mousedown="startSidebarResize"
+        @keydown="handleSidebarResizeKeydown"
+      />
 
       <!-- 鍙充晶鍏冪礌璇︽儏 -->
       <div class="main-content">
@@ -358,7 +367,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -418,6 +427,11 @@ const transferring = ref(false)
 const transferOverwrite = ref(false)
 const transferTargetProject = ref('')
 const transferScope = ref('all')
+const SIDEBAR_WIDTH_STORAGE_KEY = 'ui-automation-element-sidebar-width'
+const SIDEBAR_MIN_WIDTH = 280
+const SIDEBAR_MAX_WIDTH = 720
+const sidebarWidth = ref(300)
+let sidebarResizeHandlers = null
 
 // 瀵硅瘽妗嗘帶鍒?
 const showCreatePageDialog = ref(false)
@@ -570,6 +584,76 @@ const transferScopeLabel = computed(() => {
   return '当前项目全部元素'
 })
 
+const normalizeSidebarWidth = (value) => {
+  const numericWidth = Number(value)
+  if (!Number.isFinite(numericWidth)) {
+    return 300
+  }
+  return Math.min(Math.max(Math.round(numericWidth), SIDEBAR_MIN_WIDTH), SIDEBAR_MAX_WIDTH)
+}
+
+const persistSidebarWidth = () => {
+  if (typeof window === 'undefined') {
+    return
+  }
+  window.localStorage.setItem(SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth.value))
+}
+
+const setSidebarWidth = (value) => {
+  sidebarWidth.value = normalizeSidebarWidth(value)
+  persistSidebarWidth()
+}
+
+const stopSidebarResize = () => {
+  if (!sidebarResizeHandlers) {
+    return
+  }
+
+  document.removeEventListener('mousemove', sidebarResizeHandlers.handleMouseMove)
+  document.removeEventListener('mouseup', sidebarResizeHandlers.handleMouseUp)
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
+  sidebarResizeHandlers = null
+}
+
+const startSidebarResize = (event) => {
+  if (event.button !== 0) {
+    return
+  }
+
+  const startX = event.clientX
+  const startWidth = sidebarWidth.value
+
+  const handleMouseMove = (moveEvent) => {
+    const deltaX = moveEvent.clientX - startX
+    setSidebarWidth(startWidth + deltaX)
+  }
+
+  const handleMouseUp = () => {
+    stopSidebarResize()
+  }
+
+  stopSidebarResize()
+  document.addEventListener('mousemove', handleMouseMove)
+  document.addEventListener('mouseup', handleMouseUp)
+  document.body.style.cursor = 'col-resize'
+  document.body.style.userSelect = 'none'
+  sidebarResizeHandlers = {
+    handleMouseMove,
+    handleMouseUp
+  }
+}
+
+const handleSidebarResizeKeydown = (event) => {
+  if (event.key === 'ArrowLeft') {
+    event.preventDefault()
+    setSidebarWidth(sidebarWidth.value - 24)
+  } else if (event.key === 'ArrowRight') {
+    event.preventDefault()
+    setSidebarWidth(sidebarWidth.value + 24)
+  }
+}
+
 const pageTreeOptions = computed(() => {
   const toPageOnlyTree = (nodes = []) => nodes
     .filter(node => node.type === 'page' && node.id !== 'unassigned')
@@ -695,6 +779,10 @@ const exposeToWindow = () => {
 onMounted(async () => {
   console.log('=== 缁勪欢鎸傝浇寮€濮?===')
 
+  if (typeof window !== 'undefined') {
+    setSidebarWidth(window.localStorage.getItem(SIDEBAR_WIDTH_STORAGE_KEY) || sidebarWidth.value)
+  }
+
   await loadProjects()
   await loadLocatorStrategies()
 
@@ -712,6 +800,10 @@ onMounted(async () => {
   exposeToWindow()
 
   console.log('=== 缁勪欢鎸傝浇瀹屾垚 ===')
+})
+
+onUnmounted(() => {
+  stopSidebarResize()
 })
 
 // 鍔犺浇椤圭洰鍒楄〃
@@ -1690,11 +1782,25 @@ const updatePage = async () => {
 }
 
 .sidebar {
-  width: 300px;
+  flex: 0 0 auto;
   border-right: 1px solid #e4e7ed;
   display: flex;
   flex-direction: column;
   background: #f5f7fa;
+  min-width: 0;
+}
+
+.sidebar-resizer {
+  width: 8px;
+  cursor: col-resize;
+  background: linear-gradient(to right, rgba(228, 231, 237, 0), rgba(228, 231, 237, 0.9), rgba(228, 231, 237, 0));
+  transition: background-color 0.2s ease;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer:focus {
+  background: linear-gradient(to right, rgba(64, 158, 255, 0), rgba(64, 158, 255, 0.85), rgba(64, 158, 255, 0));
+  outline: none;
 }
 
 .sidebar-header {
@@ -1741,6 +1847,7 @@ const updatePage = async () => {
 
 .main-content {
   flex: 1;
+  min-width: 0;
   overflow: auto;
   padding: 20px;
 }

@@ -442,6 +442,7 @@ const getActionText = (actionType) => {
     'screenshot': t('uiAutomation.actionTypes.screenshot'),
     'assert': t('uiAutomation.actionTypes.assert'),
     'wait': t('uiAutomation.actionTypes.wait'),
+    'refreshCurrentPage': '刷新当前页',
     'closeCurrentPage': t('uiAutomation.actionTypes.closeCurrentPage')
   }
   return actionMap[actionType] || actionType

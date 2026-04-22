@@ -14,6 +14,7 @@ class FakeAsyncPlaywrightPage:
         self.events = {}
         self.load_state_calls = []
         self.wait_timeout_calls = []
+        self.reload_calls = []
 
     def on(self, event_name, handler):
         self.events[event_name] = handler
@@ -29,6 +30,9 @@ class FakeAsyncPlaywrightPage:
 
     async def goto(self, url, **kwargs):
         self.url = url
+
+    async def reload(self, **kwargs):
+        self.reload_calls.append(kwargs)
 
     async def title(self):
         return 'Fake Async Page'
@@ -76,6 +80,42 @@ class DummyEngine(PlaywrightTestEngine):
 
 
 class LocalExecutionCloseCurrentPageRegressionTests(TestCase):
+    def test_local_execution_refresh_current_page_uses_active_page(self):
+        payload = {
+            'test_case_id': 33,
+            'test_case_name': 'refresh-current-page-local',
+            'project_id': 5,
+            'project_name': 'demo-project',
+            'base_url': '',
+            'project_global_variables': [],
+            'steps': [
+                {
+                    'step_number': 1,
+                    'action_type': 'refreshCurrentPage',
+                    'description': 'refresh current page',
+                    'save_as': '',
+                    'input_value': '',
+                    'wait_time': 1000,
+                    'assert_type': '',
+                    'assert_value': '',
+                    'element_data': None,
+                },
+            ],
+        }
+
+        with patch('apps.ui_automation.local_execution_service.PlaywrightTestEngine', DummyEngine):
+            result = execute_serialized_test_case(payload, engine_type='playwright')
+
+        self.assertEqual(result['status'], 'passed')
+        step_results = json.loads(result['logs'])
+        self.assertEqual(len(step_results), 1)
+        self.assertTrue(step_results[0]['success'])
+
+        engine = DummyEngine.last_instance
+        self.assertIsNotNone(engine)
+        self.assertEqual(len(engine.page.reload_calls), 1)
+        self.assertIn(('networkidle', 10000), engine.page.load_state_calls)
+
     def test_local_execution_switch_tab_then_close_current_page_uses_new_page(self):
         payload = {
             'test_case_id': 31,

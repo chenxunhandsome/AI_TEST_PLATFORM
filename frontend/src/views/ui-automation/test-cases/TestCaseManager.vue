@@ -334,6 +334,7 @@
                             <el-option :label="t('uiAutomation.testCase.actionAssert')" value="assert" />
                             <el-option :label="t('uiAutomation.testCase.actionWait')" value="wait" />
                             <el-option :label="t('uiAutomation.testCase.actionSwitchTab')" value="switchTab" />
+                            <el-option label="刷新当前页" value="refreshCurrentPage" />
                             <el-option :label="t('uiAutomation.testCase.actionCloseCurrentPage')" value="closeCurrentPage" />
                           </el-select>
                         </div>
@@ -2324,7 +2325,7 @@ const needsWaitTime = (actionType) => {
 }
 
 const needsElement = (actionType) => {
-  return !['wait', 'switchTab', 'screenshot', 'closeCurrentPage'].includes(actionType)
+  return !['wait', 'switchTab', 'screenshot', 'refreshCurrentPage', 'closeCurrentPage'].includes(actionType)
 }
 
 const expandAllSteps = () => {
@@ -2790,6 +2791,7 @@ const getActionTypeText = (actionType) => {
     'assert': t('uiAutomation.testCase.actionType.assert'),
     'wait': t('uiAutomation.testCase.actionType.wait'),
     'switchTab': t('uiAutomation.testCase.actionSwitchTab'),
+    'refreshCurrentPage': '刷新当前页',
     'closeCurrentPage': t('uiAutomation.testCase.actionCloseCurrentPage')
   }
   return textMap[actionType] || actionType
@@ -2839,6 +2841,7 @@ const getActionText = (actionType) => {
     'assert': t('uiAutomation.testCase.actionText.assert'),
     'wait': t('uiAutomation.testCase.actionText.wait'),
     'switchTab': t('uiAutomation.testCase.actionSwitchTab'),
+    'refreshCurrentPage': '刷新当前页',
     'closeCurrentPage': t('uiAutomation.testCase.actionCloseCurrentPage')
   }
   return actionMap[actionType] || actionType

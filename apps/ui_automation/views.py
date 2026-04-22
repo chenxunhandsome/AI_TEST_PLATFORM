@@ -10,11 +10,13 @@ from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
 from django.db import models, transaction
 from django.utils import timezone
+import asyncio
 import logging
 import json
 import re
 import random
 import time
+import traceback
 import uuid
 from urllib.parse import quote
 
@@ -51,7 +53,6 @@ from .variable_resolver import resolve_variables, set_runtime_variable
 from .project_runtime import (
     initialize_project_runtime_variables,
 )
-from .browser_config import get_browser_resolution_label
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -115,10 +116,58 @@ def _append_skipped_step_result(step_results, step_number, action_type, descript
     })
 
 
+def _record_execution_runtime_failure(
+    execution_result,
+    detailed_errors,
+    step_results,
+    execution_logs,
+    *,
+    action_type,
+    description,
+    message,
+    details='',
+):
+    execution_result['status'] = 'failed'
+    execution_result['error_message'] = message
+
+    detailed_errors.append({
+        'step_number': None,
+        'action_type': action_type,
+        'element': '',
+        'message': message,
+        'details': details or message,
+        'description': description,
+    })
+
+    if not step_results:
+        step_results.append({
+            'step_number': None,
+            'action_type': action_type,
+            'description': description,
+            'success': False,
+            'error': message,
+            'status': 'failed',
+            'message': message,
+        })
+
+    execution_logs.append("========== 执行异常 ==========")
+    execution_logs.append(f"✗ {message}")
+    if details and details != message:
+        execution_logs.append(details)
+
+
 def get_accessible_projects_for_user(user):
     return UiProject.objects.filter(
         models.Q(owner=user) | models.Q(members=user)
     ).distinct()
+
+
+def _create_playwright_event_loop():
+    """在 Windows 上为 Playwright 显式创建支持子进程的事件循环。"""
+    proactor_loop = getattr(asyncio, 'ProactorEventLoop', None)
+    if proactor_loop is not None:
+        return proactor_loop()
+    return asyncio.new_event_loop()
 
 
 def get_accessible_project_for_request(request, project_id):
@@ -1905,6 +1954,13 @@ class TestCaseViewSet(viewsets.ModelViewSet):
             log_parts.append(f"- 等待时间: {step.wait_time / 1000}秒")
             log_parts.append(f"- 等待完成")
 
+        elif step.action_type == 'refreshCurrentPage':
+            log_parts.append("刷新当前页面")
+            if step_result == 'success':
+                log_parts.append(f"- 页面刷新成功 - 耗时 {execution_time}s")
+            else:
+                log_parts.append("- 页面刷新失败 - 当前页面不可用或刷新超时")
+
         else:
             # 默认处理其他操作类型
             log_parts.append(f"执行操作: {step.action_type}")
@@ -2073,7 +2129,6 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                         }]
                     }, status=status.HTTP_400_BAD_REQUEST)
             else:
-                import asyncio
                 import threading
                 from .playwright_engine import PlaywrightTestEngine
 
@@ -2138,19 +2193,14 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                 # Selenium同步执行
                 def run_test_selenium():
                     """使用Selenium执行测试"""
-                    browser_type = request.data.get('browser', 'chrome')
-                    headless = request.data.get('headless', False)
-
-                    # 创建Selenium引擎实例
-                    engine = SeleniumTestEngine(
-                        browser_type=browser_type,
-                        headless=headless,
-                        browser_width=test_case.project.browser_width,
-                        browser_height=test_case.project.browser_height,
-                    )
-                    initialize_project_runtime_variables(project=test_case.project)
-
                     try:
+                        browser_type = request.data.get('browser', 'chrome')
+                        headless = request.data.get('headless', False)
+
+                        # 创建Selenium引擎实例
+                        engine = SeleniumTestEngine(browser_type=browser_type, headless=headless)
+                        initialize_project_runtime_variables(project=test_case.project)
+
                         # 启动浏览器
                         execution_logs.append("========== 初始化浏览器 ==========")
                         try:
@@ -2285,7 +2335,6 @@ class TestCaseViewSet(viewsets.ModelViewSet):
 
                                 except Exception as e:
                                     execution_logs.append(f"  ✗ 步骤执行异常: {str(e)}")
-                                    import traceback
                                     tb_str = traceback.format_exc()
                                     execution_logs.append(f"  [调试] 异常堆栈:\n{tb_str}")
 
@@ -2334,11 +2383,26 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                             execution_logs.append("警告: 测试用例没有定义任何步骤")
                             return True
 
+                    except Exception as e:
+                        _record_execution_runtime_failure(
+                            execution_result,
+                            detailed_errors,
+                            step_results,
+                            execution_logs,
+                            action_type='selenium_runtime',
+                            description='Selenium 服务器执行线程异常',
+                            message=f"Selenium 执行异常: {str(e)}",
+                            details=traceback.format_exc(),
+                        )
+                        return False
                     finally:
                         execution_logs.append("")
                         execution_logs.append("========== 清理资源 ==========")
-                        engine.stop()
-                        execution_logs.append("✓ 浏览器已关闭")
+                        try:
+                            engine.stop()
+                            execution_logs.append("✓ 浏览器已关闭")
+                        except Exception as stop_error:
+                            execution_logs.append(f"✗ 浏览器关闭异常: {stop_error}")
 
                 # 在独立线程中运行Selenium测试
                 import threading
@@ -2350,221 +2414,229 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                 # Playwright异步执行
                 def run_test_in_thread():
                     """在独立线程中运行异步测试"""
+                    try:
+                        async def run_test():
+                            """异步执行测试"""
+                            # 根据浏览器类型选择
+                            browser_map = {
+                                'chrome': 'chromium',
+                                'firefox': 'firefox',
+                                'safari': 'webkit'
+                            }
+                            browser_type = browser_map.get(request.data.get('browser', 'chrome'), 'chromium')
+                            headless = request.data.get('headless', False)
 
-                    async def run_test():
-                        """异步执行测试"""
-                        # 根据浏览器类型选择
-                        browser_map = {
-                            'chrome': 'chromium',
-                            'firefox': 'firefox',
-                            'safari': 'webkit'
-                        }
-                        browser_type = browser_map.get(request.data.get('browser', 'chrome'), 'chromium')
-                        headless = request.data.get('headless', False)
+                            # 创建Playwright引擎实例
+                            engine = PlaywrightTestEngine(browser_type=browser_type, headless=headless)
+                            initialize_project_runtime_variables(project=test_case.project)
 
-                        # 创建Playwright引擎实例
-                        engine = PlaywrightTestEngine(
-                            browser_type=browser_type,
-                            headless=headless,
-                            browser_width=test_case.project.browser_width,
-                            browser_height=test_case.project.browser_height,
-                        )
-                        initialize_project_runtime_variables(project=test_case.project)
-
-                        try:
-                            # 启动浏览器
-                            execution_logs.append("========== 初始化浏览器 ==========")
-                            await engine.start()
-                            mode_text = "无头模式" if headless else "有头模式"
-                            execution_logs.append(
-                                f"✓ {browser_type.capitalize()} 浏览器启动成功 (Playwright, {mode_text})")
-                            execution_logs.append("")
-
-                            # 导航到项目基础URL
-                            if test_case.project.base_url:
-                                execution_logs.append("========== 导航到测试页面 ==========")
-                                success, nav_log = await engine.navigate(test_case.project.base_url)
-                                execution_logs.append(nav_log)
+                            try:
+                                # 启动浏览器
+                                execution_logs.append("========== 初始化浏览器 ==========")
+                                await engine.start()
+                                mode_text = "无头模式" if headless else "有头模式"
+                                execution_logs.append(
+                                    f"✓ {browser_type.capitalize()} 浏览器启动成功 (Playwright, {mode_text})")
                                 execution_logs.append("")
 
-                                if not success:
-                                    execution_result['status'] = 'failed'
-                                    execution_result['error_message'] = nav_log
-                                    return False
+                                # 导航到项目基础URL
+                                if test_case.project.base_url:
+                                    execution_logs.append("========== 导航到测试页面 ==========")
+                                    success, nav_log = await engine.navigate(test_case.project.base_url)
+                                    execution_logs.append(nav_log)
+                                    execution_logs.append("")
 
-                            if steps_data:
-                                execution_logs.append("========== 执行测试步骤 ==========")
-                                step_count = len(steps_data)
-                                execution_logs.append(f"共有 {step_count} 个步骤需要执行")
-                                execution_logs.append("")
+                                    if not success:
+                                        execution_result['status'] = 'failed'
+                                        execution_result['error_message'] = nav_log
+                                        return False
 
-                                for i, step_info in enumerate(steps_data, 1):
-                                    execution_logs.append(f"========== 开始执行步骤 {i}/{step_count} ==========")
-                                    execution_logs.append(f"步骤 {i}/{step_count}:")
+                                if steps_data:
+                                    execution_logs.append("========== 执行测试步骤 ==========")
+                                    step_count = len(steps_data)
+                                    execution_logs.append(f"共有 {step_count} 个步骤需要执行")
+                                    execution_logs.append("")
 
-                                    # 从预先获取的数据中获取信息
-                                    step = step_info['step']
-                                    action_type = step_info['action_type']
-                                    description = step_info['description']
-                                    element_data = step_info['element_data']
+                                    for i, step_info in enumerate(steps_data, 1):
+                                        execution_logs.append(f"========== 开始执行步骤 {i}/{step_count} ==========")
+                                        execution_logs.append(f"步骤 {i}/{step_count}:")
 
-                                    # 获取操作类型的中文显示
-                                    action_choices_dict = dict(TestCaseStep.ACTION_TYPE_CHOICES)
-                                    action_type_text = action_choices_dict.get(action_type, action_type)
-                                    execution_logs.append(f"  操作: {action_type_text}")
+                                        # 从预先获取的数据中获取信息
+                                        step = step_info['step']
+                                        action_type = step_info['action_type']
+                                        description = step_info['description']
+                                        element_data = step_info['element_data']
 
-                                    if description:
-                                        execution_logs.append(f"  说明: {description}")
+                                        # 获取操作类型的中文显示
+                                        action_choices_dict = dict(TestCaseStep.ACTION_TYPE_CHOICES)
+                                        action_type_text = action_choices_dict.get(action_type, action_type)
+                                        execution_logs.append(f"  操作: {action_type_text}")
 
-                                    if element_data:
-                                        execution_logs.append(f"  元素: {element_data['name']}")
-                                        execution_logs.append(
-                                            f"  定位器: {element_data['locator_strategy']}={element_data['locator_value']}")
-                                    else:
-                                        execution_logs.append(f"  (此步骤不需要元素)")
+                                        if description:
+                                            execution_logs.append(f"  说明: {description}")
 
-                                    if step_info.get('is_enabled', True) is False:
-                                        execution_logs.append("  步骤已禁用，已跳过执行")
-                                        execution_logs.append("")
-                                        _append_skipped_step_result(step_results, i, action_type, description)
-                                        continue
+                                        if element_data:
+                                            execution_logs.append(f"  元素: {element_data['name']}")
+                                            execution_logs.append(
+                                                f"  定位器: {element_data['locator_strategy']}={element_data['locator_value']}")
+                                        else:
+                                            execution_logs.append(f"  (此步骤不需要元素)")
 
-                                    # 执行步骤
-                                    try:
-                                        execution_logs.append(f"  [调试] 准备执行步骤...")
-                                        resolved_input_value, resolved_assert_value = resolve_step_runtime_payload(step)
-                                        step.input_value = resolved_input_value
-                                        step.assert_value = resolved_assert_value
-                                        success, step_log, screenshot_base64 = await engine.execute_step(step,
-                                                                                                         element_data or {})
-                                        if success:
-                                            store_step_runtime_variable(
-                                                step,
-                                                action_type,
-                                                resolved_input_value,
-                                                resolved_assert_value
-                                            )
-                                        execution_logs.append(f"  [调试] 步骤执行完成, success={success}")
+                                        if step_info.get('is_enabled', True) is False:
+                                            execution_logs.append("  步骤已禁用，已跳过执行")
+                                            execution_logs.append("")
+                                            _append_skipped_step_result(step_results, i, action_type, description)
+                                            continue
 
-                                        execution_logs.append(f"  {step_log}")
-                                        execution_logs.append("")
+                                        # 执行步骤
+                                        try:
+                                            execution_logs.append(f"  [调试] 准备执行步骤...")
+                                            resolved_input_value, resolved_assert_value = resolve_step_runtime_payload(step)
+                                            step.input_value = resolved_input_value
+                                            step.assert_value = resolved_assert_value
+                                            success, step_log, screenshot_base64 = await engine.execute_step(step,
+                                                                                                             element_data or {})
+                                            if success:
+                                                store_step_runtime_variable(
+                                                    step,
+                                                    action_type,
+                                                    resolved_input_value,
+                                                    resolved_assert_value
+                                                )
+                                            execution_logs.append(f"  [调试] 步骤执行完成, success={success}")
 
-                                        # 记录步骤执行结果（用于JSON格式）
-                                        step_results.append({
-                                            'step_number': i,
-                                            'action_type': action_type,
-                                            'description': description or '',
-                                            'success': success,
-                                            'error': None if success else step_log,
-                                            'status': 'passed' if success else 'failed',
-                                            'message': ''
-                                        })
+                                            execution_logs.append(f"  {step_log}")
+                                            execution_logs.append("")
 
-                                        # 如果步骤失败,保存截图
-                                        if not success:
-                                            execution_logs.append(f"  [调试] 检测到步骤失败,准备处理...")
-
-                                            # 如果没有截图,捕获一张
-                                            if not screenshot_base64:
-                                                screenshot_base64 = await engine.capture_screenshot()
-
-                                            return _record_step_failure(
-                                                execution_result,
-                                                detailed_errors,
-                                                screenshots,
-                                                execution_logs,
-                                                step_number=i,
-                                                step_count=step_count,
-                                                action_type_text=action_type_text,
-                                                element_data=element_data,
-                                                description=description,
-                                                step_log=step_log,
-                                                screenshot_base64=screenshot_base64,
-                                            )
-
-                                        # 如果是截图步骤且成功,也保存截图
-                                        if action_type == 'screenshot' and screenshot_base64:
-                                            screenshots.append({
-                                                'url': screenshot_base64,
-                                                'description': f'步骤 {i}: {description or "手动截图"}',
+                                            # 记录步骤执行结果（用于JSON格式）
+                                            step_results.append({
                                                 'step_number': i,
-                                                'timestamp': timezone.now().isoformat()
-                                                # 移除 loaded 和 error 字段，让前端自行处理
+                                                'action_type': action_type,
+                                                'description': description or '',
+                                                'success': success,
+                                                'error': None if success else step_log,
+                                                'status': 'passed' if success else 'failed',
+                                                'message': ''
                                             })
 
-                                        execution_logs.append(f"  [调试] 步骤 {i} 成功完成,准备执行下一步...")
+                                            # 如果步骤失败,保存截图
+                                            if not success:
+                                                execution_logs.append(f"  [调试] 检测到步骤失败,准备处理...")
 
-                                    except Exception as e:
-                                        execution_logs.append(f"  ✗ 步骤执行异常: {str(e)}")
-                                        execution_logs.append(f"  [调试] 异常详情: {repr(e)}")
-                                        import traceback
-                                        tb_str = traceback.format_exc()
-                                        execution_logs.append(f"  [调试] 异常堆栈:\n{tb_str}")
+                                                # 如果没有截图,捕获一张
+                                                if not screenshot_base64:
+                                                    screenshot_base64 = await engine.capture_screenshot()
 
-                                        # 记录步骤执行结果（异常情况）
-                                        step_results.append({
-                                            'step_number': i,
-                                            'action_type': action_type,
-                                            'description': description or '',
-                                            'success': False,
-                                            'error': str(e),
-                                            'status': 'failed',
-                                            'message': ''
-                                        })
+                                                return _record_step_failure(
+                                                    execution_result,
+                                                    detailed_errors,
+                                                    screenshots,
+                                                    execution_logs,
+                                                    step_number=i,
+                                                    step_count=step_count,
+                                                    action_type_text=action_type_text,
+                                                    element_data=element_data,
+                                                    description=description,
+                                                    step_log=step_log,
+                                                    screenshot_base64=screenshot_base64,
+                                                )
 
-                                        execution_result['status'] = 'failed'
-                                        execution_result['error_message'] = f"步骤 {i} 执行异常: {str(e)}"
-
-                                        # 添加详细错误信息
-                                        element_info = element_data['name'] if element_data else "未知元素"
-                                        detailed_errors.append({
-                                            'step_number': i,
-                                            'action_type': action_type_text,
-                                            'element': element_info,
-                                            'message': f"步骤 {i}/{step_count} 执行异常",
-                                            'details': f"异常: {str(e)}\n\n堆栈跟踪:\n{tb_str}",
-                                            'description': description or ''
-                                        })
-
-                                        # 捕获异常截图
-                                        try:
-                                            screenshot_base64 = await engine.capture_screenshot()
-                                            if screenshot_base64:
+                                            # 如果是截图步骤且成功,也保存截图
+                                            if action_type == 'screenshot' and screenshot_base64:
                                                 screenshots.append({
                                                     'url': screenshot_base64,
-                                                    'description': f'步骤 {i} 异常截图: {str(e)}',
+                                                    'description': f'步骤 {i}: {description or "手动截图"}',
                                                     'step_number': i,
                                                     'timestamp': timezone.now().isoformat()
                                                     # 移除 loaded 和 error 字段，让前端自行处理
                                                 })
-                                        except:
-                                            pass
 
-                                        execution_logs.append(f"  [调试] 发生异常,准备退出执行...")
-                                        return False
+                                            execution_logs.append(f"  [调试] 步骤 {i} 成功完成,准备执行下一步...")
 
-                                # 所有步骤都成功
-                                execution_logs.append(f"========== 执行完成 ({step_count} 个步骤全部通过) ==========")
-                                return True
+                                        except Exception as e:
+                                            execution_logs.append(f"  ✗ 步骤执行异常: {str(e)}")
+                                            execution_logs.append(f"  [调试] 异常详情: {repr(e)}")
+                                            tb_str = traceback.format_exc()
+                                            execution_logs.append(f"  [调试] 异常堆栈:\n{tb_str}")
 
-                            else:
-                                execution_logs.append("警告: 测试用例没有定义任何步骤")
-                                return True
+                                            # 记录步骤执行结果（异常情况）
+                                            step_results.append({
+                                                'step_number': i,
+                                                'action_type': action_type,
+                                                'description': description or '',
+                                                'success': False,
+                                                'error': str(e),
+                                                'status': 'failed',
+                                                'message': ''
+                                            })
 
+                                            execution_result['status'] = 'failed'
+                                            execution_result['error_message'] = f"步骤 {i} 执行异常: {str(e)}"
+
+                                            # 添加详细错误信息
+                                            element_info = element_data['name'] if element_data else "未知元素"
+                                            detailed_errors.append({
+                                                'step_number': i,
+                                                'action_type': action_type_text,
+                                                'element': element_info,
+                                                'message': f"步骤 {i}/{step_count} 执行异常",
+                                                'details': f"异常: {str(e)}\n\n堆栈跟踪:\n{tb_str}",
+                                                'description': description or ''
+                                            })
+
+                                            # 捕获异常截图
+                                            try:
+                                                screenshot_base64 = await engine.capture_screenshot()
+                                                if screenshot_base64:
+                                                    screenshots.append({
+                                                        'url': screenshot_base64,
+                                                        'description': f'步骤 {i} 异常截图: {str(e)}',
+                                                        'step_number': i,
+                                                        'timestamp': timezone.now().isoformat()
+                                                        # 移除 loaded 和 error 字段，让前端自行处理
+                                                    })
+                                            except Exception:
+                                                pass
+
+                                            execution_logs.append(f"  [调试] 发生异常,准备退出执行...")
+                                            return False
+
+                                    # 所有步骤都成功
+                                    execution_logs.append(f"========== 执行完成 ({step_count} 个步骤全部通过) ==========")
+                                    return True
+
+                                else:
+                                    execution_logs.append("警告: 测试用例没有定义任何步骤")
+                                    return True
+
+                            finally:
+                                # 关闭浏览器
+                                execution_logs.append("")
+                                execution_logs.append("========== 清理资源 ==========")
+                                try:
+                                    await engine.stop()
+                                    execution_logs.append("✓ 浏览器已关闭")
+                                except Exception as stop_error:
+                                    execution_logs.append(f"✗ 浏览器关闭异常: {stop_error}")
+
+                        # 在新的事件循环中运行测试
+                        loop = _create_playwright_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            loop.run_until_complete(run_test())
                         finally:
-                            # 关闭浏览器
-                            execution_logs.append("")
-                            execution_logs.append("========== 清理资源 ==========")
-                            await engine.stop()
-                            execution_logs.append("✓ 浏览器已关闭")
-
-                    # 在新的事件循环中运行测试
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    try:
-                        loop.run_until_complete(run_test())
-                    finally:
-                        loop.close()
+                            loop.close()
+                    except Exception as e:
+                        _record_execution_runtime_failure(
+                            execution_result,
+                            detailed_errors,
+                            step_results,
+                            execution_logs,
+                            action_type='playwright_runtime',
+                            description='Playwright 服务器执行线程异常',
+                            message=f"Playwright 执行异常: {str(e)}",
+                            details=traceback.format_exc(),
+                        )
 
                 # 在独立线程中运行Playwright测试
                 import threading
@@ -2572,13 +2644,25 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                 test_thread.start()
                 test_thread.join()  # 等待测试完成
 
+            if execution_result['status'] == 'passed' and steps_data and not step_results:
+                _record_execution_runtime_failure(
+                    execution_result,
+                    detailed_errors,
+                    step_results,
+                    execution_logs,
+                    action_type='execution_validation',
+                    description='服务器执行完成后未生成任何步骤结果',
+                    message='执行未产出任何步骤结果，测试可能未真正启动',
+                    details='检测到测试用例包含步骤，但执行完成后没有任何步骤结果输出。'
+                )
+
             # 计算总执行时间
             total_time = round(time.time() - start_time, 2)
             execution_logs.append("")
             execution_logs.append("执行环境信息:")
             execution_logs.append(f"- 执行引擎: {engine_type.upper()}")
             execution_logs.append(f"- 浏览器: {request.data.get('browser', 'chrome').capitalize()}")
-            execution_logs.append(f"- 屏幕分辨率: {get_browser_resolution_label(project=test_case.project)}")
+            execution_logs.append(f"- 屏幕分辨率: 1920x1080")
             execution_logs.append(f"- 总执行时间: {total_time}秒")
 
             if screenshots:
@@ -2633,7 +2717,6 @@ class TestCaseViewSet(viewsets.ModelViewSet):
 
         except Exception as e:
             logger.error(f"执行测试用例失败: {str(e)}")
-            import traceback
             traceback.print_exc()
             return Response({
                 'success': False,
@@ -3035,12 +3118,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                         continue
 
                                     # 创建Selenium引擎实例并执行
-                                    engine = SeleniumTestEngine(
-                                        browser_type=task.browser,
-                                        headless=task.headless,
-                                        browser_width=test_case.project.browser_width,
-                                        browser_height=test_case.project.browser_height,
-                                    )
+                                    engine = SeleniumTestEngine(browser_type=task.browser, headless=task.headless)
                                     initialize_project_runtime_variables(project=test_case.project)
 
                                     try:
@@ -3127,7 +3205,6 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                         engine.stop()
 
                                 else:  # Playwright
-                                    import asyncio
                                     from asgiref.sync import sync_to_async
                                     from .playwright_engine import PlaywrightTestEngine
 
@@ -3139,12 +3216,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                         }
                                         browser_type = browser_map.get(task.browser, 'chromium')
 
-                                        engine = PlaywrightTestEngine(
-                                            browser_type=browser_type,
-                                            headless=task.headless,
-                                            browser_width=test_case.project.browser_width,
-                                            browser_height=test_case.project.browser_height,
-                                        )
+                                        engine = PlaywrightTestEngine(browser_type=browser_type, headless=task.headless)
                                         initialize_project_runtime_variables(project=test_case.project)
 
                                         try:
@@ -3235,7 +3307,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                             await engine.stop()
 
                                     # 在新的事件循环中运行Playwright测试
-                                    loop = asyncio.new_event_loop()
+                                    loop = _create_playwright_event_loop()
                                     asyncio.set_event_loop(loop)
                                     try:
                                         loop.run_until_complete(run_playwright_test())

@@ -1,0 +1,35 @@
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ('ui_automation', '0009_alter_testcasestep_action_type'),
+    ]
+
+    operations = [
+        migrations.AlterField(
+            model_name='testcasestep',
+            name='action_type',
+            field=models.CharField(
+                choices=[
+                    ('click', '点击'),
+                    ('fill', '输入文本'),
+                    ('fillAndEnter', '输入并回车'),
+                    ('getText', '获取文本'),
+                    ('waitFor', '等待元素'),
+                    ('hover', '悬停'),
+                    ('scroll', '滚动'),
+                    ('drag', '拖拽'),
+                    ('screenshot', '截图'),
+                    ('assert', '断言'),
+                    ('wait', '等待'),
+                    ('switchTab', '切换标签页'),
+                    ('refreshCurrentPage', '刷新当前页'),
+                    ('closeCurrentPage', '关闭当前页面'),
+                ],
+                max_length=20,
+                verbose_name='操作类型',
+            ),
+        ),
+    ]

@@ -12,10 +12,6 @@ from typing import Dict, List, Optional, Tuple
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext, TimeoutError as PlaywrightTimeout
 import logging
 from .variable_resolver import resolve_variables, set_runtime_variable
-from .browser_config import (
-    get_chromium_window_size_argument,
-    resolve_browser_resolution,
-)
 
 logger = logging.getLogger(__name__)
 RUNTIME_VARIABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
@@ -35,7 +31,7 @@ def append_runtime_variable_log(step, log, value):
 class PlaywrightTestEngine:
     """Playwright测试执行引擎"""
 
-    def __init__(self, browser_type='chromium', headless=True, browser_width=None, browser_height=None):
+    def __init__(self, browser_type='chromium', headless=True):
         """
         初始化测试引擎
 
@@ -45,10 +41,6 @@ class PlaywrightTestEngine:
         """
         self.browser_type = browser_type
         self.headless = headless
-        self.browser_width, self.browser_height = resolve_browser_resolution(
-            browser_width=browser_width,
-            browser_height=browser_height,
-        )
         self.playwright = None
         self.browser: Optional[Browser] = None
         self.context: Optional[BrowserContext] = None
@@ -171,12 +163,6 @@ class PlaywrightTestEngine:
                 '--allow-insecure-localhost',  # 允许不安全localhost
                 '--disable-web-security',  # 禁用web安全限制（跨域）
             ]
-            launch_args.append(
-                get_chromium_window_size_argument(
-                    browser_width=self.browser_width,
-                    browser_height=self.browser_height,
-                )
-            )
             if self.browser_type == 'chromium':
                 launch_args.extend([
                     '--disable-translate',
@@ -190,8 +176,7 @@ class PlaywrightTestEngine:
 
             # 创建浏览器上下文
             context_options = {
-                'viewport': {'width': self.browser_width, 'height': self.browser_height},
-                'screen': {'width': self.browser_width, 'height': self.browser_height},
+                'viewport': {'width': 1920, 'height': 1080},
                 'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
                 'locale': 'zh-CN',
             }
@@ -427,6 +412,27 @@ class PlaywrightTestEngine:
 
             elif action_type == 'closeCurrentPage':
                 return await self._close_current_page(start_time)
+
+            elif action_type == 'refreshCurrentPage':
+                if self.page is None or (hasattr(self.page, 'is_closed') and self.page.is_closed()):
+                    return False, "✗ 刷新当前页失败: 当前没有可刷新的页面", None
+
+                await self.page.reload(wait_until='domcontentloaded', timeout=30000)
+                try:
+                    await self.page.wait_for_load_state('networkidle', timeout=10000)
+                except Exception:
+                    try:
+                        await self.page.wait_for_load_state('domcontentloaded', timeout=5000)
+                    except Exception:
+                        pass
+                if hasattr(self.page, 'wait_for_timeout'):
+                    await self.page.wait_for_timeout(1000)
+
+                execution_time = round(time.time() - start_time, 2)
+                log = "✓ 刷新当前页面成功\n"
+                log += f"  - 当前页面: {self.page.url}\n"
+                log += f"  - 执行时间: {execution_time}秒"
+                return True, log, None
 
             # 其他操作需要元素定位器
             # 获取元素定位器

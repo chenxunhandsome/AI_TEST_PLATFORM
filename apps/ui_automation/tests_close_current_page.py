@@ -30,6 +30,7 @@ class FakeAsyncPlaywrightPage:
         self.events = {}
         self.load_state_calls = []
         self.wait_timeout_calls = []
+        self.reload_calls = []
 
     def on(self, event_name, handler):
         self.events[event_name] = handler
@@ -45,6 +46,9 @@ class FakeAsyncPlaywrightPage:
 
     async def goto(self, url, **kwargs):
         self.url = url
+
+    async def reload(self, **kwargs):
+        self.reload_calls.append(kwargs)
 
     async def title(self):
         return 'Fake Async Page'
@@ -109,6 +113,7 @@ class FakeSeleniumDriver:
         self.urls = {'main': 'http://example.com'}
         self.current_url = self.urls['main']
         self.switch_to = FakeSeleniumSwitchTo(self, alert=alert)
+        self.refresh_count = 0
 
     def open_new_window(self):
         handle = f'window-{len(self.window_handles) + 1}'
@@ -120,6 +125,14 @@ class FakeSeleniumDriver:
     def get(self, url):
         self.urls[self.current_window_handle] = url
         self.current_url = url
+
+    def refresh(self):
+        self.refresh_count += 1
+
+    def execute_script(self, script):
+        if script == "return document.readyState":
+            return "complete"
+        return None
 
     def close(self):
         closed_handle = self.current_window_handle
@@ -178,6 +191,23 @@ class FakeSyncPlaywrightContext:
 
 
 class CloseCurrentPageEngineTests(IsolatedAsyncioTestCase):
+    async def test_playwright_refresh_current_page_reloads_active_page(self):
+        engine = PlaywrightTestEngine()
+        context = FakeAsyncPlaywrightContext()
+        current_page = FakeAsyncPlaywrightPage(context, 'http://example.com/current')
+        context.pages.append(current_page)
+        engine.context = context
+        engine.page = current_page
+
+        success, log, screenshot = await engine.execute_step(make_step('refreshCurrentPage'), {})
+
+        self.assertTrue(success)
+        self.assertIsNone(screenshot)
+        self.assertEqual(len(current_page.reload_calls), 1)
+        self.assertIn(('networkidle', 10000), current_page.load_state_calls)
+        self.assertIn(1000, current_page.wait_timeout_calls)
+        self.assertIn('刷新当前页面成功', log)
+
     async def test_playwright_close_current_page_closes_dialog_and_page(self):
         engine = PlaywrightTestEngine()
         context = FakeAsyncPlaywrightContext()
@@ -252,6 +282,17 @@ class CloseCurrentPageEngineTests(IsolatedAsyncioTestCase):
 
 
 class CloseCurrentPageSeleniumEngineTests(TestCase):
+    def test_selenium_refresh_current_page_refreshes_driver(self):
+        engine = SeleniumTestEngine()
+        engine.driver = FakeSeleniumDriver()
+
+        success, log, screenshot = engine.execute_step(make_step('refreshCurrentPage'), {})
+
+        self.assertTrue(success)
+        self.assertIsNone(screenshot)
+        self.assertEqual(engine.driver.refresh_count, 1)
+        self.assertIn('刷新当前页面成功', log)
+
     def test_selenium_close_current_page_closes_alert_first(self):
         engine = SeleniumTestEngine()
         alert = FakeAlert('Need close')
