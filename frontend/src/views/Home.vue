@@ -33,7 +33,7 @@
           </template>
         </el-dropdown>
       </div>
-      <h1 class="main-title">{{ $t('home.title') }}</h1>
+      <h1 class="main-title">达美盛测试平台</h1>
       <p class="subtitle">{{ $t('home.subtitle') }}</p>
 
       <div class="cards-container">
