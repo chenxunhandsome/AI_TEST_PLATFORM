@@ -128,6 +128,11 @@ class Command(BaseCommand):
     def schedule_ui_tasks(self):
         """调度 UI 自动化模块的定时任务"""
         try:
+            from apps.ui_automation.execution_dispatcher import (
+                initialize_local_task_result,
+                queue_local_suite_execution,
+                queue_local_test_case_executions,
+            )
             from apps.ui_automation.models import UiScheduledTask
 
             # 获取所有活跃的定时任务
@@ -179,6 +184,34 @@ class Command(BaseCommand):
                                 task.refresh_from_db()
                                 task.next_run_time = task.calculate_next_run()
                                 task.save()
+                                continue
+
+                            if task.execution_mode == 'local':
+                                if not task.assigned_runner:
+                                    self.stdout.write(self.style.ERROR(f"    ✗ 任务 {task.name} 未配置本地执行器"))
+                                    task.refresh_from_db()
+                                    task.failed_runs += 1
+                                    task.error_message = '本地执行模式未配置本地执行器'
+                                    task.last_result = {'status': 'failed', 'error': task.error_message}
+                                    task.next_run_time = task.calculate_next_run()
+                                    task.save()
+                                    continue
+
+                                executions, run_identifier = queue_local_suite_execution(
+                                    test_suite,
+                                    engine=task.engine,
+                                    browser=task.browser,
+                                    headless=task.headless,
+                                    created_by=task.created_by,
+                                    assigned_runner=task.assigned_runner,
+                                    execution_source='scheduled',
+                                    scheduled_task=task,
+                                )
+                                task.next_run_time = task.calculate_next_run()
+                                task.save(update_fields=['next_run_time'])
+                                initialize_local_task_result(task, run_identifier, len(executions))
+                                self.stdout.write(f"    已下发到本地执行器: {task.assigned_runner.name} ({len(executions)} 个用例)")
+                                executed_count += 1
                                 continue
 
                             # 更新套件执行状态
@@ -323,6 +356,35 @@ class Command(BaseCommand):
 
                             test_case_count = test_cases_list.count()
                             self.stdout.write(f"    准备执行 {test_case_count} 个测试用例")
+
+                            if task.execution_mode == 'local':
+                                if not task.assigned_runner:
+                                    self.stdout.write(self.style.ERROR(f"    ✗ 任务 {task.name} 未配置本地执行器"))
+                                    task.refresh_from_db()
+                                    task.failed_runs += 1
+                                    task.error_message = '本地执行模式未配置本地执行器'
+                                    task.last_result = {'status': 'failed', 'error': task.error_message}
+                                    task.next_run_time = task.calculate_next_run()
+                                    task.save()
+                                    continue
+
+                                executions, run_identifier = queue_local_test_case_executions(
+                                    test_cases_list,
+                                    project=task.project,
+                                    engine=task.engine,
+                                    browser=task.browser,
+                                    headless=task.headless,
+                                    created_by=task.created_by,
+                                    assigned_runner=task.assigned_runner,
+                                    execution_source='scheduled',
+                                    scheduled_task=task,
+                                )
+                                task.next_run_time = task.calculate_next_run()
+                                task.save(update_fields=['next_run_time'])
+                                initialize_local_task_result(task, run_identifier, len(executions))
+                                self.stdout.write(f"    已下发到本地执行器: {task.assigned_runner.name} ({len(executions)} 个用例)")
+                                executed_count += 1
+                                continue
 
                             # 为每个测试用例创建一个临时的测试套件来执行
                             import threading

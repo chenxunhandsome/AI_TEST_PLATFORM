@@ -10,12 +10,6 @@ from .models import (
 )
 from django.contrib.auth import get_user_model
 from .project_runtime import normalize_project_global_variables
-from .browser_config import (
-    MAX_BROWSER_HEIGHT,
-    MAX_BROWSER_WIDTH,
-    MIN_BROWSER_HEIGHT,
-    MIN_BROWSER_WIDTH,
-)
 
 User = get_user_model()
 
@@ -47,7 +41,6 @@ class UiProjectSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'name', 'description', 'status', 'base_url',
             'start_date', 'end_date', 'owner', 'members', 'global_variables',
-            'browser_width', 'browser_height',
             'created_at', 'updated_at'
         )
         read_only_fields = ('created_at', 'updated_at')
@@ -60,15 +53,10 @@ class UiProjectCreateSerializer(serializers.ModelSerializer):
         required=False
     )
     global_variables = serializers.JSONField(required=False)
-    browser_width = serializers.IntegerField(required=False, min_value=MIN_BROWSER_WIDTH, max_value=MAX_BROWSER_WIDTH)
-    browser_height = serializers.IntegerField(required=False, min_value=MIN_BROWSER_HEIGHT, max_value=MAX_BROWSER_HEIGHT)
 
     class Meta:
         model = UiProject
-        fields = (
-            'name', 'description', 'status', 'base_url', 'start_date', 'end_date',
-            'member_ids', 'global_variables', 'browser_width', 'browser_height'
-        )
+        fields = ('name', 'description', 'status', 'base_url', 'start_date', 'end_date', 'member_ids', 'global_variables')
 
     def validate_member_ids(self, value):
         resolve_member_ids(value)
@@ -94,15 +82,10 @@ class UiProjectUpdateSerializer(serializers.ModelSerializer):
         required=False
     )
     global_variables = serializers.JSONField(required=False)
-    browser_width = serializers.IntegerField(required=False, min_value=MIN_BROWSER_WIDTH, max_value=MAX_BROWSER_WIDTH)
-    browser_height = serializers.IntegerField(required=False, min_value=MIN_BROWSER_HEIGHT, max_value=MAX_BROWSER_HEIGHT)
 
     class Meta:
         model = UiProject
-        fields = (
-            'name', 'description', 'status', 'base_url', 'start_date', 'end_date',
-            'member_ids', 'global_variables', 'browser_width', 'browser_height'
-        )
+        fields = ('name', 'description', 'status', 'base_url', 'start_date', 'end_date', 'member_ids', 'global_variables')
 
     def validate_member_ids(self, value):
         resolve_member_ids(value)
@@ -665,10 +648,26 @@ class TestCaseSerializer(serializers.ModelSerializer):
         read_only_fields = ['created_by']
 
     def validate(self, attrs):
+        name = attrs.get('name', serializers.empty)
+        if name is serializers.empty:
+            name = getattr(self.instance, 'name', '')
+
+        normalized_name = str(name or '').strip()
+        if not normalized_name:
+            raise serializers.ValidationError({'name': '测试用例名称不能为空'})
+        attrs['name'] = normalized_name
+
         project = attrs.get('project') or getattr(self.instance, 'project', None)
         folder = attrs.get('folder', serializers.empty)
         if folder is serializers.empty:
             folder = getattr(self.instance, 'folder', None)
+
+        if project:
+            queryset = TestCase.objects.filter(project=project, name=normalized_name)
+            if self.instance:
+                queryset = queryset.exclude(pk=self.instance.pk)
+            if queryset.exists():
+                raise serializers.ValidationError({'name': '同一项目下用例名称不能重复'})
 
         if folder and project and folder.project_id != project.id:
             raise serializers.ValidationError({'folder_id': 'Folder does not belong to the selected project'})
@@ -775,6 +774,7 @@ class UiScheduledTaskSerializer(serializers.ModelSerializer):
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
     project_name = serializers.CharField(source='project.name', read_only=True)
     test_suite_name = serializers.CharField(source='test_suite.name', read_only=True)
+    assigned_runner_name = serializers.CharField(source='assigned_runner.name', read_only=True)
     task_type_display = serializers.CharField(source='get_task_type_display', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     trigger_type_display = serializers.CharField(source='get_trigger_type_display', read_only=True)
@@ -787,7 +787,8 @@ class UiScheduledTaskSerializer(serializers.ModelSerializer):
             'trigger_type', 'trigger_type_display', 'cron_expression',
             'interval_seconds', 'execute_at', 'project', 'project_name',
             'test_suite', 'test_suite_name', 'test_cases',
-            'engine', 'browser', 'headless',
+            'execution_mode', 'engine', 'browser', 'headless',
+            'assigned_runner', 'assigned_runner_name',
             'notify_on_success', 'notify_on_failure', 'notification_type', 'notification_type_display', 'notify_emails',
             'status', 'status_display',
             'last_run_time', 'next_run_time', 'total_runs',
@@ -808,6 +809,7 @@ class UiScheduledTaskSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         """验证定时任务配置"""
+        request = self.context.get('request')
         trigger_type = attrs.get('trigger_type')
 
         if trigger_type == 'CRON':
@@ -834,6 +836,20 @@ class UiScheduledTaskSerializer(serializers.ModelSerializer):
             test_cases = attrs.get('test_cases', [])
             if not test_cases or len(test_cases) == 0:
                 raise serializers.ValidationError("至少选择一个测试用例")
+
+        execution_mode = attrs.get('execution_mode')
+        if execution_mode is None and self.instance is not None:
+            execution_mode = self.instance.execution_mode
+
+        assigned_runner = attrs.get('assigned_runner', serializers.empty)
+        if assigned_runner is serializers.empty and self.instance is not None:
+            assigned_runner = self.instance.assigned_runner
+
+        if execution_mode == 'local':
+            if not assigned_runner:
+                raise serializers.ValidationError({'assigned_runner': '本地执行模式需要选择本地执行器'})
+            if request and assigned_runner.user_id != request.user.id:
+                raise serializers.ValidationError({'assigned_runner': '所选本地执行器不存在或不属于当前用户'})
 
         return attrs
 

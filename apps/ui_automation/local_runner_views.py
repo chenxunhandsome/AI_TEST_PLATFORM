@@ -6,6 +6,10 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 from .local_execution_service import build_test_case_payload
+from .execution_dispatcher import (
+    refresh_scheduled_task_execution_progress,
+    refresh_suite_execution_progress,
+)
 from .models import LocalRunner, TestCaseExecution
 from .serializers import LocalRunnerSerializer, TestCaseExecutionSerializer
 
@@ -128,7 +132,11 @@ class LocalRunnerViewSet(viewsets.ReadOnlyModelViewSet):
             return Response({'error': 'execution_id is required'}, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            execution = TestCaseExecution.objects.select_related('assigned_runner').get(
+            execution = TestCaseExecution.objects.select_related(
+                'assigned_runner',
+                'test_suite',
+                'scheduled_task',
+            ).get(
                 id=execution_id,
                 created_by=request.user,
                 execution_mode='local',
@@ -153,6 +161,12 @@ class LocalRunnerViewSet(viewsets.ReadOnlyModelViewSet):
                 'error_message', 'finished_at'
             ]
         )
+
+        if execution.test_suite_id and execution.run_identifier:
+            refresh_suite_execution_progress(execution.test_suite, execution.run_identifier)
+
+        if execution.scheduled_task_id and execution.run_identifier:
+            refresh_scheduled_task_execution_progress(execution.scheduled_task, execution.run_identifier)
 
         return Response({
             'success': execution.status == 'passed',

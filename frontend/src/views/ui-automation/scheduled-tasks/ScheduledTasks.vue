@@ -81,6 +81,18 @@
             </el-tag>
           </template>
         </el-table-column>
+        <el-table-column prop="execution_mode" label="执行位置" width="120">
+          <template #default="scope">
+            <el-tag size="small" :type="scope.row.execution_mode === 'local' ? 'warning' : 'success'">
+              {{ scope.row.execution_mode === 'local' ? '本机执行' : '服务器执行' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="assigned_runner_name" label="本地执行器" width="180" show-overflow-tooltip>
+          <template #default="scope">
+            {{ scope.row.assigned_runner_name || '-' }}
+          </template>
+        </el-table-column>
         <el-table-column prop="browser" :label="$t('uiAutomation.scheduledTask.browser')" width="100">
           <template #default="scope">
             {{ scope.row.browser || 'chrome' }}
@@ -256,6 +268,24 @@
           </el-select>
         </el-form-item>
 
+        <el-form-item label="执行位置" required>
+          <el-radio-group v-model="taskForm.execution_mode">
+            <el-radio value="server">服务器执行</el-radio>
+            <el-radio value="local">本机执行</el-radio>
+          </el-radio-group>
+        </el-form-item>
+
+        <el-form-item v-if="taskForm.execution_mode === 'local'" label="本地执行器" required>
+          <el-select v-model="taskForm.assigned_runner" placeholder="请选择本地执行器">
+            <el-option
+              v-for="runner in localRunners"
+              :key="runner.id"
+              :label="`${runner.name}${runner.hostname ? ` (${runner.hostname})` : ''}${runner.is_online ? '' : ' - 离线'}`"
+              :value="runner.id"
+            />
+          </el-select>
+        </el-form-item>
+
         <el-form-item :label="$t('uiAutomation.scheduledTask.runMode')">
           <el-checkbox v-model="taskForm.headless">{{ $t('uiAutomation.scheduledTask.headlessMode') }}</el-checkbox>
         </el-form-item>
@@ -316,7 +346,8 @@ import {
   getUiProjects,
   getTestSuites,
   getTestCases,
-  getUiUsers
+  getUiUsers,
+  getLocalRunners
 } from '@/api/ui_automation.js'
 
 const { t, locale } = useI18n()
@@ -327,6 +358,7 @@ const projects = ref([])
 const testSuites = ref([])
 const testCases = ref([])
 const users = ref([])
+const localRunners = ref([])
 const loading = ref(false)
 const submitting = ref(false)
 const showCreateDialog = ref(false)
@@ -358,6 +390,8 @@ const taskForm = reactive({
   execute_at: '',
   test_suite: '',
   test_cases: [],
+  execution_mode: 'server',
+  assigned_runner: null,
   engine: 'playwright',
   browser: 'chrome',
   headless: false,
@@ -403,6 +437,7 @@ onMounted(() => {
   loadTasks()
   loadProjects()
   loadUsers()
+  loadLocalRunners()
 })
 
 // 加载任务列表
@@ -449,6 +484,15 @@ const loadUsers = async () => {
   }
 }
 
+const loadLocalRunners = async () => {
+  try {
+    const response = await getLocalRunners({ page_size: 100 })
+    localRunners.value = response.data.results || response.data || []
+  } catch (error) {
+    console.error('Load local runners failed:', error)
+  }
+}
+
 // 项目变化时加载对应的套件和用例
 const onProjectChange = async (projectId) => {
   if (!projectId) return
@@ -492,6 +536,8 @@ const resetTaskForm = () => {
     execute_at: '',
     test_suite: '',
     test_cases: [],
+    execution_mode: 'server',
+    assigned_runner: null,
     engine: 'playwright',
     browser: 'chrome',
     headless: false,
@@ -514,6 +560,11 @@ const resetFilters = () => {
 
 // 提交任务表单
 const submitTaskForm = async () => {
+  if (taskForm.execution_mode === 'local' && !taskForm.assigned_runner) {
+    ElMessage.error('请选择本地执行器')
+    return
+  }
+
   submitting.value = true
   try {
     const submitData = {
@@ -522,6 +573,8 @@ const submitTaskForm = async () => {
       project: taskForm.project,
       task_type: taskForm.task_type,
       trigger_type: taskForm.trigger_type,
+      execution_mode: taskForm.execution_mode,
+      assigned_runner: taskForm.execution_mode === 'local' ? taskForm.assigned_runner : null,
       engine: taskForm.engine,
       browser: taskForm.browser,
       headless: taskForm.headless,
@@ -578,8 +631,8 @@ const submitTaskForm = async () => {
 const runTaskNow = async (task) => {
   try {
     task.running = true
-    await runScheduledTask(task.id)
-    ElMessage.success(t('uiAutomation.scheduledTask.messages.runSuccess'))
+    const response = await runScheduledTask(task.id)
+    ElMessage.success(response.data?.message || t('uiAutomation.scheduledTask.messages.runSuccess'))
     setTimeout(() => {
       loadTasks()
     }, 2000)
@@ -650,6 +703,8 @@ const editTask = async (task) => {
     execute_at: task.execute_at,
     test_suite: task.test_suite || '',
     test_cases: task.test_cases || [],
+    execution_mode: task.execution_mode || 'server',
+    assigned_runner: task.assigned_runner || null,
     engine: task.engine || 'playwright',
     browser: task.browser || 'chrome',
     headless: task.headless || false,

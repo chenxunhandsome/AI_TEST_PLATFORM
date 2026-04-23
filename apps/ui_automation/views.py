@@ -53,6 +53,11 @@ from .variable_resolver import resolve_variables, set_runtime_variable
 from .project_runtime import (
     initialize_project_runtime_variables,
 )
+from .execution_dispatcher import (
+    initialize_local_task_result,
+    queue_local_suite_execution,
+    queue_local_test_case_executions,
+)
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
@@ -511,6 +516,94 @@ def validate_test_case_steps_payload(steps_data):
         validated_steps.append(step_data)
 
     return validated_steps
+
+
+def ensure_test_case_name_available(project, name, exclude_id=None):
+    normalized_name = str(name or '').strip()
+    if not normalized_name:
+        raise ValidationError({'name': '测试用例名称不能为空'})
+
+    queryset = TestCase.objects.filter(project=project, name=normalized_name)
+    if exclude_id is not None:
+        queryset = queryset.exclude(id=exclude_id)
+
+    if queryset.exists():
+        raise ValidationError({'name': '同一项目下用例名称不能重复'})
+
+    return normalized_name
+
+
+def generate_unique_test_case_name(project, base_name):
+    normalized_base = str(base_name or '').strip() or '测试用例_copy'
+    candidate = normalized_base
+    suffix = 2
+
+    while TestCase.objects.filter(project=project, name=candidate).exists():
+        candidate = f'{normalized_base}_{suffix}'
+        suffix += 1
+
+    return candidate
+
+
+def build_test_case_step_payload(step):
+    return {
+        'action_type': step.action_type,
+        'element': step.element_id,
+        'input_value': step.input_value or '',
+        'wait_time': step.wait_time,
+        'assert_type': step.assert_type or '',
+        'assert_value': step.assert_value or '',
+        'description': step.description or '',
+        'is_enabled': step.is_enabled,
+        'save_as': step.save_as or '',
+        'transaction_id': step.transaction_id or '',
+        'transaction_name': step.transaction_name or '',
+    }
+
+
+def create_test_case_steps(test_case, steps_data):
+    created_count = 0
+
+    for index, raw_step in enumerate(steps_data or [], start=1):
+        step_data = dict(raw_step or {})
+        element_value = step_data.get('element')
+        if 'element_id' in step_data:
+            element_value = step_data.get('element_id')
+        if hasattr(element_value, 'id'):
+            element_value = element_value.id
+
+        try:
+            TestCaseStep.objects.create(
+                test_case=test_case,
+                step_number=index,
+                action_type=step_data.get('action_type', 'click'),
+                element_id=element_value if element_value else None,
+                input_value=step_data.get('input_value', ''),
+                wait_time=step_data.get('wait_time', 1000),
+                assert_type=step_data.get('assert_type', ''),
+                assert_value=step_data.get('assert_value', ''),
+                description=step_data.get('description', ''),
+                is_enabled=step_data.get('is_enabled', True),
+                save_as=step_data.get('save_as', ''),
+                transaction_id=step_data.get('transaction_id', ''),
+                transaction_name=step_data.get('transaction_name', '')
+            )
+            created_count += 1
+        except Exception as exc:
+            logger.error(f"创建步骤 {index} 失败: {exc}")
+            logger.error(f"步骤数据: {step_data}")
+
+    return created_count
+
+
+def replace_test_case_steps(test_case, steps_data):
+    validated_steps = validate_test_case_steps_payload(steps_data)
+    existing_steps_count = test_case.steps.count()
+    test_case.steps.all().delete()
+    logger.info(f"删除了 {existing_steps_count} 个现有步骤")
+    created_count = create_test_case_steps(test_case, validated_steps)
+    logger.info(f"成功创建了 {created_count} 个新步骤")
+    return created_count
 
 
 def resolve_step_runtime_payload(step):
@@ -1347,6 +1440,45 @@ class TestSuiteViewSet(viewsets.ModelViewSet):
         engine = request.data.get('engine', 'playwright')
         browser = request.data.get('browser', 'chrome')
         headless = request.data.get('headless', False)
+        execution_mode = request.data.get('execution_mode', 'server')
+
+        if execution_mode == 'local':
+            runner_id = request.data.get('runner_id')
+            if not runner_id:
+                return Response({
+                    'error': '本地执行模式需要选择本地执行器'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                assigned_runner = LocalRunner.objects.get(id=runner_id, user=request.user)
+            except LocalRunner.DoesNotExist:
+                return Response({
+                    'error': '所选本地执行器不存在或不属于当前用户'
+                }, status=status.HTTP_400_BAD_REQUEST)
+
+            executions, run_identifier = queue_local_suite_execution(
+                test_suite,
+                engine=engine,
+                browser=browser,
+                headless=headless,
+                created_by=request.user,
+                assigned_runner=assigned_runner,
+                execution_source='suite',
+            )
+
+            log_operation('run', 'suite', test_suite.id, test_suite.name, request.user)
+
+            return Response({
+                'message': f'测试套件已下发到本地执行器：{assigned_runner.name}',
+                'queued': True,
+                'suite_id': test_suite.id,
+                'test_case_count': len(executions),
+                'engine': engine,
+                'browser': browser,
+                'headless': headless,
+                'execution_mode': execution_mode,
+                'run_identifier': run_identifier,
+            }, status=status.HTTP_200_OK)
 
         # 更新套件执行状态为运行中
         test_suite.execution_status = 'running'
@@ -1530,49 +1662,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
         # 处理步骤数据
         logger.info(f"创建测试用例 {instance.id} 的步骤数据: {len(steps_data)} 个步骤")
 
-        if steps_data:
-            # 创建新步骤
-            created_count = 0
-            for i, step_data in enumerate(steps_data):
-                # 确保步骤数据结构正确
-                step_data = dict(step_data)  # 创建副本避免修改原数据
-                step_data['test_case'] = instance.id  # 使用测试用例ID
-                step_data['step_number'] = i + 1  # 确保步骤序号正确
-
-                # 处理元素ID
-                if 'element_id' in step_data:
-                    step_data['element'] = step_data.pop('element_id')
-
-                # 移除只读字段
-                step_data.pop('id', None)
-                step_data.pop('element_name', None)
-                step_data.pop('element_locator', None)
-                step_data.pop('created_at', None)
-                step_data.pop('expanded', None)  # 前端UI状态字段
-
-                # 使用模型直接创建，避免序列化器的复杂性
-                try:
-                    TestCaseStep.objects.create(
-                        test_case=instance,
-                        step_number=step_data.get('step_number', i + 1),
-                        action_type=step_data.get('action_type', 'click'),
-                        element_id=step_data.get('element') if step_data.get('element') else None,
-                        input_value=step_data.get('input_value', ''),
-                        wait_time=step_data.get('wait_time', 1000),
-                        assert_type=step_data.get('assert_type', ''),
-                        assert_value=step_data.get('assert_value', ''),
-                        description=step_data.get('description', ''),
-                        is_enabled=step_data.get('is_enabled', True),
-                        save_as=step_data.get('save_as', ''),
-                        transaction_id=step_data.get('transaction_id', ''),
-                        transaction_name=step_data.get('transaction_name', '')
-                    )
-                    created_count += 1
-                except Exception as e:
-                    logger.error(f"创建步骤 {i + 1} 失败: {str(e)}")
-                    logger.error(f"步骤数据: {step_data}")
-
-            logger.info(f"成功创建了 {created_count} 个新步骤")
+        create_test_case_steps(instance, steps_data)
 
     @action(detail=False, methods=['post'])
     def move(self, request):
@@ -1663,8 +1753,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                     created_by=request.user
                 )
                 name = str(case_data.get('name', '') or '').strip()
-                if not name:
-                    raise ValidationError('测试用例名称不能为空')
+                name = ensure_test_case_name_available(project, name) if not overwrite else str(name).strip()
 
                 existing_case = None
                 if overwrite:
@@ -1683,7 +1772,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                     test_case = TestCase.objects.create(
                         project=project,
                         folder=folder,
-                        name=name,
+                        name=ensure_test_case_name_available(project, name),
                         description=str(case_data.get('description', '') or '').strip(),
                         status=case_data.get('status') or 'draft',
                         priority=case_data.get('priority') or 'medium',
@@ -1732,7 +1821,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
             new_case = TestCase.objects.create(
                 project=test_case.project,
                 folder=test_case.folder,
-                name=f"{test_case.name}_copy",
+                name=generate_unique_test_case_name(test_case.project, f"{test_case.name}_copy"),
                 description=test_case.description,
                 priority=test_case.priority,
                 status=test_case.status,
@@ -1774,63 +1863,18 @@ class TestCaseViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         # 更新测试用例步骤
-        steps_data = validate_test_case_steps_payload(self.request.data.get('steps', []))
+        steps_data = None
+        if 'steps' in self.request.data:
+            steps_data = validate_test_case_steps_payload(self.request.data.get('steps', []))
         instance = serializer.save()
 
         # 记录操作
         log_operation('edit', 'test_case', instance.id, instance.name, self.request.user)
 
         # 处理步骤数据
-        logger.info(f"更新测试用例 {instance.id} 的步骤数据: {len(steps_data)} 个步骤")
-
-        if steps_data:
-            # 删除现有步骤
-            existing_steps_count = instance.steps.count()
-            instance.steps.all().delete()
-            logger.info(f"删除了 {existing_steps_count} 个现有步骤")
-
-            # 创建新步骤
-            created_count = 0
-            for i, step_data in enumerate(steps_data):
-                # 确保步骤数据结构正确
-                step_data = dict(step_data)  # 创建副本避免修改原数据
-                step_data['test_case'] = instance.id  # 使用测试用例ID
-                step_data['step_number'] = i + 1  # 确保步骤序号正确
-
-                # 处理元素ID
-                if 'element_id' in step_data:
-                    step_data['element'] = step_data.pop('element_id')
-
-                # 移除只读字段
-                step_data.pop('id', None)
-                step_data.pop('element_name', None)
-                step_data.pop('element_locator', None)
-                step_data.pop('created_at', None)
-                step_data.pop('expanded', None)  # 前端UI状态字段
-
-                # 使用模型直接创建，避免序列化器的复杂性
-                try:
-                    TestCaseStep.objects.create(
-                        test_case=instance,
-                        step_number=step_data.get('step_number', i + 1),
-                        action_type=step_data.get('action_type', 'click'),
-                        element_id=step_data.get('element') if step_data.get('element') else None,
-                        input_value=step_data.get('input_value', ''),
-                        wait_time=step_data.get('wait_time', 1000),
-                        assert_type=step_data.get('assert_type', ''),
-                        assert_value=step_data.get('assert_value', ''),
-                        description=step_data.get('description', ''),
-                        is_enabled=step_data.get('is_enabled', True),
-                        save_as=step_data.get('save_as', ''),
-                        transaction_id=step_data.get('transaction_id', ''),
-                        transaction_name=step_data.get('transaction_name', '')
-                    )
-                    created_count += 1
-                except Exception as e:
-                    logger.error(f"创建步骤 {i + 1} 失败: {str(e)}")
-                    logger.error(f"步骤数据: {step_data}")
-
-            logger.info(f"成功创建了 {created_count} 个新步骤")
+        if steps_data is not None:
+            logger.info(f"更新测试用例 {instance.id} 的步骤数据: {len(steps_data)} 个步骤")
+            replace_test_case_steps(instance, steps_data)
 
     def _generate_step_log(self, step, step_result='success'):
         """根据测试步骤生成执行日志"""
@@ -2894,7 +2938,12 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
         accessible_projects = UiProject.objects.filter(
             models.Q(owner=user) | models.Q(members=user)
         ).distinct()
-        return UiScheduledTask.objects.filter(project__in=accessible_projects)
+        return UiScheduledTask.objects.filter(project__in=accessible_projects).select_related(
+            'project',
+            'test_suite',
+            'assigned_runner',
+            'created_by',
+        )
 
     def perform_create(self, serializer):
         """创建定时任务"""
@@ -2956,6 +3005,38 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                     return Response({
                         'error': '该测试套件未包含任何测试用例，无法执行'
                     }, status=status.HTTP_400_BAD_REQUEST)
+
+                if task.execution_mode == 'local':
+                    if not task.assigned_runner:
+                        return Response({
+                            'error': '本地执行模式需要先为定时任务配置本地执行器'
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
+                    executions, run_identifier = queue_local_suite_execution(
+                        test_suite,
+                        engine=task.engine,
+                        browser=task.browser,
+                        headless=task.headless,
+                        created_by=task.created_by,
+                        assigned_runner=task.assigned_runner,
+                        execution_source='scheduled',
+                        scheduled_task=task,
+                    )
+                    initialize_local_task_result(task, run_identifier, len(executions))
+                    log_operation('run', 'scheduled_task', task.id, task.name, request.user)
+
+                    return Response({
+                        'message': f'任务已下发到本地执行器：{task.assigned_runner.name}',
+                        'queued': True,
+                        'task_id': task.id,
+                        'task_name': task.name,
+                        'test_suite': test_suite.name,
+                        'test_case_count': len(executions),
+                        'engine': task.engine,
+                        'browser': task.browser,
+                        'headless': task.headless,
+                        'execution_mode': task.execution_mode,
+                    }, status=status.HTTP_200_OK)
 
                 # 更新套件执行状态
                 test_suite.execution_status = 'running'
@@ -3029,6 +3110,38 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                     return Response({
                         'error': '找不到配置的测试用例'
                     }, status=status.HTTP_400_BAD_REQUEST)
+
+                if task.execution_mode == 'local':
+                    if not task.assigned_runner:
+                        return Response({
+                            'error': '本地执行模式需要先为定时任务配置本地执行器'
+                        }, status=status.HTTP_400_BAD_REQUEST)
+
+                    executions, run_identifier = queue_local_test_case_executions(
+                        test_cases,
+                        project=task.project,
+                        engine=task.engine,
+                        browser=task.browser,
+                        headless=task.headless,
+                        created_by=task.created_by,
+                        assigned_runner=task.assigned_runner,
+                        execution_source='scheduled',
+                        scheduled_task=task,
+                    )
+                    initialize_local_task_result(task, run_identifier, len(executions))
+                    log_operation('run', 'scheduled_task', task.id, task.name, request.user)
+
+                    return Response({
+                        'message': f'任务已下发到本地执行器：{task.assigned_runner.name}',
+                        'queued': True,
+                        'task_id': task.id,
+                        'task_name': task.name,
+                        'test_case_count': len(executions),
+                        'engine': task.engine,
+                        'browser': task.browser,
+                        'headless': task.headless,
+                        'execution_mode': task.execution_mode,
+                    }, status=status.HTTP_200_OK)
 
                 # 在后台线程中执行测试用例
                 import threading

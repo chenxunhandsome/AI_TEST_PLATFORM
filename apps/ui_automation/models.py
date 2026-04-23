@@ -750,6 +750,14 @@ class TestCaseExecution(models.Model):
     started_at = models.DateTimeField(null=True, blank=True, verbose_name='开始时间')
     finished_at = models.DateTimeField(null=True, blank=True, verbose_name='完成时间')
     created_by = models.ForeignKey(User, on_delete=models.CASCADE, related_name='test_case_executions', verbose_name='执行人')
+    scheduled_task = models.ForeignKey(
+        'UiScheduledTask',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='case_executions',
+        verbose_name='所属定时任务'
+    )
     assigned_runner = models.ForeignKey(
         'LocalRunner',
         on_delete=models.SET_NULL,
@@ -758,6 +766,7 @@ class TestCaseExecution(models.Model):
         related_name='assigned_executions',
         verbose_name='指派执行器'
     )
+    run_identifier = models.CharField(max_length=64, blank=True, default='', verbose_name='执行批次标识')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
 
     class Meta:
@@ -870,6 +879,11 @@ class UiScheduledTask(models.Model):
         ('ONCE', '单次执行'),
     ]
 
+    EXECUTION_MODE_CHOICES = [
+        ('server', '服务器执行'),
+        ('local', '本地执行'),
+    ]
+
     name = models.CharField(max_length=200, verbose_name='任务名称')
     description = models.TextField(blank=True, verbose_name='任务描述')
     task_type = models.CharField(max_length=20, choices=TASK_TYPE_CHOICES, verbose_name='任务类型')
@@ -892,10 +906,19 @@ class UiScheduledTask(models.Model):
                                  help_text='测试用例ID列表，用于TEST_CASE类型任务')
 
     # 执行配置
+    execution_mode = models.CharField(max_length=20, choices=EXECUTION_MODE_CHOICES, default='server', verbose_name='执行位置')
     engine = models.CharField(max_length=20, default='playwright', verbose_name='执行引擎',
                              help_text='playwright或selenium')
     browser = models.CharField(max_length=20, default='chrome', verbose_name='浏览器类型')
     headless = models.BooleanField(default=False, verbose_name='无头模式')
+    assigned_runner = models.ForeignKey(
+        'LocalRunner',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='scheduled_tasks',
+        verbose_name='本地执行器'
+    )
 
     # 通知配置
     NOTIFICATION_TYPE_CHOICES = [

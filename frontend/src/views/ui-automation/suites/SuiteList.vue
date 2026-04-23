@@ -234,7 +234,27 @@
             <el-option label="Edge" value="edge" />
           </el-select>
         </el-form-item>
-        <el-form-item :label="$t('uiAutomation.suite.executionMode')">
+        <el-form-item label="执行位置">
+          <el-radio-group v-model="runConfig.executionMode">
+            <el-radio label="server">服务器执行</el-radio>
+            <el-radio label="local">本机执行</el-radio>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="runConfig.executionMode === 'local'" label="本地执行器">
+          <el-select
+            v-model="runConfig.runnerId"
+            placeholder="请选择本地执行器"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="runner in onlineLocalRunners"
+              :key="runner.id"
+              :label="`${runner.name}${runner.hostname ? ` (${runner.hostname})` : ''}`"
+              :value="runner.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="运行模式">
           <el-radio-group v-model="runConfig.headless">
             <el-radio :label="false">{{ $t('uiAutomation.suite.headedMode') }}</el-radio>
             <el-radio :label="true">{{ $t('uiAutomation.suite.headlessMode') }}</el-radio>
@@ -275,7 +295,8 @@ import {
   addTestCaseToTestSuite,
   removeTestCaseFromTestSuite,
   updateTestCaseOrder,
-  runTestSuite
+  runTestSuite,
+  getLocalRunners
 } from '@/api/ui_automation'
 import { useI18n } from 'vue-i18n'
 import { useUiAutomationStore } from '@/stores/uiAutomation'
@@ -318,12 +339,16 @@ const formRules = computed(() => ({
 const availableTestCases = ref([])
 const selectedTestCases = ref([])
 const testCaseSearchText = ref('')
+const localRunners = ref([])
+const onlineLocalRunners = computed(() => localRunners.value.filter(runner => runner.is_online))
 
 // 运行配置
 const runConfig = reactive({
   engine: 'playwright',
   browser: 'chrome',
-  headless: false
+  headless: false,
+  executionMode: 'server',
+  runnerId: null
 })
 const currentRunningSuite = ref(null)
 
@@ -394,6 +419,18 @@ const loadAvailableTestCases = async () => {
   } catch (error) {
     console.error('获取测试用例列表失败:', error)
     ElMessage.error(t('uiAutomation.suite.messages.loadCasesFailed'))
+  }
+}
+
+const loadLocalRunnerList = async () => {
+  try {
+    const response = await getLocalRunners({ page_size: 100 })
+    localRunners.value = response.data.results || response.data || []
+    if (!runConfig.runnerId && onlineLocalRunners.value.length > 0) {
+      runConfig.runnerId = onlineLocalRunners.value[0].id
+    }
+  } catch (error) {
+    console.error('加载本地执行器失败:', error)
   }
 }
 
@@ -538,23 +575,32 @@ const runSuite = (suite) => {
   }
 
   currentRunningSuite.value = suite
+  runConfig.executionMode = 'server'
+  runConfig.runnerId = onlineLocalRunners.value[0]?.id || null
   showRunDialog.value = true
 }
 
 // 确认运行套件
 const confirmRunSuite = async () => {
+  if (runConfig.executionMode === 'local' && !runConfig.runnerId) {
+    ElMessage.warning('请选择本地执行器')
+    return
+  }
+
   running.value = true
   try {
     const requestData = {
       use_ai: false,
       engine: runConfig.engine,
       browser: runConfig.browser,
-      headless: runConfig.headless
+      headless: runConfig.headless,
+      execution_mode: runConfig.executionMode,
+      runner_id: runConfig.executionMode === 'local' ? runConfig.runnerId : undefined
     }
 
     const response = await runTestSuite(currentRunningSuite.value.id, requestData)
 
-    ElMessage.success(t('uiAutomation.suite.messages.startSuccess'))
+    ElMessage.success(response.data.message || t('uiAutomation.suite.messages.startSuccess'))
     showRunDialog.value = false
 
     // 立即刷新一次以显示"运行中"状态
@@ -745,6 +791,7 @@ const getCaseStatusText = (status) => {
 const originalShowCreateDialog = showCreateDialog
 onMounted(async () => {
   await loadProjects()
+  await loadLocalRunnerList()
   if (projects.value.length > 0) {
     projectId.value = uiAutomationStore.resolveSelectedProjectId(projects.value)
     await loadSuites()
