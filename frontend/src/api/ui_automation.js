@@ -775,6 +775,73 @@ export function importTestCases(data) {
 }
 
 // 获取测试用例执行历史
+export function getAITestCaseGenerationSkills(params) {
+  return request({
+    url: '/ui-automation/ai-test-case-generation-skills/',
+    method: 'get',
+    params
+  })
+}
+
+export function ensureDefaultAITestCaseGenerationSkill() {
+  return request({
+    url: '/ui-automation/ai-test-case-generation-skills/ensure-default/',
+    method: 'post'
+  })
+}
+
+export function updateAITestCaseGenerationSkill(id, data) {
+  return request({
+    url: `/ui-automation/ai-test-case-generation-skills/${id}/`,
+    method: 'patch',
+    data
+  })
+}
+
+export function generateAITestCases(data) {
+  return request({
+    url: '/ui-automation/ai-test-case-generation/generate/',
+    method: 'post',
+    data,
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    },
+    timeout: 900000
+  })
+}
+
+export function importGeneratedAITestCases(recordId, data) {
+  return request({
+    url: `/ui-automation/ai-test-case-generation/${recordId}/import/`,
+    method: 'post',
+    data
+  })
+}
+
+export function optimizeAITestCaseGenerationSkill(data) {
+  return request({
+    url: '/ui-automation/ai-test-case-generation/optimize-skill/',
+    method: 'post',
+    data,
+    timeout: 900000
+  })
+}
+
+export function downloadAITestCaseTemplate() {
+  return request({
+    url: '/ui-automation/ai-test-case-generation/template/',
+    method: 'get',
+    responseType: 'blob'
+  })
+}
+
+export function getUiAutomationAIModelConfigs() {
+  return request({
+    url: '/ui-automation/ai-models/',
+    method: 'get'
+  })
+}
+
 export function getTestCaseExecutions(params) {
   return request({
     url: '/ui-automation/test-case-executions/',
@@ -1135,5 +1202,45 @@ export function getLocalRunners(params) {
     url: '/ui-automation/local-runners/',
     method: 'get',
     params
+  })
+}
+
+export function startScrollCoordinatePicker(data) {
+  return request({
+    url: '/ui-automation/scroll-coordinate-picker/start/',
+    method: 'post',
+    data
+  })
+}
+
+export function getScrollCoordinatePickerPosition(data) {
+  return request({
+    url: '/ui-automation/scroll-coordinate-picker/position/',
+    method: 'post',
+    data
+  })
+}
+
+export function getScrollCoordinatePickerPages(data) {
+  return request({
+    url: '/ui-automation/scroll-coordinate-picker/pages/',
+    method: 'post',
+    data
+  })
+}
+
+export function setScrollCoordinatePickerActivePage(data) {
+  return request({
+    url: '/ui-automation/scroll-coordinate-picker/active-page/',
+    method: 'post',
+    data
+  })
+}
+
+export function closeScrollCoordinatePicker(data) {
+  return request({
+    url: '/ui-automation/scroll-coordinate-picker/close/',
+    method: 'post',
+    data
   })
 }

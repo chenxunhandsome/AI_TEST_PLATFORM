@@ -11,7 +11,12 @@ from datetime import datetime
 from typing import Dict, List, Optional, Tuple
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext, TimeoutError as PlaywrightTimeout
 import logging
-from .variable_resolver import resolve_variables, set_runtime_variable
+from .variable_resolver import (
+    parse_scroll_action_payload,
+    resolve_element_locator_payload,
+    resolve_variables,
+    set_runtime_variable,
+)
 
 logger = logging.getLogger(__name__)
 RUNTIME_VARIABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
@@ -27,6 +32,19 @@ def append_runtime_variable_log(step, log, value):
 
     set_runtime_variable(save_as, value)
     return f"{log}\n  - 已存储变量: ${{{save_as}}} = '{value}'"
+
+def _get_scroll_direction_label(direction: str) -> str:
+    return {
+        'vertical': '纵向滚动',
+        'horizontal': '横向滚动',
+        'up': '往上滚动',
+        'down': '往下滚动',
+    }.get(direction, '纵向滚动')
+
+
+def _get_scroll_scope_label(scope: str) -> str:
+    return 'element scroll' if scope == 'element' else 'page scroll'
+
 
 class PlaywrightTestEngine:
     """Playwright测试执行引擎"""
@@ -169,6 +187,8 @@ class PlaywrightTestEngine:
                     '--disable-features=Translate,TranslateUI',
                     '--lang=zh-CN',
                 ])
+                if not self.headless:
+                    launch_args.append('--start-maximized')
             self.browser = await browser_launcher.launch(
                 headless=self.headless,
                 args=launch_args
@@ -176,10 +196,13 @@ class PlaywrightTestEngine:
 
             # 创建浏览器上下文
             context_options = {
-                'viewport': {'width': 1920, 'height': 1080},
                 'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
                 'locale': 'zh-CN',
             }
+            if not self.headless and self.browser_type == 'chromium':
+                context_options['no_viewport'] = True
+            else:
+                context_options['viewport'] = {'width': 1920, 'height': 1080}
             if self.browser_type == 'chromium':
                 context_options['extra_http_headers'] = {
                     'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
@@ -212,9 +235,134 @@ class PlaywrightTestEngine:
         except Exception as e:
             logger.error(f"关闭浏览器失败: {str(e)}")
 
+    def _get_scroll_runtime_page(self):
+        if self.context is not None:
+            pages = []
+            for page in self.context.pages:
+                try:
+                    if page is not None and not page.is_closed():
+                        pages.append(page)
+                except Exception:
+                    continue
+            if pages:
+                self.page = pages[-1]
+                return self.page
+        return self.page
+
+    async def _execute_coordinate_scroll(self, active_page: Page, start_x: int, start_y: int, delta_x: int, delta_y: int):
+        return await active_page.evaluate(
+            """
+            ([startX, startY, deltaX, deltaY]) => {
+                const overflowKeywordRe = /(auto|scroll|overlay)/i
+                const scrollRoot = document.scrollingElement || document.documentElement || document.body
+                const isElementNode = (node) => typeof Element !== 'undefined' && node instanceof Element
+                const isDocumentLikeNode = (node) => {
+                    if (!node) {
+                        return true
+                    }
+                    return node === document.body || node === document.documentElement || node === scrollRoot
+                }
+                const getNodeMetrics = (node) => {
+                    const target = isDocumentLikeNode(node) ? scrollRoot : node
+                    if (!target) {
+                        return { rangeY: 0, rangeX: 0, scrollTop: 0, scrollLeft: 0 }
+                    }
+                    return {
+                        rangeY: Math.max(0, Number(target.scrollHeight || 0) - Number(target.clientHeight || 0)),
+                        rangeX: Math.max(0, Number(target.scrollWidth || 0) - Number(target.clientWidth || 0)),
+                        scrollTop: Number(target.scrollTop || 0),
+                        scrollLeft: Number(target.scrollLeft || 0),
+                    }
+                }
+                const canScrollNode = (node) => {
+                    if (!node) {
+                        return false
+                    }
+                    if (isDocumentLikeNode(node)) {
+                        const metrics = getNodeMetrics(node)
+                        return metrics.rangeY > 1 || metrics.rangeX > 1
+                    }
+                    if (!isElementNode(node)) {
+                        return false
+                    }
+                    const style = window.getComputedStyle(node)
+                    const overflowY = String(style.overflowY || style.overflow || '')
+                    const overflowX = String(style.overflowX || style.overflow || '')
+                    const metrics = getNodeMetrics(node)
+                    const canScrollY = overflowKeywordRe.test(overflowY) && metrics.rangeY > 1
+                    const canScrollX = overflowKeywordRe.test(overflowX) && metrics.rangeX > 1
+                    return canScrollY || canScrollX || metrics.rangeY > 1 || metrics.rangeX > 1
+                }
+                const buildLabel = (node) => {
+                    if (!node || isDocumentLikeNode(node)) {
+                        return 'window'
+                    }
+                    if (!isElementNode(node)) {
+                        return 'window'
+                    }
+                    const tag = String(node.tagName || '').toLowerCase()
+                    const id = node.id ? `#${node.id}` : ''
+                    const classNames = String(node.className || '')
+                        .trim()
+                        .split(/\\s+/)
+                        .filter(Boolean)
+                        .slice(0, 4)
+                        .map((item) => `.${item}`)
+                        .join('')
+                    return `${tag}${id}${classNames}` || 'window'
+                }
+
+                const eventTarget = document.elementFromPoint(startX, startY) || document.body || document.documentElement
+                let scrollTarget = eventTarget
+                while (scrollTarget && !isDocumentLikeNode(scrollTarget) && !canScrollNode(scrollTarget)) {
+                    scrollTarget = scrollTarget.parentElement
+                }
+                if (!scrollTarget || !canScrollNode(scrollTarget)) {
+                    scrollTarget = scrollRoot
+                }
+
+                const before = getNodeMetrics(scrollTarget)
+                try {
+                    eventTarget.dispatchEvent(new WheelEvent('wheel', {
+                        deltaX,
+                        deltaY,
+                        clientX: startX,
+                        clientY: startY,
+                        bubbles: true,
+                        cancelable: true,
+                    }))
+                } catch (error) {
+                }
+
+                if (isDocumentLikeNode(scrollTarget)) {
+                    window.scrollBy(deltaX, deltaY)
+                } else if (typeof scrollTarget.scrollBy === 'function') {
+                    scrollTarget.scrollBy({ left: deltaX, top: deltaY, behavior: 'auto' })
+                } else {
+                    scrollTarget.scrollLeft += deltaX
+                    scrollTarget.scrollTop += deltaY
+                }
+
+                const after = getNodeMetrics(scrollTarget)
+                return {
+                    label: buildLabel(scrollTarget),
+                    eventTargetLabel: buildLabel(eventTarget),
+                    url: window.location.href || '',
+                    beforeTop: before.scrollTop,
+                    afterTop: after.scrollTop,
+                    beforeLeft: before.scrollLeft,
+                    afterLeft: after.scrollLeft,
+                    rangeY: after.rangeY,
+                    rangeX: after.rangeX,
+                }
+            }
+            """,
+            [start_x, start_y, delta_x, delta_y],
+        )
+
     def _build_locator(self, locator_strategy: str, locator_value: str):
         locator_strategy = (locator_strategy or 'css').lower()
-        locator_value = locator_value or ''
+        locator_value = resolve_variables(locator_value) if isinstance(locator_value, str) and '${' in locator_value else (locator_value or '')
 
         if locator_strategy == 'id':
             return self.page.locator(f'#{locator_value}')
@@ -298,6 +446,7 @@ class PlaywrightTestEngine:
             (是否成功, 日志信息, 截图base64)
         """
         action_type = step.action_type
+        element_data = resolve_element_locator_payload(element_data) or {}
         
         # 预先解析变量
         resolved_input_value = step.input_value
@@ -436,6 +585,59 @@ class PlaywrightTestEngine:
 
             # 其他操作需要元素定位器
             # 获取元素定位器
+            scroll_payload = parse_scroll_action_payload(resolved_input_value)
+            if action_type == 'scroll' and scroll_payload:
+                start_x = scroll_payload['start_x']
+                start_y = scroll_payload['start_y']
+                target_x = scroll_payload['target_x']
+                target_y = scroll_payload['target_y']
+                scroll_scope = scroll_payload.get('scroll_scope') or ('element' if element_data else 'window')
+                active_page = self._get_scroll_runtime_page()
+                if active_page is None or (hasattr(active_page, 'is_closed') and active_page.is_closed()):
+                    return False, "[FAIL] mouse wheel scroll failed\n  - reason: no active page available", None
+
+                delta_x = int(target_x - start_x)
+                delta_y = int(target_y - start_y)
+                direction = scroll_payload.get('scroll_direction') or 'vertical'
+                wheel_x = 0
+                wheel_y = 0
+                if direction == 'horizontal':
+                    wheel_x = delta_x
+                elif direction == 'up':
+                    wheel_y = -abs(delta_y)
+                elif direction == 'down':
+                    wheel_y = abs(delta_y)
+                else:
+                    wheel_y = delta_y
+
+                if wheel_x == 0 and wheel_y == 0:
+                    return False, "[FAIL] mouse wheel scroll failed\n  - reason: scroll delta is 0", None
+
+                try:
+                    await active_page.bring_to_front()
+                except Exception:
+                    pass
+                scroll_result = await self._execute_coordinate_scroll(
+                    active_page,
+                    start_x,
+                    start_y,
+                    wheel_x,
+                    wheel_y,
+                )
+
+                execution_time = round(time.time() - start_time, 2)
+                log = f"[OK] mouse wheel {_get_scroll_direction_label(direction)}\n"
+                log += f"  - start: ({start_x}, {start_y})\n"
+                log += f"  - target: ({target_x}, {target_y})\n"
+                log += f"  - delta: ({wheel_x}, {wheel_y})\n"
+                log += f"  - scope: {scroll_scope}\n"
+                log += f"  - event target: {(scroll_result or {}).get('eventTargetLabel', 'window')}\n"
+                log += f"  - target: {(scroll_result or {}).get('label', 'window')}\n"
+                log += f"  - actual delta: ({((scroll_result or {}).get('afterLeft') or 0) - ((scroll_result or {}).get('beforeLeft') or 0)}, {((scroll_result or {}).get('afterTop') or 0) - ((scroll_result or {}).get('beforeTop') or 0)})\n"
+                log += f"  - page: {(scroll_result or {}).get('url', active_page.url)}\n"
+                log += f"  - duration: {execution_time}s"
+                return True, log, None
+
             locator_strategy = element_data.get('locator_strategy', 'css')
             locator_value = element_data.get('locator_value', '')
             element_name = element_data.get('name', '未知元素')
@@ -899,7 +1101,9 @@ class PlaywrightTestEngine:
                 return True, log, None
 
             elif action_type == 'drag':
-                target_element_data = self._resolve_drag_target_data(resolved_input_value)
+                target_element_data = resolve_element_locator_payload(
+                    self._resolve_drag_target_data(resolved_input_value)
+                )
                 target_locator = self._build_locator(
                     target_element_data.get('locator_strategy', 'css'),
                     target_element_data.get('locator_value', '')

@@ -6,7 +6,12 @@ import base64
 import json
 import re
 import time
-from .variable_resolver import resolve_variables, set_runtime_variable
+from .variable_resolver import (
+    parse_scroll_action_payload,
+    resolve_element_locator_payload,
+    resolve_variables,
+    set_runtime_variable,
+)
 import os
 import shutil
 from datetime import datetime
@@ -76,6 +81,7 @@ def get_chromium_browser_arguments():
         '--no-sandbox',
         '--disable-dev-shm-usage',
         '--window-size=1920,1080',
+        '--start-maximized',
         f'--disable-features={",".join(CHROMIUM_DISABLED_FEATURES)}',
         '--disable-translate',
         '--lang=zh-CN',
@@ -93,6 +99,15 @@ def get_chromium_browser_arguments():
         '--disable-renderer-backgrounding',
         '--disable-device-discovery-notifications',
     ]
+
+
+def _get_scroll_direction_label(direction: str) -> str:
+    return {
+        'vertical': '纵向滚动',
+        'horizontal': '横向滚动',
+        'up': '往上滚动',
+        'down': '往下滚动',
+    }.get(direction, '纵向滚动')
 
 
 class SeleniumTestEngine:
@@ -371,6 +386,12 @@ class SeleniumTestEngine:
                 self.driver = webdriver.Chrome(service=service, options=options)
 
             # 设置隐式等待
+            if self.driver and not self.headless:
+                try:
+                    self.driver.maximize_window()
+                except Exception:
+                    logger.warning("浏览器窗口最大化失败，将继续使用当前窗口尺寸")
+
             self.driver.implicitly_wait(3)
 
             logger.info(f"浏览器启动成功: {self.browser_type}, headless={self.headless}")
@@ -451,6 +472,7 @@ class SeleniumTestEngine:
             'partial link text': By.PARTIAL_LINK_TEXT
         }
 
+        locator_value = resolve_variables(locator_value) if isinstance(locator_value, str) and '${' in locator_value else locator_value
         by_type = strategy_map.get(locator_strategy.lower(), By.CSS_SELECTOR)
 
         # 处理特殊情况
@@ -487,6 +509,7 @@ class SeleniumTestEngine:
         """
         print(f"\n🔵 开始执行步骤: action_type={step.action_type}")
         action_type = step.action_type
+        element_data = resolve_element_locator_payload(element_data) or {}
         
         # 预先解析变量
         resolved_input_value = step.input_value
@@ -603,6 +626,24 @@ class SeleniumTestEngine:
                 return True, log, None
 
             # 其他操作需要元素定位器
+            scroll_payload = parse_scroll_action_payload(resolved_input_value)
+            if action_type == 'scroll' and scroll_payload:
+                start_x = scroll_payload['start_x']
+                start_y = scroll_payload['start_y']
+                target_x = scroll_payload['target_x']
+                target_y = scroll_payload['target_y']
+
+                self.driver.execute_script("window.scrollTo(arguments[0], arguments[1]);", start_x, start_y)
+                time.sleep(0.2)
+                self.driver.execute_script("window.scrollTo(arguments[0], arguments[1]);", target_x, target_y)
+
+                execution_time = round(time.time() - start_time, 2)
+                log = f"✓ {_get_scroll_direction_label(scroll_payload['scroll_direction'])} 成功\n"
+                log += f"  - 起始坐标: ({start_x}, {start_y})\n"
+                log += f"  - 目标坐标: ({target_x}, {target_y})\n"
+                log += f"  - 执行时间: {execution_time}秒"
+                return True, log, None
+
             locator_strategy = element_data.get('locator_strategy', 'css')
             locator_value = element_data.get('locator_value', '')
             element_name = element_data.get('name', '未知元素')
@@ -917,7 +958,9 @@ class SeleniumTestEngine:
                 return True, log, None
 
             elif action_type == 'drag':
-                target_element_data = self._resolve_drag_target_data(resolved_input_value)
+                target_element_data = resolve_element_locator_payload(
+                    self._resolve_drag_target_data(resolved_input_value)
+                )
                 target_by_type, target_by_value = self._get_locator(
                     target_element_data.get('locator_strategy', 'css'),
                     target_element_data.get('locator_value', '')

@@ -6,6 +6,7 @@ from .models import (
     ElementGroup, PageObject, PageObjectElement, ScriptStep, ScriptElementUsage,
     TestCase, TestCaseFolder, TestCaseStep, TestCaseExecution, OperationRecord, LocalRunner,
     UiScheduledTask, UiNotificationLog, UiTaskNotificationSetting,
+    AITestCaseGenerationSkill, AITestCaseGenerationRecord,
     AICase, AIExecutionRecord
 )
 from django.contrib.auth import get_user_model
@@ -709,6 +710,40 @@ class TestCaseExecutionSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data['created_by'] = self.context['request'].user
         return super().create(validated_data)
+
+
+class AITestCaseGenerationSkillSerializer(serializers.ModelSerializer):
+    """AI UI test case generation skill serializer."""
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+
+    class Meta:
+        model = AITestCaseGenerationSkill
+        fields = [
+            'id', 'name', 'description', 'content', 'is_default', 'is_active',
+            'created_by', 'created_by_name', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_by', 'created_at', 'updated_at']
+
+    def create(self, validated_data):
+        validated_data['created_by'] = self.context['request'].user
+        return super().create(validated_data)
+
+
+class AITestCaseGenerationRecordSerializer(serializers.ModelSerializer):
+    """AI UI test case generation record serializer."""
+    project_name = serializers.CharField(source='project.name', read_only=True)
+    skill_name = serializers.CharField(source='skill.name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+
+    class Meta:
+        model = AITestCaseGenerationRecord
+        fields = [
+            'id', 'project', 'project_name', 'skill', 'skill_name', 'ai_model_config_id',
+            'source_type', 'source_name', 'source_text', 'manifest', 'warnings',
+            'status', 'import_summary', 'error_message', 'created_by', 'created_by_name',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_by', 'created_at', 'updated_at']
 
 
 class LocalRunnerSerializer(serializers.ModelSerializer):

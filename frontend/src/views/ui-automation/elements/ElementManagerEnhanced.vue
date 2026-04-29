@@ -210,6 +210,9 @@
                   - {{ $t('uiAutomation.element.locatorTip.id') }}<br>
                   - {{ $t('uiAutomation.element.locatorTip.css') }}<br>
                   - {{ $t('uiAutomation.element.locatorTip.xpath') }}<br>
+                  - {{ $t('uiAutomation.element.locatorTip.parameterized') }}
+                  <code>${text}</code> / <code>${date}</code> /
+                  <code>//span[text()='${text}']</code><br>
                   - {{ $t('uiAutomation.element.locatorTip.other') }}
                 </div>
               </el-form-item>

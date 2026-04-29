@@ -20,9 +20,16 @@ from .views import (
     UiScheduledTaskViewSet,
     AIExecutionRecordViewSet,
     AICaseViewSet,
+    AITestCaseGenerationSkillViewSet,
+    AITestCaseGenerationViewSet,
     UiNotificationLogViewSet,
     OperationRecordViewSet,
-    UiDashboardViewSet
+    UiDashboardViewSet,
+    start_scroll_coordinate_picker,
+    get_scroll_coordinate_picker_position,
+    get_scroll_coordinate_picker_pages,
+    set_scroll_coordinate_picker_active_page,
+    close_scroll_coordinate_picker,
 )
 from .views_config import EnvironmentConfigViewSet, AIIntelligentModeConfigViewSet
 from .local_runner_views import LocalRunnerViewSet
@@ -47,6 +54,8 @@ router.register(r'scheduled-tasks', UiScheduledTaskViewSet)
 router.register(r'ai-execution-records', AIExecutionRecordViewSet)
 router.register(r'ai-cases', AICaseViewSet, basename='ai-cases')
 router.register(r'ai-case-generation', AICaseViewSet, basename='ai-case-generation')
+router.register(r'ai-test-case-generation-skills', AITestCaseGenerationSkillViewSet, basename='ai-test-case-generation-skills')
+router.register(r'ai-test-case-generation', AITestCaseGenerationViewSet, basename='ai-test-case-generation')
 router.register(r'notification-logs', UiNotificationLogViewSet)
 router.register(r'operation-records', OperationRecordViewSet)
 router.register(r'local-runners', LocalRunnerViewSet, basename='local-runners')
@@ -58,6 +67,11 @@ router.register(r'config/ai-mode', AIIntelligentModeConfigViewSet, basename='con
 router.register(r'ai-models', AIIntelligentModeConfigViewSet, basename='ai-models')
 
 urlpatterns = [
+    path('scroll-coordinate-picker/start/', start_scroll_coordinate_picker),
+    path('scroll-coordinate-picker/position/', get_scroll_coordinate_picker_position),
+    path('scroll-coordinate-picker/pages/', get_scroll_coordinate_picker_pages),
+    path('scroll-coordinate-picker/active-page/', set_scroll_coordinate_picker_active_page),
+    path('scroll-coordinate-picker/close/', close_scroll_coordinate_picker),
     path('', include(router.urls)),
 ]
 

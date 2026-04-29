@@ -1,5 +1,5 @@
 ﻿from rest_framework import viewsets, status
-from rest_framework.decorators import action, api_view
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.exceptions import ValidationError
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
@@ -11,6 +11,8 @@ from rest_framework import filters
 from django.db import models, transaction
 from django.utils import timezone
 import asyncio
+import csv
+import io
 import logging
 import json
 import re
@@ -18,7 +20,10 @@ import random
 import time
 import traceback
 import uuid
+from queue import Empty, Queue
+from threading import Event, Thread
 from urllib.parse import quote
+from playwright.sync_api import sync_playwright
 
 from .models import (
     UiProject, LocatorStrategy, Element, TestScript, TestSuite,
@@ -27,6 +32,7 @@ from .models import (
     TestCase, TestCaseFolder, TestCaseStep, TestCaseExecution, OperationRecord,
     TestCase, TestCaseStep, TestCaseExecution, OperationRecord,
     UiScheduledTask, UiNotificationLog, UiTaskNotificationSetting,
+    AITestCaseGenerationSkill, AITestCaseGenerationRecord,
     AICase, AIExecutionRecord, LocalRunner
 )
 from .serializers import (
@@ -45,11 +51,17 @@ from .serializers import (
     TestCaseSerializer, TestCaseFolderSerializer, TestCaseStepSerializer, TestCaseExecutionSerializer, TestCaseRunSerializer,
     OperationRecordSerializer,
     UiScheduledTaskSerializer, UiNotificationLogSerializer, UiTaskNotificationSettingSerializer,
+    AITestCaseGenerationSkillSerializer, AITestCaseGenerationRecordSerializer,
     AICaseSerializer, AIExecutionRecordSerializer
 )
 from .operation_logger import log_operation
 from .locator_strategy_defaults import ensure_default_locator_strategies
-from .variable_resolver import resolve_variables, set_runtime_variable
+from .variable_resolver import (
+    parse_scroll_action_payload,
+    resolve_element_locator_payload,
+    resolve_variables,
+    set_runtime_variable,
+)
 from .project_runtime import (
     initialize_project_runtime_variables,
 )
@@ -58,15 +70,1201 @@ from .execution_dispatcher import (
     queue_local_suite_execution,
     queue_local_test_case_executions,
 )
+from .scroll_coordinate_picker import (
+    close_local_scroll_coordinate_picker_session,
+    close_user_local_scroll_coordinate_picker_sessions,
+    create_local_scroll_coordinate_picker_session,
+    get_local_scroll_coordinate_picker_session,
+    remove_local_scroll_coordinate_picker_session,
+    request_local_scroll_coordinate_picker_pages,
+    request_local_scroll_coordinate_picker_position,
+    request_local_scroll_coordinate_picker_select_page,
+    wait_local_scroll_coordinate_picker_ready,
+)
+from .ai_case_generator import (
+    DEFAULT_UI_GENERATION_SKILL,
+    generate_ui_test_case_manifest,
+    get_generation_model_config,
+    optimize_skill_with_ai,
+    parse_uploaded_case_source,
+)
 
 logger = logging.getLogger(__name__)
 User = get_user_model()
 STEP_RUNTIME_VARIABLE_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 IMPORT_EXPORT_FORMAT_VERSION = 1
+SCROLL_COORDINATE_PICKER_SESSION_TTL = 1800
+SCROLL_COORDINATE_PICKER_SESSIONS = {}
+
+
+def _describe_scroll_coordinate_picker_page(page):
+    if page is None:
+        return {'id': None, 'url': '', 'title': '', 'closed': True}
+
+    try:
+        closed = bool(page.is_closed())
+    except Exception:
+        closed = True
+
+    try:
+        url = str(getattr(page, 'url', '') or '')
+    except Exception:
+        url = ''
+
+    return {
+        'id': id(page),
+        'url': url,
+        'title': '',
+        'closed': closed,
+    }
+
+
+def _describe_scroll_coordinate_picker_frame(frame):
+    if frame is None:
+        return {'id': None, 'url': '', 'name': ''}
+
+    try:
+        url = str(getattr(frame, 'url', '') or '')
+    except Exception:
+        url = ''
+
+    try:
+        name = str(frame.name or '')
+    except Exception:
+        name = ''
+
+    return {
+        'id': id(frame),
+        'url': url,
+        'name': name,
+    }
+
+
+def _build_scroll_coordinate_picker_pages_debug(runtime):
+    page_meta_map = runtime.get('page_meta', {})
+    pages_debug = []
+
+    for index, page in enumerate(runtime.get('pages', [])):
+        page_debug = _describe_scroll_coordinate_picker_page(page)
+        page_meta = page_meta_map.get(id(page), {})
+        page_debug.update({
+            'index': index,
+            'title': str(page_meta.get('title') or ''),
+            'is_active': page == runtime.get('active_page'),
+        })
+        pages_debug.append(page_debug)
+
+    return pages_debug
+
+
+def _close_scroll_coordinate_picker_runtime(runtime):
+    if not runtime:
+        return
+
+    for key in ['page', 'context', 'browser']:
+        obj = runtime.get(key)
+        if obj is None:
+            continue
+        try:
+            obj.close()
+        except Exception:
+            pass
+
+    playwright = runtime.get('playwright')
+    if playwright is not None:
+        try:
+            playwright.stop()
+        except Exception:
+            pass
+
+
+def _build_scroll_coordinate_picker_element_data(element):
+    if not element:
+        return None
+
+    return resolve_element_locator_payload({
+        'locator_strategy': element.locator_strategy.name if element.locator_strategy else 'css',
+        'locator_value': element.locator_value,
+        'name': element.name,
+        'wait_timeout': element.wait_timeout,
+        'force_action': element.force_action,
+    })
+
+
+def _get_scroll_coordinate_picker_locator(page, element_data):
+    if not element_data:
+        return None
+
+    locator_strategy = str(element_data.get('locator_strategy') or 'css').lower()
+    locator_value = str(element_data.get('locator_value') or '')
+    if not locator_value:
+        return None
+
+    if locator_strategy == 'id':
+        return page.locator(f'#{locator_value}')
+    if locator_strategy in ['css', 'css selector']:
+        return page.locator(locator_value)
+    if locator_strategy == 'xpath':
+        return page.locator(f'xpath={locator_value}')
+    if locator_strategy == 'text':
+        return page.get_by_text(locator_value)
+    if locator_strategy == 'name':
+        return page.locator(f'[name="{locator_value}"]')
+    if locator_strategy == 'placeholder':
+        return page.get_by_placeholder(locator_value)
+    if locator_strategy == 'role':
+        return page.get_by_role(locator_value)
+    if locator_strategy == 'label':
+        return page.get_by_label(locator_value)
+    if locator_strategy == 'title':
+        return page.get_by_title(locator_value)
+    if locator_strategy == 'test-id':
+        return page.get_by_test_id(locator_value)
+    return page.locator(locator_value)
+
+
+def _get_scroll_coordinate_picker_click_setup_script(binding_name):
+    binding_name_json = json.dumps(binding_name)
+    return f"""
+        (() => {{
+            const bindingName = {binding_name_json}
+            if (window.__testhubScrollCoordinatePickerBindingName === bindingName) {{
+                return
+            }}
+            window.__testhubScrollCoordinatePickerBindingName = bindingName
+
+            const reportClick = (event) => {{
+                const reporter = window[bindingName]
+                if (typeof reporter !== 'function') {{
+                    return
+                }}
+                const x = Math.round(event.clientX || 0)
+                const y = Math.round(event.clientY || 0)
+                const key = `${{Math.round(event.timeStamp || 0)}}:${{x}}:${{y}}:${{event.button}}`
+                if (window.__testhubScrollCoordinatePickerLastKey === key) {{
+                    return
+                }}
+                window.__testhubScrollCoordinatePickerLastKey = key
+                reporter({{
+                    kind: 'click',
+                    x,
+                    y,
+                    pageX: Math.round(event.pageX || 0),
+                    pageY: Math.round(event.pageY || 0),
+                    url: window.location.href || '',
+                    title: document.title || '',
+                }})
+            }}
+
+            document.addEventListener('mousedown', (event) => {{
+                if (event.button !== 2) {{
+                    return
+                }}
+                reportClick(event)
+            }}, true)
+
+            document.addEventListener('contextmenu', (event) => {{
+                event.preventDefault()
+                reportClick(event)
+            }}, true)
+        }})()
+    """
+
+
+def _get_scroll_coordinate_picker_active_page(runtime):
+    _sync_scroll_coordinate_picker_runtime_pages(runtime)
+
+    active_page = runtime.get('active_page')
+    try:
+        if active_page is not None and not active_page.is_closed():
+            return active_page
+    except Exception:
+        pass
+
+    pages = []
+    for page in runtime.get('pages', []):
+        try:
+            if page is not None and not page.is_closed():
+                pages.append(page)
+        except Exception:
+            continue
+
+    runtime['pages'] = pages
+    if pages:
+        runtime['active_page'] = pages[-1]
+        return pages[-1]
+    return runtime.get('page')
+
+
+def _sync_scroll_coordinate_picker_runtime_pages(runtime):
+    context = runtime.get('context')
+    if context is None:
+        return
+
+    known_pages = runtime.setdefault('pages', [])
+    try:
+        context_pages = list(getattr(context, 'pages', []) or [])
+    except Exception:
+        return
+
+    for page in context_pages:
+        try:
+            if page is None or page.is_closed():
+                continue
+        except Exception:
+            continue
+
+        if page not in known_pages:
+            _register_scroll_coordinate_picker_page(page, None, runtime)
+        else:
+            _ensure_scroll_coordinate_picker_page_hooks(page, runtime)
+            _install_scroll_coordinate_picker_click_listener(page, runtime)
+            runtime.setdefault('page_meta', {})[id(page)] = {
+                'title': str(runtime.get('page_meta', {}).get(id(page), {}).get('title') or ''),
+                'url': str(getattr(page, 'url', '') or ''),
+            }
+
+
+def _tick_scroll_coordinate_picker_runtime(runtime, millis=150):
+    active_page = runtime.get('active_page') or runtime.get('page')
+    if active_page is not None:
+        try:
+            if not active_page.is_closed():
+                active_page.wait_for_timeout(millis)
+        except Exception:
+            pass
+    _sync_scroll_coordinate_picker_runtime_pages(runtime)
+
+
+def _get_scroll_coordinate_picker_pages_payload(runtime):
+    _tick_scroll_coordinate_picker_runtime(runtime)
+
+    pages = []
+    for page in runtime.get('pages', []):
+        try:
+            if page is None or page.is_closed():
+                continue
+            pages.append(page)
+        except Exception:
+            continue
+
+    runtime['pages'] = pages
+    active_page = _get_scroll_coordinate_picker_active_page(runtime)
+    pages_payload = []
+    active_index = 0
+    page_meta_map = runtime.get('page_meta', {})
+
+    for index, page in enumerate(pages):
+        page_meta = page_meta_map.get(id(page), {})
+        title = str(page_meta.get('title') or '')
+        url = str(page_meta.get('url') or getattr(page, 'url', '') or '')
+
+        if page == active_page:
+            active_index = index
+
+        pages_payload.append({
+            'index': index,
+            'title': title,
+            'url': url,
+            'is_active': page == active_page,
+        })
+
+    return {
+        'pages': pages_payload,
+        'active_page_index': active_index if pages_payload else 0,
+    }
+
+
+def _select_scroll_coordinate_picker_page(runtime, page_index):
+    _tick_scroll_coordinate_picker_runtime(runtime)
+    pages = runtime.get('pages', [])
+    if not pages:
+        raise RuntimeError('当前没有可用的采集页面，请先点击“打开网页”')
+
+    try:
+        normalized_index = int(page_index)
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError('页面下标无效，请重新选择') from exc
+
+    if normalized_index < 0 or normalized_index >= len(pages):
+        raise RuntimeError(f'页面下标超出范围，当前可选范围为 0 ~ {len(pages) - 1}')
+
+    target_page = pages[normalized_index]
+    runtime['active_page'] = target_page
+    _install_scroll_coordinate_picker_click_listener(target_page, runtime)
+    logger.warning(
+        'scroll coordinate picker select_page index=%s target=%s pages=%s',
+        normalized_index,
+        _describe_scroll_coordinate_picker_page(target_page),
+        _build_scroll_coordinate_picker_pages_debug(runtime),
+    )
+    try:
+        target_page.bring_to_front()
+    except Exception:
+        pass
+    return _get_scroll_coordinate_picker_pages_payload(runtime)
+
+
+def _install_scroll_coordinate_picker_click_listener(page, runtime):
+    if page is None:
+        return
+
+    script = runtime.get('click_setup_script')
+    if not script:
+        return
+
+    try:
+        page.evaluate(script)
+    except Exception:
+        pass
+
+    try:
+        for frame in page.frames:
+            if frame == getattr(page, 'main_frame', None):
+                continue
+            try:
+                frame.evaluate(script)
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    page_meta = runtime.setdefault('page_meta', {})
+    page_meta[id(page)] = {
+        'title': str(page_meta.get(id(page), {}).get('title') or ''),
+        'url': str(getattr(page, 'url', '') or ''),
+    }
+
+
+def _ensure_scroll_coordinate_picker_page_hooks(page, runtime):
+    if page is None:
+        return
+
+    hooked_pages = runtime.setdefault('hooked_pages', set())
+    page_id = id(page)
+    if page_id in hooked_pages:
+        return
+
+    try:
+        page.on('domcontentloaded', lambda: _install_scroll_coordinate_picker_click_listener(page, runtime))
+    except Exception:
+        pass
+
+    try:
+        page.on('frameattached', lambda frame: _install_scroll_coordinate_picker_click_listener(page, runtime))
+    except Exception:
+        pass
+
+    try:
+        page.on('framenavigated', lambda frame: _install_scroll_coordinate_picker_click_listener(page, runtime))
+    except Exception:
+        pass
+
+    hooked_pages.add(page_id)
+
+
+def _register_scroll_coordinate_picker_page(page, session, runtime):
+    if page is None:
+        return
+
+    pages = runtime.setdefault('pages', [])
+    if page not in pages:
+        pages.append(page)
+    runtime['active_page'] = page
+    page_meta = runtime.setdefault('page_meta', {})
+    page_meta[id(page)] = {
+        'title': str(page_meta.get(id(page), {}).get('title') or ''),
+        'url': str(getattr(page, 'url', '') or ''),
+    }
+
+    logger.warning(
+        'scroll coordinate picker register_page page=%s pages=%s',
+        _describe_scroll_coordinate_picker_page(page),
+        _build_scroll_coordinate_picker_pages_debug(runtime),
+    )
+
+    _ensure_scroll_coordinate_picker_page_hooks(page, runtime)
+    _install_scroll_coordinate_picker_click_listener(page, runtime)
+
+
+def _capture_scroll_coordinate_picker_click(session, runtime, field='start', timeout=120):
+    _tick_scroll_coordinate_picker_runtime(runtime)
+
+    pending_click = {
+        'field': str(field or 'start').strip() or 'start',
+        'event': Event(),
+        'payload': None,
+    }
+    session['pending_click'] = pending_click
+
+    active_page = _get_scroll_coordinate_picker_active_page(runtime)
+    if active_page is not None:
+        _install_scroll_coordinate_picker_click_listener(active_page, runtime)
+        logger.warning(
+            'scroll coordinate picker capture_click_begin field=%s active_page=%s pages=%s',
+            field,
+            _describe_scroll_coordinate_picker_page(active_page),
+            _build_scroll_coordinate_picker_pages_debug(runtime),
+        )
+        try:
+            active_page.bring_to_front()
+        except Exception:
+            pass
+
+    deadline = time.time() + timeout
+    try:
+        while time.time() < deadline:
+            if pending_click['event'].is_set():
+                break
+
+            _tick_scroll_coordinate_picker_runtime(runtime, millis=80)
+            active_page = _get_scroll_coordinate_picker_active_page(runtime)
+            if active_page is not None:
+                _install_scroll_coordinate_picker_click_listener(active_page, runtime)
+                try:
+                    active_page.wait_for_timeout(80)
+                except Exception:
+                    time.sleep(0.1)
+            else:
+                time.sleep(0.1)
+
+        if not pending_click['event'].is_set():
+            raise TimeoutError(
+                '未捕捉到鼠标右键，请先点击“打开网页”，然后在打开的网页中右键一次。'
+                f' 当前活动页面: {_describe_scroll_coordinate_picker_page(_get_scroll_coordinate_picker_active_page(runtime))};'
+                f' 页面列表: {_build_scroll_coordinate_picker_pages_debug(runtime)}'
+            )
+
+        return pending_click.get('payload') or {}
+    finally:
+        if session.get('pending_click') is pending_click:
+            session['pending_click'] = None
+
+
+def _read_scroll_coordinate_picker_position_from_page(page, element_data=None):
+    if element_data:
+        locator = _get_scroll_coordinate_picker_locator(page, element_data)
+        if locator is None:
+            raise RuntimeError('滚动元素定位信息无效，请重新选择元素')
+
+        target = locator.first
+        target.wait_for(state='attached', timeout=5000)
+        payload = target.evaluate("""
+            function (element) {
+                const overflowKeywordRe = /(auto|scroll|overlay)/i
+                const scrollKeywordRe = /(scroll|virtual|viewport|wrap|list|container)/i
+
+                const buildNodeLabel = (node) => {
+                    if (!node || !(node instanceof Element)) {
+                        return ''
+                    }
+                    const tag = String(node.tagName || '').toLowerCase()
+                    const id = node.id ? `#${node.id}` : ''
+                    const classNames = String(node.className || '')
+                        .trim()
+                        .split(/\\s+/)
+                        .filter(Boolean)
+                        .slice(0, 4)
+                        .map((item) => `.${item}`)
+                        .join('')
+                    return `${tag}${id}${classNames}`
+                }
+
+                const getMetrics = (node) => {
+                    if (!node) {
+                        return {
+                            scrollTop: 0,
+                            scrollLeft: 0,
+                            scrollHeight: 0,
+                            clientHeight: 0,
+                            scrollWidth: 0,
+                            clientWidth: 0,
+                            rangeY: 0,
+                            rangeX: 0,
+                            overflowY: '',
+                            overflowX: '',
+                            className: '',
+                            label: '',
+                            hasOverflowStyle: false,
+                            hasKeyword: false,
+                            hasScrollableRange: false,
+                            isActive: false,
+                        }
+                    }
+
+                    const style = node instanceof Element ? window.getComputedStyle(node) : null
+                    const overflowY = style ? (style.overflowY || style.overflow || '') : ''
+                    const overflowX = style ? (style.overflowX || style.overflow || '') : ''
+                    const scrollTop = Number(node.scrollTop || 0)
+                    const scrollLeft = Number(node.scrollLeft || 0)
+                    const scrollHeight = Number(node.scrollHeight || 0)
+                    const clientHeight = Number(node.clientHeight || 0)
+                    const scrollWidth = Number(node.scrollWidth || 0)
+                    const clientWidth = Number(node.clientWidth || 0)
+                    const rangeY = Math.max(0, scrollHeight - clientHeight)
+                    const rangeX = Math.max(0, scrollWidth - clientWidth)
+                    const className = String(node.className || '')
+                    const id = String(node.id || '')
+                    const role = node instanceof Element ? String(node.getAttribute('role') || '') : ''
+                    const ariaLabel = node instanceof Element ? String(node.getAttribute('aria-label') || node.getAttribute('title') || '') : ''
+                    const hasOverflowStyle = overflowKeywordRe.test(overflowY) || overflowKeywordRe.test(overflowX)
+                    const hasKeyword = scrollKeywordRe.test(className) || scrollKeywordRe.test(id) || scrollKeywordRe.test(role) || scrollKeywordRe.test(ariaLabel)
+                    const hasScrollableRange = rangeY > 1 || rangeX > 1
+                    const isActive = hasScrollableRange || Math.abs(scrollTop) > 0 || Math.abs(scrollLeft) > 0
+
+                    return {
+                        scrollTop,
+                        scrollLeft,
+                        scrollHeight,
+                        clientHeight,
+                        scrollWidth,
+                        clientWidth,
+                        rangeY,
+                        rangeX,
+                        overflowY,
+                        overflowX,
+                        className,
+                        label: buildNodeLabel(node),
+                        hasOverflowStyle,
+                        hasKeyword,
+                        hasScrollableRange,
+                        isActive,
+                    }
+                }
+
+                const isDocumentLikeNode = (node) => {
+                    if (!node) {
+                        return false
+                    }
+                    return node === document.body || node === document.documentElement || node === document.scrollingElement
+                }
+
+                const scoreCandidate = (candidate) => {
+                    const metrics = candidate.metrics
+                    let score = 0
+                    score += Math.min(metrics.rangeY, 5000) * 3
+                    score += Math.min(metrics.rangeX, 5000) * 3
+                    if (Math.abs(metrics.scrollTop) > 0 || Math.abs(metrics.scrollLeft) > 0) {
+                        score += 2000
+                    }
+                    if (metrics.hasOverflowStyle) {
+                        score += 400
+                    }
+                    if (metrics.hasKeyword) {
+                        score += 250
+                    }
+                    if (candidate.source === 'self') {
+                        score += 150
+                    } else if (candidate.source === 'descendant') {
+                        score += 300
+                    } else if (candidate.source === 'ancestor') {
+                        score += 100
+                    }
+                    return score
+                }
+
+                const createCandidate = (node, source) => {
+                    const metrics = getMetrics(node)
+                    return {
+                        node,
+                        source,
+                        metrics,
+                        score: scoreCandidate({ node, source, metrics }),
+                    }
+                }
+
+                const pickBestCandidate = (root) => {
+                    const subtreeCandidates = [createCandidate(root, 'self')]
+                    const descendants = root.querySelectorAll('*')
+                    for (const item of descendants) {
+                        subtreeCandidates.push(createCandidate(item, 'descendant'))
+                    }
+                    const activeSubtree = subtreeCandidates
+                        .filter((candidate) => candidate.metrics.isActive)
+                        .sort((left, right) => right.score - left.score)
+                    if (activeSubtree.length) {
+                        return activeSubtree[0]
+                    }
+
+                    const ancestorCandidates = []
+                    let parent = root.parentElement
+                    while (parent) {
+                        if (!isDocumentLikeNode(parent)) {
+                            ancestorCandidates.push(createCandidate(parent, 'ancestor'))
+                        }
+                        parent = parent.parentElement
+                    }
+                    const activeAncestors = ancestorCandidates
+                        .filter((candidate) => candidate.metrics.isActive)
+                        .sort((left, right) => right.score - left.score)
+                    if (activeAncestors.length) {
+                        return activeAncestors[0]
+                    }
+
+                    const fallbackCandidates = subtreeCandidates.concat(ancestorCandidates)
+                    return fallbackCandidates.sort((left, right) => right.score - left.score)[0] || createCandidate(root, 'self')
+                }
+
+                const chosen = pickBestCandidate(element)
+                const scrollTarget = chosen.node || element
+                const metrics = chosen.metrics || getMetrics(scrollTarget)
+
+                return {
+                    x: Math.round(metrics.scrollLeft || 0),
+                    y: Math.round(metrics.scrollTop || 0),
+                    scope: 'element',
+                    elementTag: scrollTarget.tagName || '',
+                    elementName: scrollTarget.getAttribute('aria-label') || scrollTarget.getAttribute('title') || '',
+                    className: metrics.className || '',
+                    scrollHeight: Number(metrics.scrollHeight || 0),
+                    clientHeight: Number(metrics.clientHeight || 0),
+                    scrollWidth: Number(metrics.scrollWidth || 0),
+                    clientWidth: Number(metrics.clientWidth || 0),
+                    scrollRangeY: Number(metrics.rangeY || 0),
+                    scrollRangeX: Number(metrics.rangeX || 0),
+                    overflowY: metrics.overflowY || '',
+                    overflowX: metrics.overflowX || '',
+                    resolvedTarget: metrics.label || '',
+                    candidateSource: chosen.source || 'self',
+                    canScroll: Boolean(metrics.hasScrollableRange),
+                }
+            }
+        """)
+        payload['target_name'] = element_data.get('name') or ''
+        return payload
+
+    return page.evaluate("""
+        () => ({
+            x: Math.round(window.scrollX || 0),
+            y: Math.round(window.scrollY || 0),
+            scope: 'window',
+            url: window.location.href || ''
+        })
+    """)
+
+
+def _validate_scroll_coordinate_picker_position(position):
+    if not isinstance(position, dict):
+        raise ValueError('读取滚动坐标失败，请重新打开采集窗口后重试')
+
+    if str(position.get('scope') or '').lower() != 'element':
+        return position
+
+    if position.get('canScroll'):
+        return position
+
+    target_name = str(position.get('target_name') or '').strip()
+    resolved_target = str(position.get('resolvedTarget') or '').strip()
+    range_y = int(position.get('scrollRangeY') or 0)
+    range_x = int(position.get('scrollRangeX') or 0)
+    target_label = target_name or '当前选择的元素'
+    resolved_label = resolved_target or '未识别到可滚动节点'
+    raise ValueError(
+        f'未识别到可滚动容器，请先为当前滚动步骤选择左侧菜单栏等可滚动元素，再在该容器内滚动。'
+        f'当前元素: {target_label}，实际定位: {resolved_label}，纵向范围: {range_y}，横向范围: {range_x}'
+    )
+
+
+def _scroll_coordinate_picker_worker(session):
+    runtime = {}
+
+    try:
+        browser_name = session['browser_name']
+        playwright = sync_playwright().start()
+        browser_launcher = getattr(playwright, browser_name, playwright.chromium)
+
+        launch_args = []
+        if browser_name == 'chromium':
+            launch_args = [
+                '--disable-blink-features=AutomationControlled',
+                '--ignore-certificate-errors',
+                '--allow-insecure-localhost',
+                '--disable-web-security',
+                '--disable-translate',
+                '--disable-features=Translate,TranslateUI',
+                '--lang=zh-CN',
+                '--start-maximized',
+            ]
+
+        browser = browser_launcher.launch(headless=False, args=launch_args)
+
+        context_options = {
+            'locale': 'zh-CN',
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+        }
+        if browser_name == 'chromium':
+            context_options['no_viewport'] = True
+            context_options['extra_http_headers'] = {
+                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
+            }
+        else:
+            context_options['viewport'] = {'width': 1440, 'height': 900}
+
+        context = browser.new_context(**context_options)
+        binding_name = f'__testhubScrollCoordinatePickerReportClick_{session["session_id"][:8]}'
+        click_setup_script = _get_scroll_coordinate_picker_click_setup_script(binding_name)
+
+        runtime = {
+            'playwright': playwright,
+            'browser': browser,
+            'context': context,
+            'page': None,
+            'pages': [],
+            'page_meta': {},
+            'active_page': None,
+            'binding_name': binding_name,
+            'click_setup_script': click_setup_script,
+        }
+
+        def _handle_click(source, payload):
+            if not isinstance(payload, dict) or payload.get('kind') != 'click':
+                return
+
+            pending_click = session.get('pending_click')
+            if not pending_click or pending_click.get('event') is None or pending_click['event'].is_set():
+                return
+
+            source_page = source.get('page') if isinstance(source, dict) else None
+            source_frame = source.get('frame') if isinstance(source, dict) else None
+            if source_page is not None:
+                runtime['active_page'] = source_page
+                runtime.setdefault('page_meta', {})[id(source_page)] = {
+                    'title': str(payload.get('title') or ''),
+                    'url': str(payload.get('url') or ''),
+                }
+
+            logger.warning(
+                'scroll coordinate picker click_callback payload=%s source_page=%s source_frame=%s pages=%s',
+                {
+                    'x': int(payload.get('x') or 0),
+                    'y': int(payload.get('y') or 0),
+                    'pageX': int(payload.get('pageX') or 0),
+                    'pageY': int(payload.get('pageY') or 0),
+                    'url': str(payload.get('url') or ''),
+                    'title': str(payload.get('title') or ''),
+                },
+                _describe_scroll_coordinate_picker_page(source_page),
+                _describe_scroll_coordinate_picker_frame(source_frame),
+                _build_scroll_coordinate_picker_pages_debug(runtime),
+            )
+
+            pending_click['payload'] = {
+                'x': int(payload.get('x') or 0),
+                'y': int(payload.get('y') or 0),
+                'pageX': int(payload.get('pageX') or 0),
+                'pageY': int(payload.get('pageY') or 0),
+                'scope': 'click',
+                'field': pending_click.get('field') or 'start',
+                'url': str(payload.get('url') or ''),
+                'title': str(payload.get('title') or ''),
+            }
+            active_index = 0
+            for index, page in enumerate(runtime.get('pages', [])):
+                if page == source_page:
+                    active_index = index
+                    break
+            pending_click['payload']['active_page_index'] = active_index
+            pending_click['event'].set()
+
+        context.expose_binding(binding_name, _handle_click)
+        context.add_init_script(click_setup_script)
+        context.on('page', lambda popup: _register_scroll_coordinate_picker_page(popup, session, runtime))
+
+        page = context.new_page()
+        _register_scroll_coordinate_picker_page(page, session, runtime)
+        page.goto(session['base_url'], wait_until='domcontentloaded', timeout=30000)
+        try:
+            page.bring_to_front()
+        except Exception:
+            pass
+        runtime['page'] = page
+        runtime['active_page'] = page
+
+        session['worker_state'] = 'ready'
+        session['ready_event'].set()
+
+        while True:
+            try:
+                command = session['command_queue'].get(timeout=0.5)
+            except Empty:
+                _tick_scroll_coordinate_picker_runtime(runtime, millis=60)
+                if session['stop_event'].is_set():
+                    break
+                continue
+
+            action = command.get('action')
+            response_queue = command.get('response_queue')
+
+            try:
+                if action == 'capture_click':
+                    payload = _capture_scroll_coordinate_picker_click(
+                        session,
+                        runtime,
+                        field=command.get('field') or 'start',
+                        timeout=120,
+                    )
+                elif action == 'read_position':
+                    active_page = _get_scroll_coordinate_picker_active_page(runtime)
+                    if active_page is None:
+                        raise RuntimeError('当前没有可用的采集页面，请先点击“打开网页”')
+                    payload = _read_scroll_coordinate_picker_position_from_page(
+                        active_page,
+                        session.get('picker_element_data'),
+                    )
+                elif action == 'list_pages':
+                    payload = _get_scroll_coordinate_picker_pages_payload(runtime)
+                elif action == 'select_page':
+                    payload = _select_scroll_coordinate_picker_page(runtime, command.get('page_index'))
+                elif action == 'close':
+                    payload = {'success': True}
+                    session['stop_event'].set()
+                else:
+                    raise ValueError(f'unsupported scroll coordinate picker action: {action}')
+
+                if response_queue is not None:
+                    response_queue.put({'ok': True, 'payload': payload})
+
+                if action == 'close':
+                    break
+            except Exception as exc:
+                if response_queue is not None:
+                    response_queue.put({'ok': False, 'error': str(exc)})
+    except Exception as exc:
+        session['worker_error'] = str(exc)
+        session['worker_state'] = 'error'
+        session['stop_event'].set()
+        if not session['ready_event'].is_set():
+            session['ready_event'].set()
+    finally:
+        _close_scroll_coordinate_picker_runtime(runtime)
+        session['worker_state'] = 'closed'
+        session['stop_event'].set()
+        if not session['ready_event'].is_set():
+            session['ready_event'].set()
+
+
+def _close_scroll_coordinate_picker_session(session):
+    if not session:
+        return
+
+    session['stop_event'].set()
+    worker = session.get('worker')
+    command_queue = session.get('command_queue')
+
+    if worker and worker.is_alive() and command_queue is not None:
+        response_queue = Queue(maxsize=1)
+        try:
+            command_queue.put({'action': 'close', 'response_queue': response_queue}, timeout=1)
+            try:
+                response_queue.get(timeout=5)
+            except Empty:
+                pass
+        except Exception:
+            pass
+        worker.join(timeout=5)
+
+
+def _cleanup_scroll_coordinate_picker_sessions(user_id=None):
+    now = time.time()
+    for session_id, session in list(SCROLL_COORDINATE_PICKER_SESSIONS.items()):
+        if user_id is not None and session.get('user_id') != user_id:
+            continue
+        if now - session.get('last_used_at', session.get('created_at', now)) <= SCROLL_COORDINATE_PICKER_SESSION_TTL:
+            continue
+        _close_scroll_coordinate_picker_session(session)
+        SCROLL_COORDINATE_PICKER_SESSIONS.pop(session_id, None)
+
+
+def _close_user_scroll_coordinate_picker_sessions(user_id):
+    for session_id, session in list(SCROLL_COORDINATE_PICKER_SESSIONS.items()):
+        if session.get('user_id') != user_id:
+            continue
+        _close_scroll_coordinate_picker_session(session)
+        SCROLL_COORDINATE_PICKER_SESSIONS.pop(session_id, None)
+
+
+def _normalize_scroll_coordinate_picker_browser(browser):
+    return {
+        'chrome': 'chromium',
+        'edge': 'chromium',
+        'firefox': 'firefox',
+        'safari': 'webkit',
+    }.get(str(browser or 'chrome').lower(), 'chromium')
+
+
+def _create_scroll_coordinate_picker_session(user_id, base_url, browser='chrome', picker_element_data=None):
+    _cleanup_scroll_coordinate_picker_sessions(user_id=user_id)
+    _close_user_scroll_coordinate_picker_sessions(user_id)
+
+    try:
+        browser_name = _normalize_scroll_coordinate_picker_browser(browser)
+        session_id = uuid.uuid4().hex
+        session = {
+            'session_id': session_id,
+            'user_id': user_id,
+            'base_url': base_url,
+            'browser_name': browser_name,
+            'picker_element_data': picker_element_data or None,
+            'created_at': time.time(),
+            'last_used_at': time.time(),
+            'worker_state': 'starting',
+            'worker_error': '',
+            'ready_event': Event(),
+            'stop_event': Event(),
+            'command_queue': Queue(),
+        }
+
+        worker = Thread(
+            target=_scroll_coordinate_picker_worker,
+            args=(session,),
+            name=f'scroll-coordinate-picker-{session_id[:8]}',
+            daemon=True,
+        )
+        session['worker'] = worker
+        worker.start()
+        session['ready_event'].wait(timeout=45)
+
+        if session.get('worker_state') != 'ready':
+            raise RuntimeError(session.get('worker_error') or '服务端坐标采集浏览器启动超时')
+
+        SCROLL_COORDINATE_PICKER_SESSIONS[session_id] = session
+        return session
+    except Exception:
+        _close_scroll_coordinate_picker_session(locals().get('session'))
+        raise
+
+
+def _get_scroll_coordinate_picker_session(session_id, user_id):
+    _cleanup_scroll_coordinate_picker_sessions(user_id=user_id)
+    session = SCROLL_COORDINATE_PICKER_SESSIONS.get(session_id)
+    if not session or session.get('user_id') != user_id:
+        raise ValidationError('坐标采集浏览器会话不存在或已过期，请重新获取坐标')
+    worker = session.get('worker')
+    if session.get('worker_state') != 'ready' or worker is None or not worker.is_alive():
+        raise ValidationError('坐标采集浏览器已关闭，请重新打开后再获取坐标')
+    session['last_used_at'] = time.time()
+    return session
+
+
+def _run_scroll_coordinate_picker_command(session, action, timeout=20, **command_data):
+    worker = session.get('worker')
+    if worker is None or not worker.is_alive():
+        raise ValidationError('坐标采集浏览器已关闭，请重新打开后再获取坐标')
+
+    response_queue = Queue(maxsize=1)
+    command_payload = {'action': action, 'response_queue': response_queue}
+    command_payload.update(command_data)
+    session['command_queue'].put(command_payload, timeout=2)
+
+    try:
+        result = response_queue.get(timeout=timeout)
+    except Empty as exc:
+        raise ValidationError('读取滚动坐标超时，请确认服务端采集浏览器仍然打开') from exc
+
+    if not result.get('ok'):
+        raise RuntimeError(result.get('error') or '滚动坐标采集执行失败')
+
+    session['last_used_at'] = time.time()
+    return result.get('payload')
+
+
+def _read_scroll_coordinate_picker_position(session):
+    return _run_scroll_coordinate_picker_command(session, 'read_position')
+
+
+def _capture_scroll_coordinate_picker_position(session, field='start'):
+    return _run_scroll_coordinate_picker_command(session, 'capture_click', timeout=130, field=field)
+
+
+def _get_scroll_coordinate_picker_pages(session):
+    return _run_scroll_coordinate_picker_command(session, 'list_pages', timeout=20)
+
+
+def _set_scroll_coordinate_picker_active_page(session, page_index):
+    return _run_scroll_coordinate_picker_command(session, 'select_page', timeout=20, page_index=int(page_index))
 
 
 def normalize_runtime_variable_name(value):
     return str(value or '').strip()
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def start_scroll_coordinate_picker(request):
+    project_id = request.data.get('project_id')
+    base_url = str(request.data.get('base_url') or '').strip()
+    browser = request.data.get('browser', 'chrome')
+    runner_id = request.data.get('runner_id')
+    element_id = request.data.get('element_id')
+    picker_element_data = None
+    project = None
+
+    if not base_url:
+        if not project_id:
+            return Response({'error': 'project_id or base_url is required'}, status=status.HTTP_400_BAD_REQUEST)
+        project = get_object_or_404(UiProject, id=project_id)
+        base_url = str(project.base_url or '').strip()
+    elif project_id:
+        project = get_object_or_404(UiProject, id=project_id)
+
+    if not base_url:
+        return Response({'error': '项目未配置基础URL，无法获取滚动坐标'}, status=status.HTTP_400_BAD_REQUEST)
+
+    if element_id:
+        element = get_object_or_404(Element, id=element_id)
+        if project is not None and element.project_id != project.id:
+            return Response({'error': '所选滚动元素不属于当前项目'}, status=status.HTTP_400_BAD_REQUEST)
+        picker_element_data = _build_scroll_coordinate_picker_element_data(element)
+
+    try:
+        if runner_id:
+            runner = get_object_or_404(LocalRunner, id=runner_id, user=request.user)
+            if not runner.is_online:
+                return Response({'error': '所选本地执行器不在线，请先在访客机启动执行器'}, status=status.HTTP_400_BAD_REQUEST)
+            session = create_local_scroll_coordinate_picker_session(
+                request.user.id,
+                runner.id,
+                base_url,
+                browser=browser,
+                picker_element_data=picker_element_data,
+            )
+            wait_local_scroll_coordinate_picker_ready(session, timeout=45)
+            return Response({
+                'session_id': session['session_id'],
+                'base_url': session['base_url'],
+                'browser': session.get('browser_name') or 'chromium',
+                'mode': 'local',
+                'runner_id': runner.id,
+                'runner_name': runner.name,
+                'target_scope': 'element' if picker_element_data else 'window',
+                'target_name': picker_element_data.get('name', '') if picker_element_data else '',
+            })
+
+        session = _create_scroll_coordinate_picker_session(
+            request.user.id,
+            base_url,
+            browser=browser,
+            picker_element_data=picker_element_data,
+        )
+        return Response({
+            'session_id': session['session_id'],
+            'base_url': session['base_url'],
+            'browser': session.get('browser_name') or 'chromium',
+            'mode': 'server',
+            'target_scope': 'element' if picker_element_data else 'window',
+            'target_name': picker_element_data.get('name', '') if picker_element_data else '',
+        })
+    except Exception as exc:
+        logger.exception('启动滚动坐标采集浏览器失败')
+        return Response({'error': f'启动滚动坐标采集浏览器失败: {exc}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def get_scroll_coordinate_picker_position(request):
+    session_id = str(request.data.get('session_id') or '').strip()
+    field = str(request.data.get('field') or 'start').strip() or 'start'
+    if not session_id:
+        return Response({'error': 'session_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        local_session = get_local_scroll_coordinate_picker_session(session_id, request.user.id, strict=False)
+        if local_session is not None:
+            position = request_local_scroll_coordinate_picker_position(local_session, timeout=130, field=field)
+            return Response(_validate_scroll_coordinate_picker_position(position))
+
+        session = _get_scroll_coordinate_picker_session(session_id, request.user.id)
+        position = _capture_scroll_coordinate_picker_position(session, field=field)
+        return Response(_validate_scroll_coordinate_picker_position(position))
+    except ValidationError as exc:
+        return Response({'error': str(exc.detail if hasattr(exc, 'detail') else exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except (ValueError, RuntimeError, TimeoutError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as exc:
+        logger.exception('读取滚动坐标失败')
+        return Response({'error': f'读取滚动坐标失败: {exc}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def get_scroll_coordinate_picker_pages(request):
+    session_id = str(request.data.get('session_id') or '').strip()
+    if not session_id:
+        return Response({'error': 'session_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        local_session = get_local_scroll_coordinate_picker_session(session_id, request.user.id, strict=False)
+        if local_session is not None:
+            payload = request_local_scroll_coordinate_picker_pages(local_session, timeout=20)
+            return Response(payload)
+
+        session = _get_scroll_coordinate_picker_session(session_id, request.user.id)
+        payload = _get_scroll_coordinate_picker_pages(session)
+        return Response(payload)
+    except ValidationError as exc:
+        return Response({'error': str(exc.detail if hasattr(exc, 'detail') else exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except (ValueError, RuntimeError, TimeoutError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as exc:
+        logger.exception('读取坐标采集页面列表失败')
+        return Response({'error': f'读取坐标采集页面列表失败: {exc}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def set_scroll_coordinate_picker_active_page(request):
+    session_id = str(request.data.get('session_id') or '').strip()
+    page_index = request.data.get('page_index')
+    if not session_id:
+        return Response({'error': 'session_id is required'}, status=status.HTTP_400_BAD_REQUEST)
+    if page_index in [None, '']:
+        return Response({'error': 'page_index is required'}, status=status.HTTP_400_BAD_REQUEST)
+
+    try:
+        local_session = get_local_scroll_coordinate_picker_session(session_id, request.user.id, strict=False)
+        if local_session is not None:
+            payload = request_local_scroll_coordinate_picker_select_page(local_session, page_index, timeout=20)
+            return Response(payload)
+
+        session = _get_scroll_coordinate_picker_session(session_id, request.user.id)
+        payload = _set_scroll_coordinate_picker_active_page(session, page_index)
+        return Response(payload)
+    except ValidationError as exc:
+        return Response({'error': str(exc.detail if hasattr(exc, 'detail') else exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except (ValueError, RuntimeError, TimeoutError) as exc:
+        return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as exc:
+        logger.exception('切换坐标采集页面失败')
+        return Response({'error': f'切换坐标采集页面失败: {exc}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def close_scroll_coordinate_picker(request):
+    session_id = str(request.data.get('session_id') or '').strip()
+
+    try:
+        if session_id:
+            local_session = get_local_scroll_coordinate_picker_session(session_id, request.user.id, strict=False)
+            if local_session is not None:
+                close_local_scroll_coordinate_picker_session(local_session)
+                remove_local_scroll_coordinate_picker_session(session_id)
+                return Response({'success': True})
+
+            session = _get_scroll_coordinate_picker_session(session_id, request.user.id)
+            _close_scroll_coordinate_picker_session(session)
+            SCROLL_COORDINATE_PICKER_SESSIONS.pop(session_id, None)
+        else:
+            close_user_local_scroll_coordinate_picker_sessions(request.user.id)
+            _close_user_scroll_coordinate_picker_sessions(request.user.id)
+        return Response({'success': True})
+    except ValidationError:
+        return Response({'success': True})
+    except (ValueError, RuntimeError, TimeoutError):
+        return Response({'success': True})
+    except Exception as exc:
+        logger.exception('关闭滚动坐标采集浏览器失败')
+        return Response({'error': f'关闭滚动坐标采集浏览器失败: {exc}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 def _record_step_failure(
@@ -516,6 +1714,85 @@ def validate_test_case_steps_payload(steps_data):
         validated_steps.append(step_data)
 
     return validated_steps
+
+
+def import_test_case_manifest_into_project(project, manifest, user, overwrite=False, target_folder=None):
+    if manifest.get('format') != 'ui_automation_test_cases':
+        raise ValidationError('导入文件格式不正确')
+
+    test_cases_data = manifest.get('test_cases') or []
+    if not isinstance(test_cases_data, list) or not test_cases_data:
+        raise ValidationError('导入文件中没有可用的测试用例数据')
+
+    summary = {'created': 0, 'updated': 0, 'case_ids': []}
+
+    with transaction.atomic():
+        for case_data in test_cases_data:
+            if target_folder is not None:
+                folder = target_folder
+            else:
+                folder = ensure_test_case_folder(
+                    project,
+                    case_data.get('folder_name'),
+                    created_by=user
+                )
+
+            name = str(case_data.get('name', '') or '').strip()
+            if not name:
+                raise ValidationError('测试用例名称不能为空')
+
+            existing_case = None
+            if overwrite:
+                existing_case = TestCase.objects.filter(project=project, name=name).first()
+            else:
+                name = ensure_test_case_name_available(project, name)
+
+            if existing_case:
+                test_case = existing_case
+                test_case.description = str(case_data.get('description', '') or '').strip()
+                test_case.status = case_data.get('status') or test_case.status
+                test_case.priority = case_data.get('priority') or test_case.priority
+                test_case.folder = folder
+                test_case.save()
+                test_case.steps.all().delete()
+                summary['updated'] += 1
+            else:
+                test_case = TestCase.objects.create(
+                    project=project,
+                    folder=folder,
+                    name=name,
+                    description=str(case_data.get('description', '') or '').strip(),
+                    status=case_data.get('status') or 'draft',
+                    priority=case_data.get('priority') or 'medium',
+                    created_by=user
+                )
+                summary['created'] += 1
+
+            summary['case_ids'].append(test_case.id)
+            for index, step_data in enumerate(case_data.get('steps') or [], start=1):
+                resolved_step = resolve_imported_test_case_step(
+                    project,
+                    step_data,
+                    created_by=user,
+                    overwrite=overwrite
+                )
+                TestCaseStep.objects.create(
+                    test_case=test_case,
+                    step_number=index,
+                    action_type=resolved_step['action_type'],
+                    element=resolved_step['element'],
+                    input_value=resolved_step['input_value'],
+                    wait_time=resolved_step['wait_time'],
+                    assert_type=resolved_step['assert_type'],
+                    assert_value=resolved_step['assert_value'],
+                    description=resolved_step['description'],
+                    is_enabled=resolved_step['is_enabled'],
+                    save_as=resolved_step['save_as'],
+                    transaction_id=resolved_step['transaction_id'],
+                    transaction_name=resolved_step['transaction_name'],
+                )
+
+    return summary
 
 
 def ensure_test_case_name_available(project, name, exclude_id=None):
@@ -1735,74 +3012,12 @@ class TestCaseViewSet(viewsets.ModelViewSet):
         project = get_accessible_project_for_request(request, request.data.get('project'))
         overwrite = normalize_import_overwrite_flag(request.data.get('overwrite'))
         manifest = parse_uploaded_manifest(request)
-
-        if manifest.get('format') != 'ui_automation_test_cases':
-            raise ValidationError('导入文件格式不正确')
-
-        test_cases_data = manifest.get('test_cases') or []
-        if not isinstance(test_cases_data, list) or not test_cases_data:
-            raise ValidationError('导入文件中没有可用的测试用例数据')
-
-        summary = {'created': 0, 'updated': 0}
-
-        with transaction.atomic():
-            for case_data in test_cases_data:
-                folder = ensure_test_case_folder(
-                    project,
-                    case_data.get('folder_name'),
-                    created_by=request.user
-                )
-                name = str(case_data.get('name', '') or '').strip()
-                name = ensure_test_case_name_available(project, name) if not overwrite else str(name).strip()
-
-                existing_case = None
-                if overwrite:
-                    existing_case = TestCase.objects.filter(project=project, name=name).first()
-
-                if existing_case:
-                    test_case = existing_case
-                    test_case.description = str(case_data.get('description', '') or '').strip()
-                    test_case.status = case_data.get('status') or test_case.status
-                    test_case.priority = case_data.get('priority') or test_case.priority
-                    test_case.folder = folder
-                    test_case.save()
-                    test_case.steps.all().delete()
-                    summary['updated'] += 1
-                else:
-                    test_case = TestCase.objects.create(
-                        project=project,
-                        folder=folder,
-                        name=ensure_test_case_name_available(project, name),
-                        description=str(case_data.get('description', '') or '').strip(),
-                        status=case_data.get('status') or 'draft',
-                        priority=case_data.get('priority') or 'medium',
-                        created_by=request.user
-                    )
-                    summary['created'] += 1
-
-                steps = case_data.get('steps') or []
-                for index, step_data in enumerate(steps, start=1):
-                    resolved_step = resolve_imported_test_case_step(
-                        project,
-                        step_data,
-                        created_by=request.user,
-                        overwrite=overwrite
-                    )
-                    TestCaseStep.objects.create(
-                        test_case=test_case,
-                        step_number=index,
-                        action_type=resolved_step['action_type'],
-                        element=resolved_step['element'],
-                        input_value=resolved_step['input_value'],
-                        wait_time=resolved_step['wait_time'],
-                        assert_type=resolved_step['assert_type'],
-                        assert_value=resolved_step['assert_value'],
-                        description=resolved_step['description'],
-                        is_enabled=resolved_step['is_enabled'],
-                        save_as=resolved_step['save_as'],
-                        transaction_id=resolved_step['transaction_id'],
-                        transaction_name=resolved_step['transaction_name'],
-                    )
+        summary = import_test_case_manifest_into_project(
+            project,
+            manifest,
+            request.user,
+            overwrite=overwrite
+        )
 
         return Response({
             'success': True,
@@ -1949,12 +3164,33 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                 log_parts.append(f"- 悬停操作失败 - 元素未找到")
 
         elif step.action_type == 'scroll':
-            log_parts.append(f"滚动到元素 '{element_name}'")
-            log_parts.append(f"- 使用定位器: {locator_info}")
-            if step_result == 'success':
-                log_parts.append(f"- 滚动操作成功 - 耗时 {execution_time}s")
+            scroll_payload = parse_scroll_action_payload(step.input_value)
+            if scroll_payload:
+                direction_label = {
+                    'vertical': '纵向滚动',
+                    'horizontal': '横向滚动',
+                    'up': '往上滚动',
+                    'down': '往下滚动',
+                }.get(scroll_payload['scroll_direction'], '纵向滚动')
+                scope_label = '元素容器滚动' if scroll_payload.get('scroll_scope') == 'element' else '页面滚动'
+                log_parts.append(f"{scope_label} - {direction_label}")
+                log_parts.append(
+                    f"- 起始坐标: ({scroll_payload['start_x']}, {scroll_payload['start_y']}) -> "
+                    f"目标坐标: ({scroll_payload['target_x']}, {scroll_payload['target_y']})"
+                )
+                if scroll_payload.get('scroll_scope') == 'element':
+                    log_parts.append(f"- 滚动元素: {element_name}")
+                if step_result == 'success':
+                    log_parts.append(f"- 滚动操作成功 - 耗时 {execution_time}s")
+                else:
+                    log_parts.append(f"- 滚动操作失败 - 坐标滚动未完成")
             else:
-                log_parts.append(f"- 滚动操作失败 - 元素未找到")
+                log_parts.append(f"滚动到元素 '{element_name}'")
+                log_parts.append(f"- 使用定位器: {locator_info}")
+                if step_result == 'success':
+                    log_parts.append(f"- 滚动操作成功 - 耗时 {execution_time}s")
+                else:
+                    log_parts.append(f"- 滚动操作失败 - 元素未找到")
 
         elif step.action_type == 'drag':
             target_name = '目标元素'
@@ -2198,13 +3434,13 @@ class TestCaseViewSet(viewsets.ModelViewSet):
 
                 # 获取元素数据
                 if step.element:
-                    step_data['element_data'] = {
+                    step_data['element_data'] = resolve_element_locator_payload({
                         'locator_strategy': step.element.locator_strategy.name if step.element.locator_strategy else 'css',
                         'locator_value': step.element.locator_value,
                         'name': step.element.name,
                         'wait_timeout': step.element.wait_timeout,  # 添加元素的等待超时设置（秒）
                         'force_action': step.element.force_action  # 添加强制操作选项
-                    }
+                    })
                 else:
                     step_data['element_data'] = None
 
@@ -2325,6 +3561,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                                     resolved_input_value, resolved_assert_value = resolve_step_runtime_payload(step)
                                     step.input_value = resolved_input_value
                                     step.assert_value = resolved_assert_value
+                                    element_data = resolve_element_locator_payload(element_data) if element_data else element_data
                                     success, step_log, screenshot_base64 = engine.execute_step(step, element_data or {})
                                     if success:
                                         store_step_runtime_variable(
@@ -2538,6 +3775,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                                             resolved_input_value, resolved_assert_value = resolve_step_runtime_payload(step)
                                             step.input_value = resolved_input_value
                                             step.assert_value = resolved_assert_value
+                                            element_data = resolve_element_locator_payload(element_data) if element_data else element_data
                                             success, step_log, screenshot_base64 = await engine.execute_step(step,
                                                                                                              element_data or {})
                                             if success:
@@ -3191,13 +4429,13 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                     }
 
                                     if step.element:
-                                        step_data['element_data'] = {
+                                        step_data['element_data'] = resolve_element_locator_payload({
                                             'locator_strategy': step.element.locator_strategy.name if step.element.locator_strategy else 'css',
                                             'locator_value': step.element.locator_value,
                                             'name': step.element.name,
                                             'wait_timeout': step.element.wait_timeout,
                                             'force_action': step.element.force_action
-                                        }
+                                        })
                                     else:
                                         step_data['element_data'] = None
 
@@ -3267,6 +4505,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                             resolved_input_value, resolved_assert_value = resolve_step_runtime_payload(step)
                                             step.input_value = resolved_input_value
                                             step.assert_value = resolved_assert_value
+                                            element_data = resolve_element_locator_payload(element_data) if element_data else element_data
                                             success, step_log, screenshot_base64 = engine.execute_step(step,
                                                                                                        element_data or {})
                                             if success:
@@ -3368,6 +4607,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                                 resolved_input_value, resolved_assert_value = resolve_step_runtime_payload(step)
                                                 step.input_value = resolved_input_value
                                                 step.assert_value = resolved_assert_value
+                                                element_data = resolve_element_locator_payload(element_data) if element_data else element_data
                                                 success, step_log, screenshot_base64 = await engine.execute_step(step,
                                                                                                                  element_data or {})
                                                 if success:
@@ -4854,6 +6094,275 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
                 'success': False,
                 'error': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class AITestCaseGenerationSkillViewSet(viewsets.ModelViewSet):
+    """Manage skills used by AI UI test case generation."""
+    serializer_class = AITestCaseGenerationSkillSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['name', 'description', 'content']
+    ordering_fields = ['updated_at', 'created_at', 'name']
+    ordering = ['-is_default', '-updated_at']
+
+    def get_queryset(self):
+        return AITestCaseGenerationSkill.objects.filter(
+            models.Q(created_by=self.request.user) | models.Q(created_by__isnull=True)
+        )
+
+    def perform_create(self, serializer):
+        skill = serializer.save(created_by=self.request.user)
+        if skill.is_default:
+            AITestCaseGenerationSkill.objects.exclude(id=skill.id).filter(created_by=self.request.user).update(is_default=False)
+
+    def perform_update(self, serializer):
+        skill = serializer.save()
+        if skill.is_default:
+            AITestCaseGenerationSkill.objects.exclude(id=skill.id).filter(created_by=self.request.user).update(is_default=False)
+
+    @action(detail=False, methods=['post'], url_path='ensure-default')
+    def ensure_default(self, request):
+        skill = ensure_default_ai_generation_skill(request.user)
+        return Response(self.get_serializer(skill).data)
+
+    @action(detail=True, methods=['post'], url_path='set-default')
+    def set_default(self, request, pk=None):
+        skill = self.get_object()
+        AITestCaseGenerationSkill.objects.filter(created_by=request.user).exclude(id=skill.id).update(is_default=False)
+        skill.is_default = True
+        skill.is_active = True
+        skill.save(update_fields=['is_default', 'is_active', 'updated_at'])
+        return Response(self.get_serializer(skill).data)
+
+
+class AITestCaseGenerationViewSet(viewsets.ModelViewSet):
+    """Generate importable UI automation test case manifests from text or files."""
+    serializer_class = AITestCaseGenerationRecordSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['project', 'status', 'source_type']
+    ordering_fields = ['created_at', 'updated_at']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        accessible_projects = get_accessible_projects_for_user(self.request.user)
+        return AITestCaseGenerationRecord.objects.filter(project__in=accessible_projects).select_related(
+            'project', 'skill', 'created_by'
+        )
+
+    @action(detail=False, methods=['post'], url_path='generate')
+    def generate(self, request):
+        project = get_accessible_project_for_request(request, request.data.get('project'))
+        natural_text = str(request.data.get('text') or '').strip()
+        uploaded_source = parse_uploaded_case_source(request.FILES.get('file'))
+
+        source_parts = []
+        if natural_text:
+            source_parts.append(natural_text)
+        if uploaded_source.text:
+            source_parts.append(uploaded_source.text)
+        source_text = '\n\n'.join(source_parts)
+
+        skill = self._resolve_skill(request)
+        model_config_id = request.data.get('model_config_id') or request.data.get('ai_model_config_id')
+        model_config = get_generation_model_config(model_config_id)
+        use_ai = not str(request.data.get('use_ai', '1')).strip().lower() in {'0', 'false', 'no', 'off'}
+
+        manifest, warnings, generation_mode = generate_ui_test_case_manifest(
+            project,
+            source_text,
+            skill_content=skill.content if skill else DEFAULT_UI_GENERATION_SKILL,
+            model_config=model_config,
+            use_ai=use_ai
+        )
+        warnings = list(uploaded_source.warnings) + warnings
+
+        if natural_text and uploaded_source.text:
+            source_type = 'mixed'
+        elif uploaded_source.text:
+            source_type = 'file'
+        else:
+            source_type = 'text'
+
+        record = AITestCaseGenerationRecord.objects.create(
+            project=project,
+            skill=skill,
+            ai_model_config_id=model_config.id if model_config else None,
+            source_type=source_type,
+            source_name=uploaded_source.name or 'natural-language',
+            source_text=source_text[:200000],
+            manifest=manifest,
+            warnings=warnings,
+            status='generated',
+            created_by=request.user
+        )
+
+        return Response({
+            'success': True,
+            'generation_mode': generation_mode,
+            'record': self.get_serializer(record).data,
+            'manifest': manifest,
+            'warnings': warnings,
+        })
+
+    @action(detail=True, methods=['post'], url_path='import')
+    def import_generated(self, request, pk=None):
+        record = self.get_object()
+        overwrite = normalize_import_overwrite_flag(request.data.get('overwrite'))
+        folder_id = request.data.get('folder_id')
+        target_folder = None
+        if folder_id not in [None, '', 'null']:
+            target_folder = get_object_or_404(TestCaseFolder, id=folder_id, project=record.project)
+
+        summary = import_test_case_manifest_into_project(
+            record.project,
+            record.manifest,
+            request.user,
+            overwrite=overwrite,
+            target_folder=target_folder
+        )
+        record.status = 'imported'
+        record.import_summary = summary
+        record.save(update_fields=['status', 'import_summary', 'updated_at'])
+
+        return Response({
+            'success': True,
+            'message': 'AI生成用例导入成功',
+            'summary': summary,
+            'record': self.get_serializer(record).data,
+        })
+
+    @action(detail=False, methods=['post'], url_path='import-manifest')
+    def import_manifest(self, request):
+        project = get_accessible_project_for_request(request, request.data.get('project'))
+        manifest = request.data.get('manifest')
+        if isinstance(manifest, str):
+            try:
+                manifest = json.loads(manifest)
+            except json.JSONDecodeError as exc:
+                raise ValidationError(f'manifest JSON解析失败: {exc}')
+        if not isinstance(manifest, dict):
+            raise ValidationError('manifest 必须是JSON对象')
+
+        overwrite = normalize_import_overwrite_flag(request.data.get('overwrite'))
+        folder_id = request.data.get('folder_id')
+        target_folder = None
+        if folder_id not in [None, '', 'null']:
+            target_folder = get_object_or_404(TestCaseFolder, id=folder_id, project=project)
+
+        summary = import_test_case_manifest_into_project(
+            project,
+            manifest,
+            request.user,
+            overwrite=overwrite,
+            target_folder=target_folder
+        )
+        return Response({'success': True, 'summary': summary})
+
+    @action(detail=False, methods=['post'], url_path='optimize-skill')
+    def optimize_skill(self, request):
+        instruction = request.data.get('instruction') or request.data.get('message')
+        skill = self._resolve_skill(request, create_default=True)
+        current_content = request.data.get('current_skill') or (skill.content if skill else DEFAULT_UI_GENERATION_SKILL)
+        model_config_id = request.data.get('model_config_id') or request.data.get('ai_model_config_id')
+        model_config = get_generation_model_config(model_config_id)
+
+        optimized_content, warnings = optimize_skill_with_ai(current_content, instruction, model_config=model_config)
+        save_mode = request.data.get('save_mode', 'preview')
+        saved_skill = None
+
+        if save_mode == 'update' and skill:
+            skill.content = optimized_content
+            skill.save(update_fields=['content', 'updated_at'])
+            saved_skill = skill
+        elif save_mode == 'new':
+            saved_skill = AITestCaseGenerationSkill.objects.create(
+                name=str(request.data.get('name') or f'{skill.name if skill else "AI生成Skill"}-优化版')[:120],
+                description='通过对话优化生成',
+                content=optimized_content,
+                is_default=False,
+                is_active=True,
+                created_by=request.user
+            )
+
+        return Response({
+            'success': True,
+            'content': optimized_content,
+            'warnings': warnings,
+            'skill': AITestCaseGenerationSkillSerializer(saved_skill, context={'request': request}).data if saved_skill else None,
+        })
+
+    @action(detail=False, methods=['get'], url_path='template')
+    def download_template(self, request):
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow([
+            'case_name', 'folder_name', 'priority', 'status', 'case_description',
+            'step_description', 'action_type', 'page', 'element_name', 'element_type',
+            'locator_strategy', 'locator_value', 'input_value', 'assert_type',
+            'assert_value', 'wait_time'
+        ])
+        writer.writerow([
+            '登录成功', '登录流程', 'high', 'draft', '验证用户可以使用账号密码登录',
+            '输入账号 admin', 'fill', '登录页', '账号输入框', 'INPUT',
+            'XPath', "//input[@placeholder='请输入账号']", 'admin', '', '', '1000'
+        ])
+        writer.writerow([
+            '登录成功', '登录流程', 'high', 'draft', '验证用户可以使用账号密码登录',
+            '输入密码 123456', 'fill', '登录页', '密码输入框', 'INPUT',
+            'XPath', "//input[@placeholder='请输入密码']", '123456', '', '', '1000'
+        ])
+        writer.writerow([
+            '登录成功', '登录流程', 'high', 'draft', '验证用户可以使用账号密码登录',
+            '点击登录按钮', 'click', '登录页', '登录按钮', 'BUTTON',
+            'text', '登录', '', '', '', '1000'
+        ])
+        writer.writerow([
+            '登录成功', '登录流程', 'high', 'draft', '验证用户可以使用账号密码登录',
+            '验证进入首页', 'assert', '首页', '首页标题', 'TEXT',
+            'text', '首页', '', 'textContains', '首页', '1000'
+        ])
+        payload = '\ufeff' + output.getvalue()
+        response = HttpResponse(payload, content_type='text/csv; charset=utf-8')
+        response['Content-Disposition'] = "attachment; filename*=UTF-8''ai-ui-test-case-template.csv"
+        return response
+
+    def _resolve_skill(self, request, create_default=False):
+        skill_id = request.data.get('skill_id')
+        if skill_id:
+            return get_object_or_404(
+                AITestCaseGenerationSkill.objects.filter(
+                    models.Q(created_by=request.user) | models.Q(created_by__isnull=True)
+                ),
+                id=skill_id
+            )
+        skill = AITestCaseGenerationSkill.objects.filter(
+            models.Q(created_by=request.user) | models.Q(created_by__isnull=True),
+            is_active=True,
+            is_default=True
+        ).order_by('-created_by_id', '-updated_at').first()
+        if skill:
+            return skill
+        if create_default:
+            return ensure_default_ai_generation_skill(request.user)
+        return ensure_default_ai_generation_skill(request.user)
+
+
+def ensure_default_ai_generation_skill(user):
+    skill = AITestCaseGenerationSkill.objects.filter(created_by=user, is_default=True).first()
+    if skill:
+        return skill
+    skill, _ = AITestCaseGenerationSkill.objects.get_or_create(
+        created_by=user,
+        name='默认UI自动化用例生成Skill',
+        defaults={
+            'description': '将自然语言、Excel、XMind、TXT测试用例转换为可导入用例管理的UI自动化manifest',
+            'content': DEFAULT_UI_GENERATION_SKILL,
+            'is_default': True,
+            'is_active': True,
+        }
+    )
+    return skill
 
 
 class UiDashboardViewSet(viewsets.ViewSet):

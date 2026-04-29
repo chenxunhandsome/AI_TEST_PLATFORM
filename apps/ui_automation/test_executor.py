@@ -25,11 +25,25 @@ from .models import (
     TestSuite, TestExecution, TestCase, TestCaseStep,
     TestCaseExecution, Element
 )
-from .variable_resolver import resolve_variables, set_runtime_variable
+from .variable_resolver import (
+    parse_scroll_action_payload,
+    resolve_element_locator_payload,
+    resolve_variables,
+    set_runtime_variable,
+)
 from .project_runtime import initialize_project_runtime_variables
 
 
 RUNTIME_VARIABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+
+def _get_scroll_direction_label(direction):
+    return {
+        'vertical': '纵向滚动',
+        'horizontal': '横向滚动',
+        'up': '往上滚动',
+        'down': '往下滚动',
+    }.get(direction, '纵向滚动')
 
 
 def _normalize_runtime_variable_name(value):
@@ -490,12 +504,12 @@ class TestExecutor:
 
                 # 如果有元素，预先获取元素数据
                 if step.element:
-                    step_data['element'] = {
+                    step_data['element'] = resolve_element_locator_payload({
                         'id': step.element.id,
                         'name': step.element.name,
                         'locator_value': step.element.locator_value,
                         'locator_strategy': step.element.locator_strategy.name if step.element.locator_strategy else 'css'
-                    }
+                    })
 
                 case_data['steps'].append(step_data)
 
@@ -545,6 +559,8 @@ class TestExecutor:
                         '--disable-features=Translate,TranslateUI',
                         '--lang=zh-CN',
                     ]
+                    if not self.headless and self.browser not in ['firefox', 'safari']:
+                        common_args.append('--start-maximized')
                     # 选择浏览器
                     if self.browser == 'firefox':
                         browser = p.firefox.launch(headless=self.headless, args=common_args)
@@ -560,12 +576,16 @@ class TestExecutor:
                     print(f"✓ 浏览器已启动")
 
                     # 配置上下文（User Agent 和 Viewport）
-                    self.context = browser.new_context(
-                        viewport={'width': 1920, 'height': 1080},
-                        user_agent='Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
-                        locale='zh-CN',
-                        extra_http_headers={'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'}
-                    )
+                    context_kwargs = {
+                        'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+                        'locale': 'zh-CN',
+                        'extra_http_headers': {'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'}
+                    }
+                    if not self.headless and self.browser not in ['firefox', 'safari']:
+                        context_kwargs['no_viewport'] = True
+                    else:
+                        context_kwargs['viewport'] = {'width': 1920, 'height': 1080}
+                    self.context = browser.new_context(**context_kwargs)
                     self.current_page = self.context.new_page()
                     if hasattr(self.context, 'on'):
                         self.context.on('page', lambda page: _register_playwright_page_handlers(self, page))
@@ -950,7 +970,8 @@ class TestExecutor:
                 if refresh_result.get('detail'):
                     step_result['detail'] = refresh_result['detail']
             elif step_data['element']:
-                element = step_data['element']
+                element = resolve_element_locator_payload(step_data['element'])
+                step_data['element'] = element
                 locator_value = element['locator_value']
                 locator_strategy = element['locator_strategy'].lower()
                 element_name = element.get('name', '未知元素')
@@ -1272,11 +1293,30 @@ class TestExecutor:
                     step_result['success'] = True
 
                 elif step_data['action_type'] == 'scroll':
-                    self.current_page.locator(selector).scroll_into_view_if_needed()
+                    scroll_payload = parse_scroll_action_payload(resolved_input_value)
+                    if scroll_payload:
+                        self.current_page.evaluate(
+                            "([x, y]) => window.scrollTo(x, y)",
+                            [scroll_payload['start_x'], scroll_payload['start_y']]
+                        )
+                        time.sleep(0.2)
+                        self.current_page.evaluate(
+                            "([x, y]) => window.scrollTo(x, y)",
+                            [scroll_payload['target_x'], scroll_payload['target_y']]
+                        )
+                        step_result['message'] = (
+                            f"{_get_scroll_direction_label(scroll_payload['scroll_direction'])}: "
+                            f"({scroll_payload['start_x']}, {scroll_payload['start_y']}) -> "
+                            f"({scroll_payload['target_x']}, {scroll_payload['target_y']})"
+                        )
+                    else:
+                        self.current_page.locator(selector).scroll_into_view_if_needed()
                     step_result['success'] = True
 
                 elif step_data['action_type'] == 'drag':
-                    target_element = _resolve_drag_target_payload(resolved_input_value)
+                    target_element = resolve_element_locator_payload(
+                        _resolve_drag_target_payload(resolved_input_value)
+                    )
                     target_locator_strategy = target_element['locator_strategy'].lower()
                     target_locator_value = target_element['locator_value']
 
@@ -1711,12 +1751,12 @@ class TestExecutor:
 
                 # 如果有元素，预先获取元素数据
                 if step.element:
-                    step_data['element'] = {
+                    step_data['element'] = resolve_element_locator_payload({
                         'id': step.element.id,
                         'name': step.element.name,
                         'locator_value': step.element.locator_value,
                         'locator_strategy': step.element.locator_strategy.name if step.element.locator_strategy else 'css'
-                    }
+                    })
 
                 case_data['steps'].append(step_data)
 
@@ -1995,6 +2035,7 @@ class TestExecutor:
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--window-size=1920,1080')
+            options.add_argument('--start-maximized')
 
             # 禁用自动化特征检测
             options.add_experimental_option('excludeSwitches', ['enable-automation', 'enable-logging'])
@@ -2111,6 +2152,7 @@ class TestExecutor:
             options.add_argument('--disable-features=Translate,TranslateUI')
             options.add_argument('--lang=zh-CN')
             options.add_argument('--window-size=1920,1080')
+            options.add_argument('--start-maximized')
 
             # 使用缓存优先策略
             service = EdgeService(EdgeChromiumDriverManager().install())
@@ -2125,6 +2167,7 @@ class TestExecutor:
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--window-size=1920,1080')
+            options.add_argument('--start-maximized')
 
             # 禁用自动化特征检测
             options.add_experimental_option('excludeSwitches', ['enable-automation'])
@@ -2156,6 +2199,12 @@ class TestExecutor:
             # 使用缓存优先策略
             service = ChromeService(ChromeDriverManager().install())
             driver = webdriver.Chrome(service=service, options=options)
+
+        if driver and not self.headless:
+            try:
+                driver.maximize_window()
+            except Exception:
+                pass
 
         return driver
 
@@ -2344,8 +2393,64 @@ class TestExecutor:
                     step_result['error'] = refresh_result['error']
                 if refresh_result.get('detail'):
                     step_result['detail'] = refresh_result['detail']
+            elif step_data['action_type'] == 'scroll':
+                scroll_payload = parse_scroll_action_payload(resolve_variables(step_data.get('input_value') or ''))
+                if scroll_payload:
+                    driver.execute_script(
+                        "window.scrollTo(arguments[0], arguments[1]);",
+                        scroll_payload['start_x'],
+                        scroll_payload['start_y']
+                    )
+                    time.sleep(0.2)
+                    driver.execute_script(
+                        "window.scrollTo(arguments[0], arguments[1]);",
+                        scroll_payload['target_x'],
+                        scroll_payload['target_y']
+                    )
+                    step_result['success'] = True
+                    step_result['message'] = (
+                        f"{_get_scroll_direction_label(scroll_payload['scroll_direction'])}: "
+                        f"({scroll_payload['start_x']}, {scroll_payload['start_y']}) -> "
+                        f"({scroll_payload['target_x']}, {scroll_payload['target_y']})"
+                    )
+                elif step_data['element']:
+                    element = resolve_element_locator_payload(step_data['element'])
+                    locator_value = element['locator_value']
+                    locator_strategy = element['locator_strategy'].lower()
+
+                    wait = WebDriverWait(driver, step_data['wait_time'] / 1000)
+                    if locator_value.startswith('//') or locator_value.startswith('xpath='):
+                        locator_strategy = 'xpath'
+                        if locator_value.startswith('xpath='):
+                            locator_value = locator_value[6:]
+
+                    if locator_strategy in ['css', 'css selector']:
+                        by = By.CSS_SELECTOR
+                    elif locator_strategy == 'xpath':
+                        by = By.XPATH
+                    elif locator_strategy == 'id':
+                        by = By.ID
+                    elif locator_strategy == 'name':
+                        by = By.NAME
+                    elif locator_strategy in ['class', 'class name']:
+                        by = By.CLASS_NAME
+                    elif locator_strategy in ['tag', 'tag name']:
+                        by = By.TAG_NAME
+                    elif locator_strategy == 'link text':
+                        by = By.LINK_TEXT
+                    elif locator_strategy == 'partial link text':
+                        by = By.PARTIAL_LINK_TEXT
+                    else:
+                        by = By.CSS_SELECTOR
+
+                    element_obj = wait.until(EC.presence_of_element_located((by, locator_value)))
+                    driver.execute_script("arguments[0].scrollIntoView(true);", element_obj)
+                    step_result['success'] = True
+                else:
+                    raise ValueError('滚动步骤未配置元素，也未配置坐标滚动参数')
             elif step_data['element']:
-                element = step_data['element']
+                element = resolve_element_locator_payload(step_data['element'])
+                step_data['element'] = element
                 locator_value = element['locator_value']
                 locator_strategy = element['locator_strategy'].lower()
                 element_name = element.get('name', '未知元素')
@@ -2671,7 +2776,9 @@ class TestExecutor:
 
                 elif step_data['action_type'] == 'drag':
                     element_obj = wait.until(EC.presence_of_element_located((by, locator_value)))
-                    target_element = _resolve_drag_target_payload(resolve_variables(step_data['input_value']))
+                    target_element = resolve_element_locator_payload(
+                        _resolve_drag_target_payload(resolve_variables(step_data['input_value']))
+                    )
                     target_strategy = target_element['locator_strategy'].lower()
                     target_locator_value = target_element['locator_value']
 

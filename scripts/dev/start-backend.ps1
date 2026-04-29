@@ -23,6 +23,7 @@ function Get-EnvValue {
 }
 
 $pythonCandidates = @(
+    (Join-Path $RepoRoot ".venv\\Scripts\\python.exe"),
     (Join-Path $RepoRoot "venv\\Scripts\\python.exe"),
     (Join-Path (Split-Path $RepoRoot -Parent) "testhub_platform-main\\venv\\Scripts\\python.exe")
 )

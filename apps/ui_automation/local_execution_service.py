@@ -1,4 +1,5 @@
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import json
 import logging
 import time
@@ -13,6 +14,7 @@ from .selenium_engine import SeleniumTestEngine
 from .variable_resolver import (
     clear_runtime_variables,
     get_runtime_variables,
+    resolve_element_locator_payload,
     resolve_variables,
     set_runtime_variable,
     set_runtime_variables,
@@ -67,13 +69,13 @@ def build_test_case_payload(test_case):
         for step in test_case.steps.all().order_by('step_number'):
             element_data = None
             if step.element:
-                element_data = {
+                element_data = resolve_element_locator_payload({
                     'locator_strategy': step.element.locator_strategy.name if step.element.locator_strategy else 'css',
                     'locator_value': step.element.locator_value,
                     'name': step.element.name,
                     'wait_timeout': step.element.wait_timeout,
                     'force_action': step.element.force_action,
-                }
+                })
 
             step_payload = _resolve_serialized_step_payload(step)
             step_payload['element_data'] = element_data
@@ -90,8 +92,6 @@ def build_test_case_payload(test_case):
         'project_name': test_case.project.name,
         'base_url': test_case.project.base_url,
         'project_global_variables': test_case.project.global_variables or [],
-        'browser_width': getattr(test_case.project, 'browser_width', None),
-        'browser_height': getattr(test_case.project, 'browser_height', None),
         'steps': steps,
     }
 
@@ -137,6 +137,7 @@ def _make_step(step_data):
         wait_time=step_data.get('wait_time') or 1000,
         assert_type=step_data.get('assert_type', ''),
         assert_value=step_data.get('assert_value', ''),
+        element_data=step_data.get('element_data') or {},
     )
 
 
@@ -206,6 +207,8 @@ def _resolve_step_runtime_values(step):
 
     step.input_value = resolved_input_value
     step.assert_value = resolved_assert_value
+    if isinstance(getattr(step, 'element_data', None), dict):
+        step.element_data = resolve_element_locator_payload(step.element_data)
     return resolved_input_value, resolved_assert_value
 
 
@@ -240,12 +243,7 @@ def _run_selenium(payload, browser, headless, start_time, step_results, screensh
             'failed',
         )
 
-    engine = SeleniumTestEngine(
-        browser_type=browser,
-        headless=headless,
-        browser_width=payload.get('browser_width'),
-        browser_height=payload.get('browser_height'),
-    )
+    engine = SeleniumTestEngine(browser_type=browser, headless=headless)
     error_message = ''
     status_value = 'passed'
 
@@ -272,7 +270,6 @@ def _run_selenium(payload, browser, headless, start_time, step_results, screensh
 
         for index, step_data in enumerate(payload.get('steps', []), start=1):
             step = _make_step(step_data)
-            element_data = step_data.get('element_data') or {}
             action_text = dict(TestCaseStep.ACTION_TYPE_CHOICES).get(step.action_type, step.action_type)
 
             if getattr(step, 'is_enabled', True) is False:
@@ -289,6 +286,7 @@ def _run_selenium(payload, browser, headless, start_time, step_results, screensh
                 continue
 
             resolved_input_value, resolved_assert_value = _resolve_step_runtime_values(step)
+            element_data = getattr(step, 'element_data', None) or {}
 
             try:
                 success, step_log, screenshot_base64 = engine.execute_step(step, element_data)
@@ -335,19 +333,18 @@ def _run_selenium(payload, browser, headless, start_time, step_results, screensh
 
 
 def _run_playwright(payload, browser, headless, start_time, step_results, screenshots, detailed_errors):
-    return asyncio.run(
-        _run_playwright_async(payload, browser, headless, start_time, step_results, screenshots, detailed_errors)
-    )
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix='ui-local-playwright') as executor:
+        future = executor.submit(
+            lambda: asyncio.run(
+                _run_playwright_async(payload, browser, headless, start_time, step_results, screenshots, detailed_errors)
+            )
+        )
+        return future.result()
 
 
 async def _run_playwright_async(payload, browser, headless, start_time, step_results, screenshots, detailed_errors):
     initialize_project_runtime_variables(global_variables=payload.get('project_global_variables'))
-    engine = PlaywrightTestEngine(
-        browser_type=_browser_map(browser),
-        headless=headless,
-        browser_width=payload.get('browser_width'),
-        browser_height=payload.get('browser_height'),
-    )
+    engine = PlaywrightTestEngine(browser_type=_browser_map(browser), headless=headless)
     error_message = ''
     status_value = 'passed'
 
@@ -374,7 +371,6 @@ async def _run_playwright_async(payload, browser, headless, start_time, step_res
 
         for index, step_data in enumerate(payload.get('steps', []), start=1):
             step = _make_step(step_data)
-            element_data = step_data.get('element_data') or {}
             action_text = dict(TestCaseStep.ACTION_TYPE_CHOICES).get(step.action_type, step.action_type)
 
             if getattr(step, 'is_enabled', True) is False:
@@ -391,6 +387,7 @@ async def _run_playwright_async(payload, browser, headless, start_time, step_res
                 continue
 
             resolved_input_value, resolved_assert_value = _resolve_step_runtime_values(step)
+            element_data = getattr(step, 'element_data', None) or {}
 
             try:
                 success, step_log, screenshot_base64 = await engine.execute_step(step, element_data)

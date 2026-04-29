@@ -1132,6 +1132,92 @@ class UiTaskNotificationSetting(models.Model):
         return UnifiedNotificationConfig.objects.filter(is_default=True, is_active=True).first()
 
 
+class AITestCaseGenerationSkill(models.Model):
+    """Skill prompt used to generate importable UI automation test cases."""
+    name = models.CharField(max_length=120, verbose_name='Skill Name')
+    description = models.TextField(blank=True, verbose_name='Description')
+    content = models.TextField(verbose_name='Skill Content')
+    is_default = models.BooleanField(default=False, verbose_name='Default Skill')
+    is_active = models.BooleanField(default=True, verbose_name='Active')
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_ui_ai_generation_skills',
+        verbose_name='Created By'
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created At')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='Updated At')
+
+    class Meta:
+        db_table = 'ui_ai_test_case_generation_skills'
+        verbose_name = 'UI AI Test Case Generation Skill'
+        verbose_name_plural = 'UI AI Test Case Generation Skills'
+        ordering = ['-is_default', '-updated_at']
+
+    def __str__(self):
+        return self.name
+
+
+class AITestCaseGenerationRecord(models.Model):
+    """Generation history for AI produced UI automation test case manifests."""
+    STATUS_CHOICES = [
+        ('generated', 'Generated'),
+        ('imported', 'Imported'),
+        ('failed', 'Failed'),
+    ]
+
+    SOURCE_TYPE_CHOICES = [
+        ('text', 'Text'),
+        ('file', 'File'),
+        ('mixed', 'Text And File'),
+    ]
+
+    project = models.ForeignKey(
+        UiProject,
+        on_delete=models.CASCADE,
+        related_name='ai_test_case_generation_records',
+        verbose_name='Project'
+    )
+    skill = models.ForeignKey(
+        AITestCaseGenerationSkill,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='generation_records',
+        verbose_name='Skill'
+    )
+    ai_model_config_id = models.IntegerField(null=True, blank=True, verbose_name='AI Model Config ID')
+    source_type = models.CharField(max_length=20, choices=SOURCE_TYPE_CHOICES, default='text', verbose_name='Source Type')
+    source_name = models.CharField(max_length=255, blank=True, verbose_name='Source Name')
+    source_text = models.TextField(blank=True, verbose_name='Source Text')
+    manifest = models.JSONField(default=dict, blank=True, verbose_name='Generated Manifest')
+    warnings = models.JSONField(default=list, blank=True, verbose_name='Warnings')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='generated', verbose_name='Status')
+    import_summary = models.JSONField(default=dict, blank=True, verbose_name='Import Summary')
+    error_message = models.TextField(blank=True, verbose_name='Error Message')
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ui_ai_test_case_generation_records',
+        verbose_name='Created By'
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created At')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='Updated At')
+
+    class Meta:
+        db_table = 'ui_ai_test_case_generation_records'
+        verbose_name = 'UI AI Test Case Generation Record'
+        verbose_name_plural = 'UI AI Test Case Generation Records'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f'{self.project.name} - {self.source_name or self.source_type}'
+
+
 class AICase(models.Model):
     """AI测试用例"""
     project = models.ForeignKey(UiProject, on_delete=models.CASCADE, null=True, blank=True, verbose_name='所属项目')

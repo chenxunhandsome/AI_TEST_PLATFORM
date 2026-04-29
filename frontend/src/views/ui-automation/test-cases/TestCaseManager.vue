@@ -14,6 +14,10 @@
           <el-icon><Plus /></el-icon>
           {{ t('uiAutomation.testCase.newTestCase') }}
         </el-button>
+        <el-button type="success" :disabled="!projectId" @click="openAiGenerateDialog">
+          <el-icon><MagicStick /></el-icon>
+          {{ aiText.openButton }}
+        </el-button>
         <el-button :disabled="!projectId" @click="openImportDialog">导入用例</el-button>
         <el-button :disabled="!projectId || !selectedCaseIds.length" @click="handleExportSelectedCases">导出选中</el-button>
         <el-button :disabled="!projectId" @click="handleExportAllCases">导出全部</el-button>
@@ -116,6 +120,13 @@
               <el-button size="small" @click="addStep">
                 <el-icon><Plus /></el-icon>
                 {{ t('uiAutomation.testCase.addStep') }}
+              </el-button>
+              <el-button
+                size="small"
+                :disabled="!importableSourceTestCases.length"
+                @click="openImportCaseStepsDialog"
+              >
+                导入用例步骤
               </el-button>
               <el-button size="small" type="primary" @click="saveTestCase">
                 <el-icon><Check /></el-icon>
@@ -340,7 +351,7 @@
                         </div>
 
                         <div v-if="needsElement(element.action_type)" class="step-param">
-                          <label>{{ t('uiAutomation.testCase.selectElement') }}</label>
+                          <label>{{ element.action_type === 'scroll' ? '滚动元素/容器' : t('uiAutomation.testCase.selectElement') }}</label>
                           <el-button
                             size="small"
                             class="element-selector-trigger"
@@ -349,8 +360,117 @@
                             <el-icon><FolderOpened /></el-icon>
                             <span class="element-selector-text">{{ getSelectedElementLabel(element.element_id) }}</span>
                           </el-button>
+                          <div v-if="element.action_type === 'scroll'" class="step-help">
+                            如果要滚动左侧菜单栏，请在这里选择左侧菜单栏容器；未选择时，采集和执行的都是整个页面滚动。
+                          </div>
                         </div>
                         <!-- 输入参数 -->
+                        <div v-if="element.action_type === 'scroll'" class="step-param step-param--stacked">
+                          <label>滚动配置</label>
+                          <div class="step-param-main">
+                            <div class="scroll-config-grid">
+                              <el-select
+                                v-model="element.scroll_direction"
+                                size="small"
+                                clearable
+                                placeholder="选择滚动方向"
+                              >
+                                <el-option label="纵向滚动" value="vertical" />
+                                <el-option label="横向滚动" value="horizontal" />
+                                <el-option label="往上滚动" value="up" />
+                                <el-option label="往下滚动" value="down" />
+                              </el-select>
+                              <el-input-number
+                                v-model="element.scroll_start_x"
+                                :controls="false"
+                                size="small"
+                                placeholder="起始X"
+                              />
+                              <el-input-number
+                                v-model="element.scroll_start_y"
+                                :controls="false"
+                                size="small"
+                                placeholder="起始Y"
+                              />
+                              <el-input-number
+                                v-model="element.scroll_target_x"
+                                :controls="false"
+                                size="small"
+                                placeholder="目标X"
+                              />
+                              <el-input-number
+                                v-model="element.scroll_target_y"
+                                :controls="false"
+                                size="small"
+                                placeholder="目标Y"
+                              />
+                            </div>
+                            <div class="scroll-picker-actions">
+                              <el-button
+                                size="small"
+                                :loading="scrollCoordinatePickerStarting"
+                                :disabled="!selectedProject?.base_url || (executionMode === 'local' && !selectedRunnerId) || scrollCoordinatePickerReadingStart || scrollCoordinatePickerReadingTarget"
+                                @click="openScrollCoordinatePickerPage(element)"
+                              >
+                                打开网页
+                              </el-button>
+                              <el-button
+                                size="small"
+                                :loading="scrollCoordinatePickerStarting || scrollCoordinatePickerReadingStart"
+                                :disabled="!selectedProject?.base_url || (executionMode === 'local' && !selectedRunnerId) || scrollCoordinatePickerReadingTarget"
+                                @click="captureScrollCoordinate(element, 'start')"
+                              >
+                                开始滚动位置
+                              </el-button>
+                              <el-button
+                                size="small"
+                                :loading="scrollCoordinatePickerStarting || scrollCoordinatePickerReadingTarget"
+                                :disabled="!selectedProject?.base_url || (executionMode === 'local' && !selectedRunnerId) || scrollCoordinatePickerReadingStart"
+                                @click="captureScrollCoordinate(element, 'target')"
+                              >
+                                滚动到位置
+                              </el-button>
+                            </div>
+                            <div class="scroll-picker-actions">
+                              <el-select
+                                :model-value="scrollCoordinatePickerActivePageIndex"
+                                size="small"
+                                placeholder="选择采集页面"
+                                style="width: 320px"
+                                :disabled="!scrollCoordinatePickerSessionId || scrollCoordinatePickerPagesLoading || scrollCoordinatePickerSwitchingPage"
+                                @change="switchScrollCoordinatePickerPage"
+                              >
+                                <el-option
+                                  v-for="page in scrollCoordinatePickerPages"
+                                  :key="page.index"
+                                  :label="`[${page.index}] ${page.title || page.url || '未命名页面'}${page.is_active ? '（当前）' : ''}`"
+                                  :value="page.index"
+                                />
+                              </el-select>
+                              <el-button
+                                size="small"
+                                :loading="scrollCoordinatePickerPagesLoading"
+                                :disabled="!scrollCoordinatePickerSessionId || scrollCoordinatePickerSwitchingPage"
+                                @click="refreshScrollCoordinatePickerPages(true)"
+                              >
+                                刷新页面列表
+                              </el-button>
+                            </div>
+                            <div class="scroll-picker-guide">
+                              <div
+                                v-for="guide in getScrollCoordinateGuideLines(element)"
+                                :key="guide"
+                                class="scroll-picker-guide__line"
+                              >
+                                {{ guide }}
+                              </div>
+                            </div>
+                            <div class="step-help">
+                              已配置坐标时，会按坐标滚动；未配置坐标时，仍沿用原来的“滚动到元素”行为。纵向/往上/往下使用 Y 坐标，横向使用 X 坐标。
+                            </div>
+                          </div>
+                        </div>
+
                         <div v-if="element.action_type === 'drag'" class="step-param">
                           <label>拖拽目标元素</label>
                           <el-button
@@ -676,6 +796,172 @@
     </el-dialog>
 
     <el-dialog
+      v-model="showAiGenerateDialog"
+      :title="aiText.dialogTitle"
+      :close-on-click-modal="false"
+      width="1080px"
+      class="ai-generate-dialog"
+    >
+      <div class="ai-generate-layout">
+        <div class="ai-generate-config">
+          <el-form label-width="112px">
+            <el-form-item :label="aiText.targetProject">
+              <span>{{ selectedProject?.name || '-' }}</span>
+            </el-form-item>
+            <el-form-item :label="aiText.aiModel">
+              <el-select v-model="aiGenerateForm.model_config_id" clearable filterable style="width: 100%" :placeholder="aiText.defaultModel">
+                <el-option
+                  v-for="model in aiModelConfigs"
+                  :key="model.id"
+                  :label="`${model.name} / ${model.model_name}${model.is_active ? aiText.activeSuffix : ''}`"
+                  :value="model.id"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item :label="aiText.skill">
+              <el-select v-model="aiGenerateForm.skill_id" clearable filterable style="width: 100%" :placeholder="aiText.defaultSkill">
+                <el-option
+                  v-for="skill in aiSkills"
+                  :key="skill.id"
+                  :label="`${skill.name}${skill.is_default ? aiText.defaultSuffix : ''}`"
+                  :value="skill.id"
+                />
+              </el-select>
+            </el-form-item>
+            <el-form-item :label="aiText.targetFolder">
+              <el-select v-model="aiGenerateForm.folder_id" clearable style="width: 100%" :placeholder="aiText.generatedFolder">
+                <el-option :label="text.ungrouped" :value="null" />
+                <el-option v-for="folder in testCaseFolders" :key="folder.id" :label="folder.name" :value="folder.id" />
+              </el-select>
+            </el-form-item>
+            <el-form-item :label="aiText.overwrite">
+              <el-switch v-model="aiGenerateForm.overwrite" />
+            </el-form-item>
+            <el-form-item :label="aiText.useAi">
+              <el-switch v-model="aiGenerateForm.use_ai" />
+            </el-form-item>
+            <el-form-item :label="aiText.uploadFile">
+              <div class="ai-upload-field">
+                <div class="ai-upload-actions">
+                  <el-upload
+                    ref="aiSourceUploadRef"
+                    :auto-upload="false"
+                    :limit="1"
+                    accept=".txt,.md,.json,.csv,.xlsx,.xmind"
+                    :show-file-list="true"
+                    :on-change="handleAiSourceFileChange"
+                    :on-remove="handleAiSourceFileRemove"
+                  >
+                    <el-button>{{ aiText.chooseFile }}</el-button>
+                  </el-upload>
+                  <el-button type="primary" plain :loading="aiTemplateDownloading" @click="downloadAiCaseTemplate">
+                    {{ aiText.downloadTemplate }}
+                  </el-button>
+                </div>
+                <div class="ai-upload-tip">
+                  {{ aiText.uploadTip }}
+                </div>
+                <div v-if="aiSourceFileInfo" class="ai-file-info">
+                  <el-tag size="small" type="success">{{ aiSourceFileInfo.extension }}</el-tag>
+                  <span class="ai-file-name">{{ aiSourceFileInfo.name }}</span>
+                  <span class="ai-file-size">{{ aiSourceFileInfo.sizeText }}</span>
+                </div>
+              </div>
+            </el-form-item>
+          </el-form>
+
+          <el-tabs v-model="aiGenerateTab">
+            <el-tab-pane :label="aiText.sourceTab" name="source">
+              <el-input
+                v-model="aiGenerateForm.text"
+                type="textarea"
+                :rows="10"
+                resize="vertical"
+                :placeholder="aiText.sourcePlaceholder"
+              />
+            </el-tab-pane>
+            <el-tab-pane :label="aiText.skillTab" name="skill">
+              <el-input
+                v-model="aiSkillOptimizeInstruction"
+                type="textarea"
+                :rows="5"
+                resize="vertical"
+                :placeholder="aiText.skillPlaceholder"
+              />
+              <div class="ai-skill-actions">
+                <el-button :loading="aiSkillOptimizing" @click="optimizeAiSkill('preview')">{{ aiText.previewSkill }}</el-button>
+                <el-button type="primary" :loading="aiSkillOptimizing" @click="optimizeAiSkill('update')">{{ aiText.updateSkill }}</el-button>
+                <el-button type="success" :loading="aiSkillSaving" @click="saveAiSkillPreview">{{ aiText.saveSkill }}</el-button>
+              </div>
+              <el-input
+                v-model="aiSkillPreview"
+                type="textarea"
+                :rows="9"
+                resize="vertical"
+                :placeholder="aiText.skillPreviewPlaceholder"
+              />
+            </el-tab-pane>
+          </el-tabs>
+
+          <div class="ai-generate-actions">
+            <el-button type="primary" :loading="aiGenerating" @click="submitAiGenerateCases">
+              <el-icon><MagicStick /></el-icon>
+              {{ aiText.generatePreview }}
+            </el-button>
+            <el-button :disabled="!aiGeneratedRecordId" type="success" :loading="aiImporting" @click="submitImportGeneratedCases">
+              <el-icon><Check /></el-icon>
+              {{ aiText.importNow }}
+            </el-button>
+          </div>
+        </div>
+
+        <div class="ai-generate-preview">
+          <div class="ai-preview-header">
+            <span>{{ aiText.previewTitle }}</span>
+            <el-tag v-if="aiGenerationMode" size="small">{{ aiGenerationModeLabel }}</el-tag>
+          </div>
+          <el-alert
+            v-if="aiGenerateWarnings.length"
+            type="warning"
+            :closable="false"
+            show-icon
+            class="ai-warning"
+          >
+            <template #title>
+              {{ aiGenerateWarnings.slice(0, 3).join('；') }}{{ aiGenerateWarnings.length > 3 ? ` 等 ${aiGenerateWarnings.length} 条` : '' }}
+            </template>
+          </el-alert>
+          <el-table v-if="aiGeneratedCases.length" :data="aiGeneratedCases" height="460" border>
+            <el-table-column prop="name" :label="aiText.caseName" min-width="170" show-overflow-tooltip />
+            <el-table-column prop="folder_name" :label="aiText.folderName" width="120" show-overflow-tooltip />
+            <el-table-column prop="priority" :label="aiText.priority" width="80" />
+            <el-table-column :label="aiText.stepCount" width="80">
+              <template #default="{ row }">{{ row.steps?.length || 0 }}</template>
+            </el-table-column>
+            <el-table-column :label="aiText.firstSteps" min-width="260">
+              <template #default="{ row }">
+                <div class="ai-step-preview">
+                  <div v-for="step in (row.steps || []).slice(0, 4)" :key="step.step_number">
+                    {{ step.step_number }}. {{ step.description }}
+                  </div>
+                </div>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-empty v-else :description="aiText.emptyPreview" />
+        </div>
+      </div>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="showAiGenerateDialog = false">{{ t('uiAutomation.common.cancel') }}</el-button>
+          <el-button :disabled="!aiGeneratedRecordId" type="success" :loading="aiImporting" @click="submitImportGeneratedCases">
+            {{ aiText.importToManager }}
+          </el-button>
+        </span>
+      </template>
+    </el-dialog>
+
+    <el-dialog
       v-model="showImportDialog"
       title="导入测试用例"
       :close-on-click-modal="false"
@@ -705,6 +991,65 @@
         <span class="dialog-footer">
           <el-button @click="showImportDialog = false">{{ t('uiAutomation.common.cancel') }}</el-button>
           <el-button type="primary" :loading="importing" @click="submitImportCases">开始导入</el-button>
+        </span>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="showImportCaseStepsDialog"
+      title="导入用例步骤"
+      :close-on-click-modal="false"
+      width="480px"
+    >
+      <el-form :model="importCaseStepsForm" label-width="100px">
+        <el-form-item label="源用例" required>
+          <el-select
+            v-model="importCaseStepsForm.source_case_id"
+            placeholder="请选择要导入的用例"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="item in importableSourceTestCases"
+              :key="item.id"
+              :label="`${item.name} (${item.steps?.length || 0} 步)`"
+              :value="item.id"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item label="插入位置" required>
+          <el-select
+            v-model="importCaseStepsForm.insert_mode"
+            placeholder="请选择插入位置"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="item in importInsertModeOptions"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+              :disabled="item.disabled"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="needsImportTargetStep" label="目标步骤" required>
+          <el-select
+            v-model="importCaseStepsForm.target_step_id"
+            placeholder="请选择目标步骤"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="item in importTargetStepOptions"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
+            />
+          </el-select>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="showImportCaseStepsDialog = false">{{ t('uiAutomation.common.cancel') }}</el-button>
+          <el-button type="primary" @click="submitImportCaseSteps">导入</el-button>
         </span>
       </template>
     </el-dialog>
@@ -869,10 +1214,24 @@ import {
   copyTestCase as copyTestCaseApi,
   exportTestCases,
   importTestCases,
+  getAITestCaseGenerationSkills,
+  ensureDefaultAITestCaseGenerationSkill,
+  updateAITestCaseGenerationSkill,
+  generateAITestCases,
+  importGeneratedAITestCases,
+  optimizeAITestCaseGenerationSkill,
+  downloadAITestCaseTemplate,
+  getUiAutomationAIModelConfigs,
   getLocatorStrategies,
   getLocalRunners,
-  getTestCaseExecutionDetail
+  getTestCaseExecutionDetail,
+  startScrollCoordinatePicker,
+  getScrollCoordinatePickerPosition,
+  getScrollCoordinatePickerPages,
+  setScrollCoordinatePickerActivePage,
+  closeScrollCoordinatePicker
 } from '@/api/ui_automation'
+import { getAIModelConfigs } from '@/api/requirement-analysis'
 import { getVariableFunctions } from '@/api/data-factory'
 import { useUiAutomationStore } from '@/stores/uiAutomation'
 
@@ -914,6 +1273,53 @@ const text = {
 }
 
 // 响应式数据
+const aiText = {
+  openButton: 'AI生成用例',
+  dialogTitle: 'AI生成UI自动化测试用例',
+  targetProject: '导入项目',
+  aiModel: 'AI模型',
+  defaultModel: '使用当前启用模型',
+  skill: '生成Skill',
+  defaultSkill: '默认Skill',
+  targetFolder: '目标文件夹',
+  generatedFolder: '使用生成结果中的文件夹',
+  overwrite: '覆盖同名用例',
+  useAi: '使用AI模型',
+  uploadFile: '上传文件',
+  chooseFile: '选择文件',
+  downloadTemplate: '下载用例模板',
+  uploadTip: '支持 txt、md、json、csv、xlsx、xmind，单个文件不超过 10MB；推荐下载 CSV 模板填写后上传。',
+  sourceTab: '自然语言用例',
+  skillTab: 'Skill优化',
+  sourcePlaceholder: '例如：用例：登录成功。步骤：打开登录页，输入账号 admin，输入密码 123456，点击登录，验证进入首页。也可以粘贴多条功能测试用例。',
+  skillPlaceholder: '用对话描述你希望Skill如何优化，例如：优先复用已有元素；弹窗确认按钮必须带弹窗标题限定；缺少定位器时不要编造。',
+  previewSkill: '预览优化',
+  updateSkill: '更新当前Skill',
+  saveSkill: '保存Skill',
+  skillPreviewPlaceholder: '优化后的Skill会显示在这里',
+  generatePreview: '生成预览',
+  importNow: '一键导入',
+  previewTitle: '生成预览',
+  caseName: '用例名称',
+  folderName: '文件夹',
+  priority: '优先级',
+  stepCount: '步骤数',
+  firstSteps: '首批步骤',
+  emptyPreview: '暂无生成结果',
+  importToManager: '一键导入到用例管理',
+  activeSuffix: '（启用）',
+  defaultSuffix: '（默认）',
+  generationAi: 'AI生成',
+  generationManifest: '模板/JSON',
+  generationHeuristic: '规则兜底',
+  fileTooLarge: '上传文件不能超过 10MB',
+  unsupportedFile: '支持 txt/md/json/csv/xlsx/xmind 文件',
+  needInput: '请输入自然语言用例或上传用例文件',
+  generateSuccess: 'AI用例生成完成',
+  importSuccess: 'AI生成用例导入成功',
+  templateDownloadFailed: '模板下载失败'
+}
+
 const projects = ref([])
 const projectId = ref('')
 const testCases = ref([])
@@ -932,6 +1338,7 @@ const showCreateDialog = ref(false)
 const showFolderDialog = ref(false)
 const showMoveDialog = ref(false)
 const showImportDialog = ref(false)
+const showImportCaseStepsDialog = ref(false)
 const showElementSelectorDialog = ref(false)
 const editingTestCase = ref(null)
 const executionResult = ref(null)
@@ -947,6 +1354,18 @@ const headlessMode = ref(false)  // 默认使用有头模式
 const executionMode = ref('server')
 const localRunners = ref([])
 const selectedRunnerId = ref(null)
+const scrollCoordinatePickerSessionId = ref('')
+const scrollCoordinatePickerProjectId = ref('')
+const scrollCoordinatePickerMode = ref('server')
+const scrollCoordinatePickerRunnerId = ref('')
+const scrollCoordinatePickerElementId = ref('')
+const scrollCoordinatePickerStarting = ref(false)
+const scrollCoordinatePickerReadingStart = ref(false)
+const scrollCoordinatePickerReadingTarget = ref(false)
+const scrollCoordinatePickerPages = ref([])
+const scrollCoordinatePickerActivePageIndex = ref(0)
+const scrollCoordinatePickerPagesLoading = ref(false)
+const scrollCoordinatePickerSwitchingPage = ref(false)
 const showVariableHelper = ref(false)
 const currentEditingStep = ref(null)
 const currentEditingField = ref('')
@@ -972,6 +1391,38 @@ let elementSelectorResizeHandlers = null
 const STEP_RUNTIME_VARIABLE_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 const importFile = ref(null)
 const importOverwrite = ref(false)
+const showAiGenerateDialog = ref(false)
+const aiGenerateTab = ref('source')
+const aiSourceUploadRef = ref(null)
+const aiSkills = ref([])
+const aiModelConfigs = ref([])
+const aiSourceFile = ref(null)
+const aiSourceFileInfo = ref(null)
+const aiGenerating = ref(false)
+const aiImporting = ref(false)
+const aiSkillOptimizing = ref(false)
+const aiSkillSaving = ref(false)
+const aiTemplateDownloading = ref(false)
+const aiGeneratedRecordId = ref(null)
+const aiGeneratedManifest = ref(null)
+const aiGeneratedCases = ref([])
+const aiGenerateWarnings = ref([])
+const aiGenerationMode = ref('')
+const aiSkillPreview = ref('')
+const aiSkillOptimizeInstruction = ref('')
+const aiGenerateForm = reactive({
+  text: '',
+  model_config_id: null,
+  skill_id: null,
+  folder_id: null,
+  overwrite: false,
+  use_ai: true
+})
+const importCaseStepsForm = reactive({
+  source_case_id: null,
+  insert_mode: 'end',
+  target_step_id: null
+})
 
 
 
@@ -1012,6 +1463,32 @@ const filteredTestCases = computed(() => {
 })
 
 // 解析执行日志
+const importableSourceTestCases = computed(() => {
+  const currentCaseId = selectedTestCase.value?.id
+  return testCases.value.filter(item => item.id !== currentCaseId)
+})
+
+const importInsertModeOptions = computed(() => {
+  const hasTargetSteps = currentSteps.value.length > 0
+  return [
+    { value: 'start', label: '\u63d2\u5165\u5230\u5f00\u5934', disabled: false },
+    { value: 'end', label: '\u63d2\u5165\u5230\u672b\u5c3e', disabled: false },
+    { value: 'before', label: '\u63d2\u5165\u5230\u6307\u5b9a\u6b65\u9aa4\u524d', disabled: !hasTargetSteps },
+    { value: 'after', label: '\u63d2\u5165\u5230\u6307\u5b9a\u6b65\u9aa4\u540e', disabled: !hasTargetSteps }
+  ]
+})
+
+const needsImportTargetStep = computed(() => {
+  return ['before', 'after'].includes(importCaseStepsForm.insert_mode)
+})
+
+const importTargetStepOptions = computed(() => {
+  return currentSteps.value.map((step, index) => ({
+    value: step.id,
+    label: `${index + 1}. ${getStepSummary(step, index)}`
+  }))
+})
+
 const parsedExecutionLogs = computed(() => {
   if (!executionResult.value || !executionResult.value.logs) return []
   try {
@@ -1030,6 +1507,120 @@ const onlineLocalRunners = computed(() => {
 
 const selectedProject = computed(() => {
   return projects.value.find(item => String(item.id) === String(projectId.value)) || null
+})
+
+const selectedScrollCoordinatePickerRunner = computed(() => {
+  return onlineLocalRunners.value.find(item => String(item.id) === String(selectedRunnerId.value)) || null
+})
+
+const useLocalScrollCoordinatePicker = computed(() => {
+  return executionMode.value === 'local' && Boolean(selectedRunnerId.value)
+})
+
+const scrollCoordinatePickerExecutionTargetLabel = computed(() => {
+  if (useLocalScrollCoordinatePicker.value) {
+    return selectedScrollCoordinatePickerRunner.value
+      ? `访客机本地执行器“${selectedScrollCoordinatePickerRunner.value.name}”`
+      : '访客机本地执行器'
+  }
+  return '服务器采集浏览器'
+})
+
+const scrollCoordinatePickerGuideText = computed(() => {
+  if (useLocalScrollCoordinatePicker.value) {
+    return [
+      `当前会在${scrollCoordinatePickerExecutionTargetLabel.value}上打开坐标采集浏览器，不会在服务器上采集。`,
+      '第1步：点击“开始滚动位置”或“滚动到位置”，系统会自动连接本地执行器并打开浏览器。',
+      '第2步：在访客机打开的浏览器里滚动到目标位置。',
+      '第3步：回到当前页面点击弹窗中的“确定”，系统会读取当前滚动坐标并自动回填。'
+    ]
+  }
+
+  return [
+    '当前未选择本地执行器，坐标将由服务器采集浏览器读取。',
+    '第1步：点击“开始滚动位置”或“滚动到位置”打开采集浏览器。',
+    '第2步：在采集浏览器里滚动到目标位置。',
+    '第3步：回到当前页面点击弹窗中的“确定”，系统会读取当前滚动坐标并自动回填。'
+  ]
+})
+
+const getScrollCoordinateTargetTypeLabel = (step) => {
+  return step?.element_id ? '所选滚动容器' : '整个页面'
+}
+
+const getScrollCoordinateGuideLines = (step) => {
+  const targetTypeLabel = getScrollCoordinateTargetTypeLabel(step)
+  return [
+    `点击“打开网页”后，会在${scrollCoordinatePickerExecutionTargetLabel.value}打开采集网页，取点目标为${targetTypeLabel}。`,
+    '如果登录后跳到了新页面或新标签页，继续在当前看到的页面上操作即可，系统会捕捉该页面。',
+    step?.element_id
+      ? '请在需要滚动的容器内部右键取点，例如左侧菜单栏内部。'
+      : '请在需要滚动的页面区域内右键取点。',
+    '先点“开始滚动位置”，在网页里右键一次；再点“滚动到位置”，在网页里右键第二次。',
+    '执行时会在开始坐标处使用鼠标滚轮滚动到目标方向，不再读取整个页面的 scrollTop。'
+  ]
+
+  if (useLocalScrollCoordinatePicker.value) {
+    return [
+      `当前会在${scrollCoordinatePickerExecutionTargetLabel.value}上打开坐标采集浏览器，采集目标为${targetTypeLabel}。`,
+      step?.element_id
+        ? '第1步：先给当前步骤选择左侧菜单栏这样的滚动容器，再点击“开始滚动位置”或“滚动到位置”。'
+        : '第1步：点击“开始滚动位置”或“滚动到位置”，系统会自动连接本地执行器并打开浏览器。',
+      step?.element_id
+        ? '第2步：只在这个容器内部滚动，不要滚动整个页面；如果采到 Y=0，表示该容器当前在顶部。'
+        : '第2步：在访客机浏览器里滚动整个页面到目标位置。',
+      '第3步：回到当前页面点击弹窗中的“确定”，系统会读取当前滚动坐标并自动回填。'
+    ]
+  }
+
+  return [
+    `当前未选择本地执行器，坐标将由服务器采集浏览器读取，采集目标为${targetTypeLabel}。`,
+    step?.element_id
+      ? '第1步：先给当前步骤选择左侧菜单栏这样的滚动容器，再点击“开始滚动位置”或“滚动到位置”。'
+      : '第1步：点击“开始滚动位置”或“滚动到位置”打开采集浏览器。',
+    step?.element_id
+      ? '第2步：只在这个容器内部滚动，不要滚动整个页面；如果采到 Y=0，表示该容器当前在顶部。'
+      : '第2步：在采集浏览器里滚动整个页面到目标位置。',
+    '第3步：回到当前页面点击弹窗中的“确定”，系统会读取当前滚动坐标并自动回填。'
+  ]
+}
+
+const buildScrollCaptureSuccessMessage = (position, step, isStart) => {
+  const x = Number(position?.x ?? 0)
+  const y = Number(position?.y ?? 0)
+  const prefix = isStart ? '已获取开始滚动位置' : '已获取目标滚动位置'
+  const baseMessage = `${prefix} (${x}, ${y})`
+  if (String(position?.scope || '').toLowerCase() === 'click') {
+    const pageTitle = String(position?.title || '').trim()
+    const pageUrl = String(position?.url || '').trim()
+    const extra = [pageTitle, pageUrl].filter(Boolean).join(' | ')
+    return extra ? `${baseMessage} - ${extra}` : baseMessage
+  }
+
+  if (String(position?.scope || '').toLowerCase() !== 'element') {
+    return baseMessage
+  }
+
+  const selectedTarget = String(position?.target_name || '').trim() || getSelectedElementLabel(step?.element_id)
+  const resolvedTarget = String(position?.resolvedTarget || '').trim()
+  const rangeY = Number(position?.scrollRangeY ?? 0)
+  const rangeX = Number(position?.scrollRangeX ?? 0)
+  const details = [
+    selectedTarget ? `目标元素：${selectedTarget}` : '',
+    resolvedTarget ? `实际滚动容器：${resolvedTarget}` : '',
+    `纵向范围：${rangeY}`,
+    `横向范围：${rangeX}`,
+    rangeY > 0 && y === 0 ? '当前位于容器顶部' : ''
+  ].filter(Boolean)
+
+  return details.length ? `${baseMessage}，${details.join('，')}` : baseMessage
+}
+
+const aiGenerationModeLabel = computed(() => {
+  if (aiGenerationMode.value === 'ai') return aiText.generationAi
+  if (aiGenerationMode.value === 'manifest') return aiText.generationManifest
+  if (aiGenerationMode.value === 'heuristic') return aiText.generationHeuristic
+  return aiGenerationMode.value
 })
 
 const projectVariableCategory = computed(() => {
@@ -1157,11 +1748,68 @@ const buildDragTargetPayload = (targetElementId) => {
   })
 }
 
+const parseScrollPayload = (inputValue) => {
+  const rawValue = String(inputValue || '').trim()
+  if (!rawValue) {
+    return {}
+  }
+
+  try {
+    const payload = JSON.parse(rawValue)
+    if (payload?.scroll_mode !== 'coordinates') {
+      return {}
+    }
+
+    return {
+      scroll_scope: payload.scroll_scope || '',
+      scroll_direction: payload.scroll_direction || '',
+      start_x: payload.start_x ?? null,
+      start_y: payload.start_y ?? null,
+      target_x: payload.target_x ?? null,
+      target_y: payload.target_y ?? null
+    }
+  } catch (error) {
+    return {}
+  }
+}
+
+const hasScrollCoordinateConfig = (step) => {
+  return Boolean(
+    step?.scroll_direction ||
+    step?.scroll_start_x !== null && step?.scroll_start_x !== '' && step?.scroll_start_x !== undefined ||
+    step?.scroll_start_y !== null && step?.scroll_start_y !== '' && step?.scroll_start_y !== undefined ||
+    step?.scroll_target_x !== null && step?.scroll_target_x !== '' && step?.scroll_target_x !== undefined ||
+    step?.scroll_target_y !== null && step?.scroll_target_y !== '' && step?.scroll_target_y !== undefined
+  )
+}
+
+const buildScrollPayload = (step) => {
+  if (!hasScrollCoordinateConfig(step)) {
+    return ''
+  }
+
+  return JSON.stringify({
+    scroll_mode: 'coordinates',
+    scroll_scope: step.element_id ? 'element' : 'window',
+    scroll_direction: step.scroll_direction || 'vertical',
+    start_x: step.scroll_start_x,
+    start_y: step.scroll_start_y,
+    target_x: step.scroll_target_x,
+    target_y: step.scroll_target_y
+  })
+}
+
 const createStepDraft = (step = {}, expanded = false) => ({
   ...(() => {
     const dragPayload = parseDragTargetPayload(step.input_value)
+    const scrollPayload = parseScrollPayload(step.input_value)
     return {
-      drag_target_element_id: dragPayload.target_element_id || ''
+      drag_target_element_id: dragPayload.target_element_id || '',
+      scroll_direction: scrollPayload.scroll_direction || '',
+      scroll_start_x: scrollPayload.start_x ?? null,
+      scroll_start_y: scrollPayload.start_y ?? null,
+      scroll_target_x: scrollPayload.target_x ?? null,
+      scroll_target_y: scrollPayload.target_y ?? null
     }
   })(),
   id: step.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1181,6 +1829,69 @@ const createStepDraft = (step = {}, expanded = false) => ({
 
 const createTransactionId = () => {
   return `tx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+const resetImportCaseStepsForm = () => {
+  importCaseStepsForm.source_case_id = importableSourceTestCases.value[0]?.id ?? null
+  importCaseStepsForm.insert_mode = currentSteps.value.length ? 'after' : 'end'
+  importCaseStepsForm.target_step_id = currentSteps.value.some(step => isSameStepId(step.id, selectedStepId.value))
+    ? selectedStepId.value
+    : (currentSteps.value[0]?.id ?? null)
+}
+
+const openImportCaseStepsDialog = () => {
+  if (!selectedTestCase.value) {
+    ElMessage.warning('\u8bf7\u5148\u9009\u62e9\u76ee\u6807\u7528\u4f8b')
+    return
+  }
+
+  if (!importableSourceTestCases.value.length) {
+    ElMessage.warning('\u5f53\u524d\u9879\u76ee\u6ca1\u6709\u5176\u4ed6\u53ef\u5bfc\u5165\u7528\u4f8b')
+    return
+  }
+
+  resetImportCaseStepsForm()
+  showImportCaseStepsDialog.value = true
+}
+
+const cloneImportedSteps = (sourceSteps = []) => {
+  const transactionIdMap = new Map()
+
+  return (sourceSteps || []).map((step) => {
+    const clonedStep = createStepDraft({ ...step, id: null }, false)
+    const originalTransactionId = String(step?.transaction_id || '').trim()
+
+    if (!originalTransactionId) {
+      clonedStep.transaction_id = ''
+      clonedStep.transaction_name = ''
+      return clonedStep
+    }
+
+    if (!transactionIdMap.has(originalTransactionId)) {
+      transactionIdMap.set(originalTransactionId, createTransactionId())
+    }
+
+    clonedStep.transaction_id = transactionIdMap.get(originalTransactionId)
+    clonedStep.transaction_name = String(step?.transaction_name || '').trim()
+    return clonedStep
+  })
+}
+
+const getImportInsertIndex = () => {
+  if (importCaseStepsForm.insert_mode === 'start') {
+    return 0
+  }
+
+  if (importCaseStepsForm.insert_mode === 'end') {
+    return currentSteps.value.length
+  }
+
+  const targetIndex = currentSteps.value.findIndex(step => isSameStepId(step.id, importCaseStepsForm.target_step_id))
+  if (targetIndex < 0) {
+    return -1
+  }
+
+  return importCaseStepsForm.insert_mode === 'before' ? targetIndex : targetIndex + 1
 }
 
 const getTransactionId = (step) => {
@@ -1580,7 +2291,9 @@ const buildStepPayload = (step, index) => ({
   element_id: step.element_id || null,
   input_value: step.action_type === 'drag'
     ? buildDragTargetPayload(step.drag_target_element_id)
-    : (needsInputValue(step.action_type) ? (step.input_value || '') : ''),
+    : step.action_type === 'scroll'
+      ? buildScrollPayload(step)
+      : (needsInputValue(step.action_type) ? (step.input_value || '') : ''),
   wait_time: needsWaitTime(step.action_type) ? (Number(step.wait_time) || 1000) : 1000,
   assert_type: step.action_type === 'assert' ? (step.assert_type || 'textContains') : '',
   assert_value: step.action_type === 'assert' ? (step.assert_value || '') : '',
@@ -1645,6 +2358,38 @@ const validateCurrentSteps = () => {
       ElMessage.warning(`步骤 ${index + 1} 请选择拖拽目标元素`)
       return false
     }
+
+    if (step.action_type === 'scroll' && hasScrollCoordinateConfig(step)) {
+      const direction = step.scroll_direction || 'vertical'
+      const hasStartX = step.scroll_start_x !== null && step.scroll_start_x !== '' && step.scroll_start_x !== undefined
+      const hasTargetX = step.scroll_target_x !== null && step.scroll_target_x !== '' && step.scroll_target_x !== undefined
+      const hasStartY = step.scroll_start_y !== null && step.scroll_start_y !== '' && step.scroll_start_y !== undefined
+      const hasTargetY = step.scroll_target_y !== null && step.scroll_target_y !== '' && step.scroll_target_y !== undefined
+
+      if (direction === 'horizontal') {
+        if (!hasStartX || !hasTargetX) {
+          step.expanded = true
+          ElMessage.warning(`步骤 ${index + 1} 横向滚动需要填写起始X和目标X坐标`)
+          return false
+        }
+      } else if (!hasStartY || !hasTargetY) {
+        step.expanded = true
+        ElMessage.warning(`步骤 ${index + 1} 纵向滚动需要填写起始Y和目标Y坐标`)
+        return false
+      }
+
+      if (direction === 'up' && Number(step.scroll_target_y) >= Number(step.scroll_start_y)) {
+        step.expanded = true
+        ElMessage.warning(`步骤 ${index + 1} 往上滚动要求目标Y小于起始Y`)
+        return false
+      }
+
+      if (direction === 'down' && Number(step.scroll_target_y) <= Number(step.scroll_start_y)) {
+        step.expanded = true
+        ElMessage.warning(`步骤 ${index + 1} 往下滚动要求目标Y大于起始Y`)
+        return false
+      }
+    }
   }
 
   return true
@@ -1675,6 +2420,280 @@ const normalizeElementSelectorDialogSize = () => {
     Math.max(elementSelectorDialogSize.height, ELEMENT_SELECTOR_MIN_HEIGHT),
     getElementSelectorMaxHeight()
   )
+}
+
+const extractRequestErrorMessage = (error, fallback) => {
+  const responseData = error?.response?.data
+
+  const normalizeMessage = (value) => {
+    if (!value) {
+      return ''
+    }
+
+    if (Array.isArray(value)) {
+      return normalizeMessage(value[0])
+    }
+
+    if (typeof value === 'string') {
+      return value
+    }
+
+    if (typeof value === 'object') {
+      const nestedValue = Object.values(value).find(item => item)
+      return normalizeMessage(nestedValue)
+    }
+
+    return ''
+  }
+
+  const prioritizedMessage = normalizeMessage(
+    responseData?.name
+      || responseData?.detail
+      || responseData?.message
+      || responseData?.error
+      || responseData?.non_field_errors
+  )
+
+  if (prioritizedMessage) {
+    return prioritizedMessage
+  }
+
+  if (responseData && typeof responseData === 'object') {
+    const fieldMessage = Object.values(responseData)
+      .map(item => normalizeMessage(item))
+      .find(Boolean)
+    if (fieldMessage) {
+      return fieldMessage
+    }
+  }
+
+  if (typeof error?.message === 'string' && error.message.trim()) {
+    return error.message.trim()
+  }
+
+  return fallback
+}
+
+const resetScrollCoordinatePickerSession = () => {
+  scrollCoordinatePickerSessionId.value = ''
+  scrollCoordinatePickerProjectId.value = ''
+  scrollCoordinatePickerMode.value = 'server'
+  scrollCoordinatePickerRunnerId.value = ''
+  scrollCoordinatePickerElementId.value = ''
+  scrollCoordinatePickerPages.value = []
+  scrollCoordinatePickerActivePageIndex.value = 0
+}
+
+const closeScrollCoordinatePickerSession = async (silent = false) => {
+  const sessionId = scrollCoordinatePickerSessionId.value
+  resetScrollCoordinatePickerSession()
+
+  if (!sessionId) {
+    return
+  }
+
+  try {
+    await closeScrollCoordinatePicker({ session_id: sessionId })
+  } catch (error) {
+    if (!silent) {
+      ElMessage.error(extractRequestErrorMessage(error, '关闭滚动坐标采集浏览器失败'))
+    }
+  }
+}
+
+const applyScrollCoordinatePickerPagesPayload = (payload) => {
+  const pages = Array.isArray(payload?.pages) ? payload.pages : []
+  scrollCoordinatePickerPages.value = pages
+
+  const payloadIndex = Number(payload?.active_page_index ?? 0)
+  const activeEntry = pages.find(item => item && item.is_active)
+  const activeIndex = activeEntry ? Number(activeEntry.index ?? 0) : payloadIndex
+  scrollCoordinatePickerActivePageIndex.value = Number.isFinite(activeIndex) ? activeIndex : 0
+}
+
+const refreshScrollCoordinatePickerPages = async (showError = false) => {
+  const sessionId = scrollCoordinatePickerSessionId.value
+  if (!sessionId) {
+    scrollCoordinatePickerPages.value = []
+    scrollCoordinatePickerActivePageIndex.value = 0
+    return null
+  }
+
+  scrollCoordinatePickerPagesLoading.value = true
+  try {
+    const response = await getScrollCoordinatePickerPages({ session_id: sessionId })
+    applyScrollCoordinatePickerPagesPayload(response.data || {})
+    return response.data || {}
+  } catch (error) {
+    if (showError) {
+      ElMessage.error(extractRequestErrorMessage(error, '读取采集页面列表失败'))
+    }
+    throw error
+  } finally {
+    scrollCoordinatePickerPagesLoading.value = false
+  }
+}
+
+const switchScrollCoordinatePickerPage = async (pageIndex, showError = true) => {
+  const sessionId = scrollCoordinatePickerSessionId.value
+  if (!sessionId) {
+    throw new Error('请先点击“打开网页”')
+  }
+
+  scrollCoordinatePickerSwitchingPage.value = true
+  try {
+    const response = await setScrollCoordinatePickerActivePage({
+      session_id: sessionId,
+      page_index: Number(pageIndex)
+    })
+    applyScrollCoordinatePickerPagesPayload(response.data || {})
+    return response.data || {}
+  } catch (error) {
+    if (showError) {
+      ElMessage.error(extractRequestErrorMessage(error, '切换采集页面失败'))
+    }
+    throw error
+  } finally {
+    scrollCoordinatePickerSwitchingPage.value = false
+  }
+}
+
+const ensureScrollCoordinatePickerSession = async (step, options = {}) => {
+  if (!selectedProject.value?.base_url) {
+    throw new Error('当前项目未配置基础URL，无法获取滚动坐标')
+  }
+
+  const forceReopen = Boolean(options?.forceReopen)
+  const currentProjectId = String(selectedProject.value.id || '')
+  const expectedMode = useLocalScrollCoordinatePicker.value ? 'local' : 'server'
+  const expectedRunnerId = useLocalScrollCoordinatePicker.value ? String(selectedRunnerId.value || '') : ''
+  const expectedElementId = String(step?.element_id || '')
+  if (
+    !forceReopen &&
+    scrollCoordinatePickerSessionId.value &&
+    scrollCoordinatePickerProjectId.value === currentProjectId &&
+    scrollCoordinatePickerMode.value === expectedMode &&
+    scrollCoordinatePickerRunnerId.value === expectedRunnerId &&
+    scrollCoordinatePickerElementId.value === expectedElementId
+  ) {
+    return {
+      sessionId: scrollCoordinatePickerSessionId.value,
+      mode: scrollCoordinatePickerMode.value,
+      created: false
+    }
+  }
+
+  if (scrollCoordinatePickerSessionId.value) {
+    await closeScrollCoordinatePickerSession(true)
+  }
+
+  scrollCoordinatePickerStarting.value = true
+  try {
+    const response = await startScrollCoordinatePicker({
+      project_id: selectedProject.value.id,
+      browser: selectedBrowser.value,
+      runner_id: useLocalScrollCoordinatePicker.value ? selectedRunnerId.value : undefined,
+      element_id: step?.element_id || undefined
+    })
+    scrollCoordinatePickerSessionId.value = response.data?.session_id || ''
+    scrollCoordinatePickerProjectId.value = currentProjectId
+    scrollCoordinatePickerMode.value = response.data?.mode || expectedMode
+    scrollCoordinatePickerRunnerId.value = response.data?.runner_id ? String(response.data.runner_id) : expectedRunnerId
+    scrollCoordinatePickerElementId.value = expectedElementId
+    return {
+      sessionId: scrollCoordinatePickerSessionId.value,
+      mode: scrollCoordinatePickerMode.value,
+      created: true
+    }
+  } finally {
+    scrollCoordinatePickerStarting.value = false
+  }
+}
+
+const openScrollCoordinatePickerPage = async (step) => {
+  try {
+    const session = await ensureScrollCoordinatePickerSession(step, { forceReopen: true })
+    await refreshScrollCoordinatePickerPages(false)
+    const isLocalMode = session?.mode === 'local'
+    const runnerName = selectedScrollCoordinatePickerRunner.value?.name
+    const executionTarget = isLocalMode
+      ? (runnerName ? `访客机本地执行器“${runnerName}”上的浏览器` : '访客机本地执行器上的浏览器')
+      : '服务器采集浏览器'
+    ElMessage.success(`已在${executionTarget}打开网页。请先登录并切换到目标页面，在目标页面中把需要滚动的区域滚到目标位置后，再点击“开始滚动位置”或“滚动到位置”读取当前滚动值。`)
+  } catch (error) {
+    ElMessage.error(extractRequestErrorMessage(error, '打开坐标采集网页失败'))
+  }
+}
+
+const captureScrollCoordinate = async (step, field) => {
+  const isStart = field === 'start'
+  const loadingRef = isStart ? scrollCoordinatePickerReadingStart : scrollCoordinatePickerReadingTarget
+
+  try {
+    const session = await ensureScrollCoordinatePickerSession(step)
+    const sessionId = session?.sessionId
+    if (!sessionId) {
+      throw new Error('滚动坐标采集浏览器启动失败')
+    }
+
+    const selectedPageIndex = Number(scrollCoordinatePickerActivePageIndex.value ?? 0)
+    await refreshScrollCoordinatePickerPages(false)
+    await switchScrollCoordinatePickerPage(selectedPageIndex, false)
+    const isLocalMode = session.mode === 'local'
+    const targetTypeLabel = step?.element_id ? '所选滚动容器' : '整个页面'
+    const executionTarget = isLocalMode
+      ? (selectedScrollCoordinatePickerRunner.value
+          ? `访客机本地执行器“${selectedScrollCoordinatePickerRunner.value.name}”上的浏览器`
+          : '访客机本地执行器上的浏览器')
+      : '服务器采集浏览器'
+
+    if (session.created) {
+      ElMessage.info(
+        isLocalMode
+          ? `已在${executionTarget}打开坐标采集页面，请先把${targetTypeLabel}滚动到目标位置，再回到当前页面读取当前滚动值。`
+          : `已打开服务器采集浏览器，请先把${targetTypeLabel}滚动到目标位置，再回到当前页面读取当前滚动值。`
+      )
+    }
+
+    loadingRef.value = true
+    ElMessage.info(isStart
+      ? `请先在${executionTarget}中把${targetTypeLabel}滚动到开始位置，当前将读取真实滚动值。`
+      : `请先在${executionTarget}中把${targetTypeLabel}滚动到目标位置，当前将读取真实滚动值。`
+    )
+    const captureResponse = await getScrollCoordinatePickerPosition({ session_id: sessionId, field })
+    const captureX = Number(captureResponse.data?.x ?? 0)
+    const captureY = Number(captureResponse.data?.y ?? 0)
+
+    if (!step.scroll_direction) {
+      step.scroll_direction = 'vertical'
+    }
+
+    if (isStart) {
+      step.scroll_start_x = captureX
+      step.scroll_start_y = captureY
+    } else {
+      step.scroll_target_x = captureX
+      step.scroll_target_y = captureY
+    }
+
+    ElMessage.success(buildScrollCaptureSuccessMessage(captureResponse.data, step, isStart))
+    return
+  } catch (error) {
+    if (error === 'cancel') {
+      return
+    }
+
+    const message = extractRequestErrorMessage(
+      error,
+      isStart ? '获取开始滚动位置失败' : '获取目标滚动位置失败'
+    )
+    if (message.includes('会话不存在') || message.includes('已过期')) {
+      resetScrollCoordinatePickerSession()
+    }
+    ElMessage.error(message)
+  } finally {
+    loadingRef.value = false
+  }
 }
 
 const getElementTooltipContent = (node) => {
@@ -2155,9 +3174,319 @@ const submitImportCases = async () => {
     ])
   } catch (error) {
     console.error('导入测试用例失败:', error)
-    ElMessage.error(error.response?.data?.detail || error.response?.data?.message || '测试用例导入失败')
+    ElMessage.error(extractRequestErrorMessage(error, '测试用例导入失败'))
   } finally {
     importing.value = false
+  }
+}
+
+const resetAiGenerateState = () => {
+  aiGenerateForm.text = ''
+  aiGenerateForm.model_config_id = null
+  aiGenerateForm.skill_id = null
+  aiGenerateForm.folder_id = null
+  aiGenerateForm.overwrite = false
+  aiGenerateForm.use_ai = true
+  aiGenerateTab.value = 'source'
+  aiSourceFile.value = null
+  aiSourceFileInfo.value = null
+  aiGeneratedRecordId.value = null
+  aiGeneratedManifest.value = null
+  aiGeneratedCases.value = []
+  aiGenerateWarnings.value = []
+  aiGenerationMode.value = ''
+  aiSkillOptimizeInstruction.value = ''
+  aiSkillPreview.value = ''
+  aiSourceUploadRef.value?.clearFiles?.()
+}
+
+const normalizeApiList = (data) => {
+  return data?.results || data || []
+}
+
+const normalizeAiModelConfigs = (responses) => {
+  const modelMap = new Map()
+  responses.forEach((response) => {
+    normalizeApiList(response?.data).forEach((model) => {
+      if (model?.id) {
+        modelMap.set(model.id, model)
+      }
+    })
+  })
+  return Array.from(modelMap.values()).sort((a, b) => {
+    if (a.is_active !== b.is_active) return a.is_active ? -1 : 1
+    return new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
+  })
+}
+
+const normalizeAiSkills = (skills) => {
+  const skillMap = new Map()
+  ;(skills || []).forEach((skill) => {
+    if (skill?.id) {
+      skillMap.set(skill.id, skill)
+    }
+  })
+  return Array.from(skillMap.values()).sort((a, b) => {
+    if (a.is_default !== b.is_default) return a.is_default ? -1 : 1
+    return new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0)
+  })
+}
+
+const loadAiGenerateOptions = async () => {
+  const defaultSkillResponse = await ensureDefaultAITestCaseGenerationSkill()
+  const ensuredDefaultSkill = defaultSkillResponse.data
+
+  aiSkills.value = normalizeAiSkills([ensuredDefaultSkill])
+  aiGenerateForm.skill_id = ensuredDefaultSkill.id
+  aiSkillPreview.value = ensuredDefaultSkill.content || ''
+
+  const [skillsResult, generalModelsResult, uiAutomationModelsResult] = await Promise.allSettled([
+    getAITestCaseGenerationSkills(),
+    getAIModelConfigs({ is_active: true }),
+    getUiAutomationAIModelConfigs()
+  ])
+
+  if (skillsResult.status === 'fulfilled') {
+    aiSkills.value = normalizeAiSkills([
+      ensuredDefaultSkill,
+      ...normalizeApiList(skillsResult.value.data)
+    ])
+  } else {
+    console.warn('加载AI生成Skill列表失败:', skillsResult.reason)
+  }
+
+  const modelResponses = [generalModelsResult, uiAutomationModelsResult]
+    .filter(result => result.status === 'fulfilled')
+    .map(result => result.value)
+
+  aiModelConfigs.value = normalizeAiModelConfigs(modelResponses)
+    .filter(model => model?.is_active !== false)
+
+  if (generalModelsResult.status === 'rejected') {
+    console.warn('加载通用AI模型配置失败:', generalModelsResult.reason)
+  }
+  if (uiAutomationModelsResult.status === 'rejected') {
+    console.warn('加载UI自动化AI模型配置失败:', uiAutomationModelsResult.reason)
+  }
+
+  const defaultSkill = aiSkills.value.find(item => item.id === ensuredDefaultSkill.id)
+    || aiSkills.value.find(item => item.is_default)
+    || aiSkills.value[0]
+  if (defaultSkill) {
+    aiGenerateForm.skill_id = defaultSkill.id
+    aiSkillPreview.value = defaultSkill.content || ''
+  }
+
+  const activeModel = aiModelConfigs.value.find(item => item.is_active) || aiModelConfigs.value[0]
+  if (activeModel) {
+    aiGenerateForm.model_config_id = activeModel.id
+  }
+}
+
+const openAiGenerateDialog = async () => {
+  if (!projectId.value) {
+    ElMessage.warning(t('uiAutomation.project.selectProject'))
+    return
+  }
+  resetAiGenerateState()
+  showAiGenerateDialog.value = true
+  try {
+    await loadAiGenerateOptions()
+  } catch (error) {
+    console.error('加载AI生成配置失败:', error)
+    ElMessage.error(extractRequestErrorMessage(error, '加载AI生成配置失败'))
+  }
+}
+
+const formatFileSize = (size) => {
+  if (!size) return '0 KB'
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
+  return `${(size / 1024 / 1024).toFixed(2)} MB`
+}
+
+const handleAiSourceFileChange = (file) => {
+  const raw = file.raw
+  const extension = `.${(raw?.name || '').split('.').pop()?.toLowerCase() || ''}`
+  const allowed = ['.txt', '.md', '.json', '.csv', '.xlsx', '.xmind']
+
+  if (!allowed.includes(extension)) {
+    ElMessage.warning(aiText.unsupportedFile)
+    aiSourceUploadRef.value?.clearFiles?.()
+    aiSourceFile.value = null
+    aiSourceFileInfo.value = null
+    return false
+  }
+
+  if (raw?.size > 10 * 1024 * 1024) {
+    ElMessage.warning(aiText.fileTooLarge)
+    aiSourceUploadRef.value?.clearFiles?.()
+    aiSourceFile.value = null
+    aiSourceFileInfo.value = null
+    return false
+  }
+
+  aiSourceFile.value = raw
+  aiSourceFileInfo.value = {
+    name: raw.name,
+    extension,
+    sizeText: formatFileSize(raw.size)
+  }
+  return true
+}
+
+const handleAiSourceFileRemove = () => {
+  aiSourceFile.value = null
+  aiSourceFileInfo.value = null
+}
+
+const downloadAiCaseTemplate = async () => {
+  aiTemplateDownloading.value = true
+  try {
+    const response = await downloadAITestCaseTemplate()
+    const blob = new Blob([response.data], {
+      type: response.headers['content-type'] || 'text/csv;charset=utf-8'
+    })
+    const filename = getDownloadFilename(response.headers['content-disposition'], 'ai-ui-test-case-template.csv')
+    downloadBlob(blob, filename)
+  } catch (error) {
+    console.error('下载AI用例模板失败:', error)
+    ElMessage.error(aiText.templateDownloadFailed)
+  } finally {
+    aiTemplateDownloading.value = false
+  }
+}
+
+const submitAiGenerateCases = async () => {
+  if (!projectId.value) {
+    ElMessage.warning(t('uiAutomation.project.selectProject'))
+    return
+  }
+  if (!aiGenerateForm.text.trim() && !aiSourceFile.value) {
+    ElMessage.warning(aiText.needInput)
+    return
+  }
+
+  aiGenerating.value = true
+  try {
+    const formData = new FormData()
+    formData.append('project', projectId.value)
+    formData.append('text', aiGenerateForm.text)
+    formData.append('use_ai', aiGenerateForm.use_ai ? '1' : '0')
+    if (aiGenerateForm.model_config_id) formData.append('model_config_id', aiGenerateForm.model_config_id)
+    if (aiGenerateForm.skill_id) formData.append('skill_id', aiGenerateForm.skill_id)
+    if (aiSourceFile.value) formData.append('file', aiSourceFile.value)
+
+    const response = await generateAITestCases(formData)
+    const data = response.data || {}
+    const record = data.record || {}
+    const manifest = data.manifest || record.manifest || {}
+    aiGeneratedRecordId.value = record.id
+    aiGeneratedManifest.value = manifest
+    aiGeneratedCases.value = manifest.test_cases || []
+    aiGenerateWarnings.value = data.warnings || record.warnings || []
+    aiGenerationMode.value = data.generation_mode || ''
+    ElMessage.success(aiText.generateSuccess)
+  } catch (error) {
+    console.error('AI生成用例失败:', error)
+    ElMessage.error(extractRequestErrorMessage(error, 'AI生成用例失败'))
+  } finally {
+    aiGenerating.value = false
+  }
+}
+
+const submitImportGeneratedCases = async () => {
+  if (!aiGeneratedRecordId.value) return
+  aiImporting.value = true
+  try {
+    const response = await importGeneratedAITestCases(aiGeneratedRecordId.value, {
+      overwrite: aiGenerateForm.overwrite ? '1' : '0',
+      folder_id: aiGenerateForm.folder_id
+    })
+    const summary = response.data?.summary || {}
+    ElMessage.success(`${aiText.importSuccess}，新增 ${summary.created || 0} 个，更新 ${summary.updated || 0} 个`)
+    showAiGenerateDialog.value = false
+    await Promise.all([
+      loadTestCaseFolders(),
+      loadTestCases(),
+      loadElementsForCurrentProject()
+    ])
+  } catch (error) {
+    console.error('导入AI生成用例失败:', error)
+    ElMessage.error(extractRequestErrorMessage(error, '导入AI生成用例失败'))
+  } finally {
+    aiImporting.value = false
+  }
+}
+
+const optimizeAiSkill = async (saveMode = 'preview') => {
+  if (!aiSkillOptimizeInstruction.value.trim()) {
+    ElMessage.warning('请输入Skill优化要求')
+    return
+  }
+  aiSkillOptimizing.value = true
+  try {
+    const currentSkill = aiSkills.value.find(item => item.id === aiGenerateForm.skill_id)
+    const response = await optimizeAITestCaseGenerationSkill({
+      skill_id: aiGenerateForm.skill_id,
+      model_config_id: aiGenerateForm.model_config_id,
+      current_skill: currentSkill?.content || aiSkillPreview.value,
+      instruction: aiSkillOptimizeInstruction.value,
+      save_mode: saveMode
+    })
+    aiSkillPreview.value = response.data?.content || ''
+    if (response.data?.skill) {
+      const index = aiSkills.value.findIndex(item => item.id === response.data.skill.id)
+      if (index >= 0) {
+        aiSkills.value[index] = response.data.skill
+      } else {
+        aiSkills.value.push(response.data.skill)
+      }
+      aiGenerateForm.skill_id = response.data.skill.id
+    }
+    ElMessage.success(saveMode === 'update' ? 'Skill已更新' : 'Skill优化预览已生成')
+  } catch (error) {
+    console.error('优化Skill失败:', error)
+    ElMessage.error(extractRequestErrorMessage(error, '优化Skill失败'))
+  } finally {
+    aiSkillOptimizing.value = false
+  }
+}
+
+const saveAiSkillPreview = async () => {
+  if (!aiGenerateForm.skill_id) {
+    ElMessage.warning('请先选择Skill')
+    return
+  }
+  if (!aiSkillPreview.value.trim()) {
+    ElMessage.warning('请输入要保存的Skill内容')
+    return
+  }
+
+  aiSkillSaving.value = true
+  try {
+    const currentSkill = aiSkills.value.find(item => item.id === aiGenerateForm.skill_id)
+    const response = await updateAITestCaseGenerationSkill(aiGenerateForm.skill_id, {
+      name: currentSkill?.name,
+      description: currentSkill?.description || '',
+      content: aiSkillPreview.value,
+      is_default: currentSkill?.is_default ?? false,
+      is_active: currentSkill?.is_active ?? true
+    })
+    const savedSkill = response.data
+    const index = aiSkills.value.findIndex(item => item.id === savedSkill.id)
+    if (index >= 0) {
+      aiSkills.value[index] = savedSkill
+    } else {
+      aiSkills.value.push(savedSkill)
+    }
+    aiGenerateForm.skill_id = savedSkill.id
+    aiSkillPreview.value = savedSkill.content || ''
+    ElMessage.success('Skill已保存')
+  } catch (error) {
+    console.error('保存Skill失败:', error)
+    ElMessage.error(extractRequestErrorMessage(error, '保存Skill失败'))
+  } finally {
+    aiSkillSaving.value = false
   }
 }
 
@@ -2278,6 +3607,13 @@ const onActionTypeChange = (step) => {
   if (!canStoreVariable(step.action_type)) {
     step.save_as = ''
   }
+  if (step.action_type !== 'scroll') {
+    step.scroll_direction = ''
+    step.scroll_start_x = null
+    step.scroll_start_y = null
+    step.scroll_target_x = null
+    step.scroll_target_y = null
+  }
 }
 
 const onElementChange = (step) => {
@@ -2328,6 +3664,40 @@ const needsElement = (actionType) => {
   return !['wait', 'switchTab', 'screenshot', 'refreshCurrentPage', 'closeCurrentPage'].includes(actionType)
 }
 
+const submitImportCaseSteps = () => {
+  const sourceCase = testCases.value.find(item => String(item.id) === String(importCaseStepsForm.source_case_id))
+  if (!sourceCase) {
+    ElMessage.warning('\u8bf7\u9009\u62e9\u8981\u5bfc\u5165\u7684\u7528\u4f8b')
+    return
+  }
+
+  const importedSteps = cloneImportedSteps(sourceCase.steps || [])
+  if (!importedSteps.length) {
+    ElMessage.warning('\u6240\u9009\u7528\u4f8b\u6ca1\u6709\u53ef\u5bfc\u5165\u7684\u6b65\u9aa4')
+    return
+  }
+
+  if (needsImportTargetStep.value && !importCaseStepsForm.target_step_id) {
+    ElMessage.warning('\u8bf7\u9009\u62e9\u76ee\u6807\u6b65\u9aa4')
+    return
+  }
+
+  const insertIndex = getImportInsertIndex()
+  if (insertIndex < 0) {
+    ElMessage.warning('\u76ee\u6807\u6b65\u9aa4\u4e0d\u5b58\u5728\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9')
+    return
+  }
+
+  currentSteps.value.splice(insertIndex, 0, ...importedSteps)
+  selectedStepId.value = importedSteps[0]?.id ?? null
+  checkedStepIds.value = importedSteps.map(step => step.id)
+  normalizeTransactionBlocks()
+  allStepsExpanded.value = false
+  showImportCaseStepsDialog.value = false
+
+  ElMessage.success(`\u5df2\u5bfc\u5165 ${importedSteps.length} \u4e2a\u6b65\u9aa4\uff0c\u8bf7\u4fdd\u5b58\u7528\u4f8b`)
+}
+
 const expandAllSteps = () => {
   allStepsExpanded.value = !allStepsExpanded.value
   currentSteps.value.forEach(step => {
@@ -2357,7 +3727,7 @@ const saveTestCase = async () => {
     }
   } catch (error) {
       console.error('保存测试用例失败:', error)
-      ElMessage.error(t('uiAutomation.testCase.save.failed'))
+      ElMessage.error(extractRequestErrorMessage(error, t('uiAutomation.testCase.save.failed')))
     }
 }
 
@@ -2716,8 +4086,7 @@ const saveTestCaseForm = async () => {
       description: testCaseForm.description,
       priority: testCaseForm.priority,
       folder_id: testCaseForm.folder_id,
-      project: projectId.value,
-      steps: []
+      project: projectId.value
     }
 
     if (editingTestCase.value) {
@@ -2732,6 +4101,7 @@ const saveTestCaseForm = async () => {
       }
     } else {
       // 创建新用例
+      data.steps = []
       const response = await createTestCase(data)
       ElMessage.success(t('uiAutomation.testCase.create.success'))
       testCases.value.push(response.data)
@@ -2743,7 +4113,7 @@ const saveTestCaseForm = async () => {
     resetForm()
   } catch (error) {
     console.error('保存测试用例失败:', error)
-    ElMessage.error(t('uiAutomation.testCase.save.failed'))
+    ElMessage.error(extractRequestErrorMessage(error, t('uiAutomation.testCase.save.failed')))
   }
 }
 
@@ -2892,6 +4262,38 @@ watch(showMoveDialog, (visible) => {
   }
 })
 
+watch(showImportCaseStepsDialog, (visible) => {
+  if (!visible) {
+    importCaseStepsForm.source_case_id = null
+    importCaseStepsForm.insert_mode = 'end'
+    importCaseStepsForm.target_step_id = null
+  }
+})
+
+watch(() => importCaseStepsForm.insert_mode, (mode) => {
+  if (!['before', 'after'].includes(mode)) {
+    importCaseStepsForm.target_step_id = null
+    return
+  }
+
+  if (!currentSteps.value.length) {
+    importCaseStepsForm.insert_mode = 'end'
+    importCaseStepsForm.target_step_id = null
+    return
+  }
+
+  if (!currentSteps.value.some(step => isSameStepId(step.id, importCaseStepsForm.target_step_id))) {
+    importCaseStepsForm.target_step_id = currentSteps.value[0]?.id ?? null
+  }
+})
+
+watch(() => aiGenerateForm.skill_id, (skillId) => {
+  const skill = aiSkills.value.find(item => item.id === skillId)
+  if (skill) {
+    aiSkillPreview.value = skill.content || ''
+  }
+})
+
 watch(showElementSelectorDialog, (visible) => {
   if (visible) {
     normalizeElementSelectorDialogSize()
@@ -2904,6 +4306,10 @@ watch(showElementSelectorDialog, (visible) => {
     currentSelectingField.value = 'element_id'
     elementSelectorKeyword.value = ''
   }
+})
+
+watch([projectId, selectedBrowser, executionMode, selectedRunnerId], () => {
+  closeScrollCoordinatePickerSession(true)
 })
 
 onMounted(() => {
@@ -2927,6 +4333,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   stopLocalExecutionPolling()
   stopElementSelectorResize()
+  closeScrollCoordinatePickerSession(true)
   window.removeEventListener('resize', normalizeElementSelectorDialogSize)
 })
 </script>
@@ -3559,6 +4966,33 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
+.scroll-config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 8px;
+}
+
+.scroll-picker-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.scroll-picker-guide {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #f5f7fa;
+  border: 1px solid #e4e7ed;
+}
+
+.scroll-picker-guide__line {
+  color: #606266;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .step-help {
   margin-top: 6px;
   color: #909399;
@@ -4025,5 +5459,85 @@ onBeforeUnmount(() => {
 .variable-helper-btn:hover {
   background-color: #5daf34;
   border-color: #5daf34;
+}
+
+.ai-generate-layout {
+  display: grid;
+  grid-template-columns: minmax(420px, 0.95fr) minmax(480px, 1.05fr);
+  gap: 18px;
+}
+
+.ai-generate-config,
+.ai-generate-preview {
+  min-width: 0;
+}
+
+.ai-upload-field {
+  width: 100%;
+}
+
+.ai-upload-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.ai-upload-tip {
+  margin-top: 8px;
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ai-file-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
+  color: #606266;
+  font-size: 12px;
+}
+
+.ai-file-name {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-file-size {
+  color: #909399;
+}
+
+.ai-skill-actions,
+.ai-generate-actions {
+  display: flex;
+  gap: 10px;
+  margin: 12px 0;
+}
+
+.ai-preview-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+  font-weight: 600;
+}
+
+.ai-warning {
+  margin-bottom: 12px;
+}
+
+.ai-step-preview {
+  font-size: 12px;
+  line-height: 1.6;
+  color: #606266;
+}
+
+@media (max-width: 1180px) {
+  .ai-generate-layout {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

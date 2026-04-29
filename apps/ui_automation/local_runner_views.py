@@ -11,6 +11,10 @@ from .execution_dispatcher import (
     refresh_suite_execution_progress,
 )
 from .models import LocalRunner, TestCaseExecution
+from .scroll_coordinate_picker import (
+    claim_local_scroll_coordinate_picker_task,
+    report_local_scroll_coordinate_picker_task,
+)
 from .serializers import LocalRunnerSerializer, TestCaseExecutionSerializer
 
 
@@ -87,6 +91,10 @@ class LocalRunnerViewSet(viewsets.ReadOnlyModelViewSet):
         if error_response:
             return error_response
 
+        picker_task = claim_local_scroll_coordinate_picker_task(request.user.id, runner.id)
+        if picker_task:
+            return Response({'task': picker_task})
+
         with transaction.atomic():
             execution = (
                 TestCaseExecution.objects
@@ -126,6 +134,29 @@ class LocalRunnerViewSet(viewsets.ReadOnlyModelViewSet):
         runner, error_response = self._get_runner(request)
         if error_response:
             return error_response
+
+        task_type = request.data.get('task_type')
+        if task_type == 'scroll_coordinate_picker':
+            session_id = request.data.get('session_id')
+            action = request.data.get('action')
+            if not session_id or not action:
+                return Response({'error': 'session_id and action are required'}, status=status.HTTP_400_BAD_REQUEST)
+
+            try:
+                report_local_scroll_coordinate_picker_task(
+                    request.user.id,
+                    runner.id,
+                    str(session_id),
+                    str(action),
+                    bool(request.data.get('success')),
+                    payload=request.data.get('payload') or {},
+                    error=request.data.get('error_message', ''),
+                    command_sequence=request.data.get('command_sequence'),
+                )
+            except ValueError as exc:
+                return Response({'error': str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+
+            return Response({'success': bool(request.data.get('success'))})
 
         execution_id = request.data.get('execution_id')
         if not execution_id:
