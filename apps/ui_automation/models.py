@@ -1160,6 +1160,144 @@ class AITestCaseGenerationSkill(models.Model):
         return self.name
 
 
+class AITestCaseGenerationSkillCategory(models.Model):
+    """Category for modular AI UI test case generation skills."""
+    name = models.CharField(max_length=120, verbose_name='Category Name')
+    code = models.CharField(max_length=120, unique=True, verbose_name='Category Code')
+    description = models.TextField(blank=True, verbose_name='Description')
+    order = models.IntegerField(default=0, verbose_name='Order')
+    is_active = models.BooleanField(default=True, verbose_name='Active')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created At')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='Updated At')
+
+    class Meta:
+        db_table = 'ui_ai_test_case_generation_skill_categories'
+        verbose_name = 'UI AI Test Case Generation Skill Category'
+        verbose_name_plural = 'UI AI Test Case Generation Skill Categories'
+        ordering = ['order', 'name']
+
+    def __str__(self):
+        return self.name
+
+
+class AITestCaseGenerationSkillModule(models.Model):
+    """Reusable routed skill module for AI UI test case generation."""
+    MODULE_TYPE_CHOICES = [
+        ('global', 'Global'),
+        ('page', 'Page'),
+        ('business_flow', 'Business Flow'),
+        ('repair', 'Repair'),
+    ]
+
+    category = models.ForeignKey(
+        AITestCaseGenerationSkillCategory,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='modules',
+        verbose_name='Category'
+    )
+    name = models.CharField(max_length=160, verbose_name='Module Name')
+    code = models.CharField(max_length=160, unique=True, verbose_name='Module Code')
+    module_type = models.CharField(max_length=32, choices=MODULE_TYPE_CHOICES, default='business_flow', verbose_name='Module Type')
+    description = models.TextField(blank=True, verbose_name='Description')
+    summary = models.TextField(blank=True, verbose_name='Summary')
+    content = models.TextField(verbose_name='Content')
+    keywords = models.JSONField(default=list, blank=True, verbose_name='Keywords')
+    intents = models.JSONField(default=list, blank=True, verbose_name='Intents')
+    pages = models.JSONField(default=list, blank=True, verbose_name='Pages')
+    config = models.JSONField(default=dict, blank=True, verbose_name='Config')
+    priority = models.IntegerField(default=0, verbose_name='Priority')
+    max_prompt_chars = models.IntegerField(default=4000, verbose_name='Max Prompt Characters')
+    is_active = models.BooleanField(default=True, verbose_name='Active')
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_ui_ai_generation_skill_modules',
+        verbose_name='Created By'
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created At')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='Updated At')
+
+    class Meta:
+        db_table = 'ui_ai_test_case_generation_skill_modules'
+        verbose_name = 'UI AI Test Case Generation Skill Module'
+        verbose_name_plural = 'UI AI Test Case Generation Skill Modules'
+        ordering = ['-priority', 'module_type', 'name']
+        indexes = [
+            models.Index(fields=['module_type', 'is_active']),
+            models.Index(fields=['priority']),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
+class AITestCaseGenerationSkillTrigger(models.Model):
+    """Explicit trigger used by routed AI generation skill modules."""
+    TRIGGER_TYPE_CHOICES = [
+        ('keyword', 'Keyword'),
+        ('regex', 'Regex'),
+        ('intent', 'Intent'),
+        ('page', 'Page'),
+        ('entity', 'Entity'),
+    ]
+
+    module = models.ForeignKey(
+        AITestCaseGenerationSkillModule,
+        on_delete=models.CASCADE,
+        related_name='triggers',
+        verbose_name='Module'
+    )
+    trigger_type = models.CharField(max_length=32, choices=TRIGGER_TYPE_CHOICES, default='keyword', verbose_name='Trigger Type')
+    value = models.CharField(max_length=500, verbose_name='Value')
+    weight = models.IntegerField(default=50, verbose_name='Weight')
+    is_active = models.BooleanField(default=True, verbose_name='Active')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created At')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='Updated At')
+
+    class Meta:
+        db_table = 'ui_ai_test_case_generation_skill_triggers'
+        verbose_name = 'UI AI Test Case Generation Skill Trigger'
+        verbose_name_plural = 'UI AI Test Case Generation Skill Triggers'
+        unique_together = ['module', 'trigger_type', 'value']
+        ordering = ['module', '-weight', 'trigger_type', 'value']
+        indexes = [
+            models.Index(fields=['trigger_type', 'is_active']),
+        ]
+
+    def __str__(self):
+        return f'{self.module.code}:{self.trigger_type}:{self.value}'
+
+
+class AITestCaseGenerationSkillDependency(models.Model):
+    """Dependency between routed AI generation skill modules."""
+    module = models.ForeignKey(
+        AITestCaseGenerationSkillModule,
+        on_delete=models.CASCADE,
+        related_name='dependencies',
+        verbose_name='Module'
+    )
+    depends_on = models.ForeignKey(
+        AITestCaseGenerationSkillModule,
+        on_delete=models.CASCADE,
+        related_name='dependents',
+        verbose_name='Depends On'
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created At')
+
+    class Meta:
+        db_table = 'ui_ai_test_case_generation_skill_dependencies'
+        verbose_name = 'UI AI Test Case Generation Skill Dependency'
+        verbose_name_plural = 'UI AI Test Case Generation Skill Dependencies'
+        unique_together = ['module', 'depends_on']
+
+    def __str__(self):
+        return f'{self.module.code} -> {self.depends_on.code}'
+
+
 class AITestCaseGenerationRecord(models.Model):
     """Generation history for AI produced UI automation test case manifests."""
     STATUS_CHOICES = [

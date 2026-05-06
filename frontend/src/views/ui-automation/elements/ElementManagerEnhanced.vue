@@ -28,9 +28,9 @@
             :key="treeKey"
             :data="treeData"
             :props="treeProps"
-            node-key="id"
+            node-key="treeKey"
             show-checkbox
-            :default-checked-keys="checkedElementIds"
+            :default-checked-keys="checkedElementTreeKeys"
             :expand-on-click-node="false"
             :default-expanded-keys="expandedKeys"
             @check="handleTreeCheck"
@@ -580,6 +580,8 @@ const currentProjectName = computed(() => {
 
 const selectedElementCount = computed(() => checkedElementIds.value.length)
 
+const checkedElementTreeKeys = computed(() => checkedElementIds.value.map(id => getElementTreeKey(id)))
+
 const transferScopeLabel = computed(() => {
   if (transferScope.value === 'selected') {
     return `已勾选 ${selectedElementCount.value} 个元素`
@@ -672,6 +674,18 @@ const pageTreeOptions = computed(() => {
   return toPageOnlyTree(treeData.value)
 })
 
+const getPageTreeKey = (id) => `page-${id}`
+
+const getElementTreeKey = (id) => `element-${id}`
+
+const sameTreeId = (left, right) => String(left) === String(right)
+
+const addExpandedKey = (key) => {
+  if (key && !expandedKeys.value.includes(key)) {
+    expandedKeys.value.push(key)
+  }
+}
+
 const editableParentPageTreeOptions = computed(() => {
   const excludeCurrentPage = (nodes = [], currentId = editPageForm.id) => nodes
     .filter(node => node.id !== currentId)
@@ -685,6 +699,7 @@ const editableParentPageTreeOptions = computed(() => {
 
 const buildPageTreeNodes = (groups = []) => groups.map(group => ({
   ...group,
+  treeKey: getPageTreeKey(group.id),
   type: 'page',
   disabled: false,
   children: buildPageTreeNodes(group.children || [])
@@ -692,7 +707,7 @@ const buildPageTreeNodes = (groups = []) => groups.map(group => ({
 
 const findPageNodeById = (nodes, targetId) => {
   for (const node of nodes) {
-    if (String(node.id) === String(targetId)) {
+    if (sameTreeId(node.id, targetId)) {
       return node
     }
     if (node.children?.length) {
@@ -710,7 +725,7 @@ const getPageNameById = (pageId) => {
     return ''
   }
 
-  const flatPage = pages.value.find(page => String(page.id) === String(pageId))
+  const flatPage = pages.value.find(page => sameTreeId(page.id, pageId))
   if (flatPage?.name) {
     return flatPage.name
   }
@@ -931,13 +946,14 @@ const loadElementTree = async () => {
     const attachElementsToPages = (pages) => {
       pages.forEach(page => {
         // 鎵惧埌灞炰簬褰撳墠椤甸潰鐨勫厓绱?
-        const pageElements = elements.filter(element => element.group_id === page.id)
+        const pageElements = elements.filter(element => sameTreeId(element.group_id, page.id))
         console.log(`Page ${page.name} (ID: ${page.id}) matched ${pageElements.length} elements`, pageElements)
 
         const elementNodes = pageElements.map(element => {
           attachedElementIds.add(element.id)
           return {
             ...element,
+            treeKey: getElementTreeKey(element.id),
             type: 'element',
             disabled: false
           }
@@ -973,11 +989,13 @@ const loadElementTree = async () => {
     if (unassignedElements.length > 0) {
       const unassignedPage = {
         id: 'unassigned',
+        treeKey: getPageTreeKey('unassigned'),
         name: 'Unassigned',
         type: 'page',
         disabled: false,
         children: unassignedElements.map(element => ({
           ...element,
+          treeKey: getElementTreeKey(element.id),
           type: 'element',
           disabled: false
         }))
@@ -985,7 +1003,7 @@ const loadElementTree = async () => {
       pageNodes.unshift(unassignedPage) // 娣诲姞鍒板垪琛ㄦ渶鍓嶉潰
       console.log(`Added ${unassignedElements.length} unassigned elements to the unassigned node`)
       // 榛樿灞曞紑鏈叧鑱旈〉闈㈣妭鐐?
-      expandedKeys.value.push('unassigned')
+      addExpandedKey(getPageTreeKey('unassigned'))
     }
 
     console.log('鏈€缁坱reeData:', pageNodes)
@@ -1015,7 +1033,7 @@ const loadElementTree = async () => {
       })))
     }
     await nextTick()
-    treeRef.value?.setCheckedKeys(checkedElementIds.value)
+    treeRef.value?.setCheckedKeys(checkedElementTreeKeys.value)
   } catch (error) {
     console.error('鑾峰彇鍏冪礌鏍戝け璐?', error)
     treeData.value = []
@@ -1403,14 +1421,12 @@ const onNodeRightClick = (event, data) => {
 
 // 鑺傜偣灞曞紑
 const onNodeExpand = (data) => {
-  if (!expandedKeys.value.includes(data.id)) {
-    expandedKeys.value.push(data.id)
-  }
+  addExpandedKey(data.treeKey)
 }
 
 // 鑺傜偣鏀惰捣
 const onNodeCollapse = (data) => {
-  const index = expandedKeys.value.indexOf(data.id)
+  const index = expandedKeys.value.indexOf(data.treeKey)
   if (index > -1) {
     expandedKeys.value.splice(index, 1)
   }
@@ -1503,9 +1519,8 @@ const saveElement = async () => {
       // 灞曞紑鏂板垱寤哄厓绱犳墍鍦ㄧ殑椤甸潰鑺傜偣
       if (selectedElement.value && selectedElement.value.group_id) {
         console.log('灞曞紑鍏冪礌鎵€鍦ㄩ〉闈?', selectedElement.value.group_id)
-        if (!expandedKeys.value.includes(selectedElement.value.group_id)) {
-          expandedKeys.value.push(selectedElement.value.group_id)
-        }
+        const groupTreeKey = getPageTreeKey(selectedElement.value.group_id)
+        addExpandedKey(groupTreeKey)
       }
 
       console.log('鏍戞暟鎹洿鏂板畬鎴愶紝褰撳墠expandedKeys:', expandedKeys.value)
