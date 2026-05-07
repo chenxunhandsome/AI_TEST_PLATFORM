@@ -882,6 +882,13 @@ export function updateAITestCaseGenerationSkillModule(id, data) {
   })
 }
 
+export function deleteAITestCaseGenerationSkillModule(id) {
+  return request({
+    url: `/ui-automation/ai-test-case-generation-skill-modules/${id}/`,
+    method: 'delete'
+  })
+}
+
 export function generateAITestCaseGenerationSkillModuleContent(data) {
   return request({
     url: '/ui-automation/ai-test-case-generation-skill-modules/generate-content/',

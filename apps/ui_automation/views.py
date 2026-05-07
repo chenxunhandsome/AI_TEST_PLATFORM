@@ -6271,11 +6271,23 @@ class AITestCaseGenerationSkillModuleViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         return AITestCaseGenerationSkillModule.objects.filter(
-            models.Q(created_by=self.request.user) | models.Q(created_by__isnull=True)
+            models.Q(created_by=self.request.user) | models.Q(created_by__isnull=True),
+            models.Q(config__deleted=False) | models.Q(config__deleted__isnull=True),
         ).select_related('category', 'created_by').prefetch_related('triggers', 'dependency_edges__depends_on')
 
     def perform_create(self, serializer):
         serializer.save(created_by=self.request.user)
+
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if instance.created_by_id is None:
+            config = instance.config if isinstance(instance.config, dict) else {}
+            config['deleted'] = True
+            instance.config = config
+            instance.is_active = False
+            instance.save(update_fields=['config', 'is_active', 'updated_at'])
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        return super().destroy(request, *args, **kwargs)
 
     @action(detail=False, methods=['post'], url_path='ensure-builtin')
     def ensure_builtin(self, request):

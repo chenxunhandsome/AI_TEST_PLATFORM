@@ -965,9 +965,10 @@
                     <el-tag size="small" :type="row.is_active ? 'success' : 'info'">{{ row.is_active ? '启用' : '停用' }}</el-tag>
                   </template>
                 </el-table-column>
-                <el-table-column label="操作" width="90" fixed="right">
+                <el-table-column label="操作" width="140" fixed="right">
                   <template #default="{ row }">
                     <el-button link type="primary" size="small" @click="openAiSkillModuleDialog(row)">编辑</el-button>
+                    <el-button link type="danger" size="small" @click="deleteAiSkillModule(row)">删除</el-button>
                   </template>
                 </el-table-column>
               </el-table>
@@ -1474,6 +1475,7 @@ import {
   getAITestCaseGenerationSkillModules,
   createAITestCaseGenerationSkillModule,
   updateAITestCaseGenerationSkillModule,
+  deleteAITestCaseGenerationSkillModule,
   generateAITestCaseGenerationSkillModuleContent,
   ensureBuiltinAITestCaseGenerationSkillModules,
   getUiAutomationAIModelConfigs,
@@ -3758,6 +3760,38 @@ const submitAiSkillModule = async () => {
     ElMessage.error(extractRequestErrorMessage(error, '保存 Skill 模块失败'))
   } finally {
     aiSkillModuleSaving.value = false
+  }
+}
+
+const deleteAiSkillModule = async (module) => {
+  if (!module?.id) return
+
+  const moduleName = module.name || module.code || '该 Skill 模块'
+  try {
+    await ElMessageBox.confirm(
+      `确认删除 Skill 模块“${moduleName}”吗？删除后不会再参与 AI 生成命中。`,
+      '删除 Skill 模块',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning',
+        confirmButtonClass: 'el-button--danger'
+      }
+    )
+  } catch {
+    return
+  }
+
+  aiSkillModulesLoading.value = true
+  try {
+    await deleteAITestCaseGenerationSkillModule(module.id)
+    await loadAiSkillModules()
+    ElMessage.success('Skill 模块已删除')
+  } catch (error) {
+    console.error('删除 Skill 模块失败:', error)
+    ElMessage.error(extractRequestErrorMessage(error, '删除 Skill 模块失败'))
+  } finally {
+    aiSkillModulesLoading.value = false
   }
 }
 
