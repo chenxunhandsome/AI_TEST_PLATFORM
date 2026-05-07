@@ -1,4 +1,4 @@
-"""
+﻿"""
 Playwright自动化测试执行引擎
 用于驱动真实浏览器执行UI自动化测试
 """
@@ -1069,6 +1069,7 @@ class PlaywrightTestEngine:
                 log += f"  - 文本内容: '{text}'\n"
                 log += f"  - 超时设置: {timeout_ms/1000}秒\n"
                 log += f"  - 执行时间: {execution_time}秒"
+                log = append_runtime_variable_log(step, log, text)
                 return True, log, None
 
             elif action_type == 'waitFor':

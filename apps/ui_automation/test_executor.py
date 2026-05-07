@@ -50,7 +50,12 @@ def _normalize_runtime_variable_name(value):
     return str(value or '').strip()
 
 
-def _store_runtime_variable_for_step(step_data, resolved_input_value=None, resolved_assert_value=None):
+def _store_runtime_variable_for_step(
+    step_data,
+    resolved_input_value=None,
+    resolved_assert_value=None,
+    resolved_result_value=None,
+):
     save_as = _normalize_runtime_variable_name(step_data.get('save_as'))
     if not save_as or not RUNTIME_VARIABLE_NAME_RE.match(save_as):
         return
@@ -60,6 +65,8 @@ def _store_runtime_variable_for_step(step_data, resolved_input_value=None, resol
         value_to_store = resolved_input_value
     elif step_data.get('action_type') == 'assert':
         value_to_store = resolved_assert_value
+    elif step_data.get('action_type') == 'getText':
+        value_to_store = resolved_result_value
 
     if value_to_store is None:
         return
@@ -1660,7 +1667,12 @@ class TestExecutor:
 
             step_result = _normalize_step_result(step_result)
             if step_result['success']:
-                _store_runtime_variable_for_step(step_data, resolved_input_value, resolved_assert_value)
+                _store_runtime_variable_for_step(
+                    step_data,
+                    resolved_input_value,
+                    resolved_assert_value,
+                    step_result.get('result'),
+                )
         except Exception as e:
             # 格式化为详细的错误信息，与playwright_engine.py保持一致
             execution_time = round(time.time() - start_time, 2)
@@ -2901,7 +2913,12 @@ class TestExecutor:
 
             step_result = _normalize_step_result(step_result)
             if step_result['success']:
-                _store_runtime_variable_for_step(step_data, resolved_input_value, resolved_assert_value)
+                _store_runtime_variable_for_step(
+                    step_data,
+                    resolved_input_value,
+                    resolved_assert_value,
+                    step_result.get('result'),
+                )
         except TimeoutException as e:
             # 格式化为详细的错误信息，与selenium_engine.py保持一致
             execution_time = round(time.time() - start_time, 2)

@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.ui_automation.models import TestCase, TestCaseStep, UiProject
+from apps.ui_automation.models import TestCase, TestCaseFolder, TestCaseStep, UiProject
 
 
 User = get_user_model()
@@ -42,6 +42,13 @@ class TestCaseManagementApiTests(APITestCase):
             action_type='click',
             description=description,
             wait_time=1000
+        )
+
+    def create_folder(self, name='folder-alpha'):
+        return TestCaseFolder.objects.create(
+            project=self.project,
+            name=name,
+            created_by=self.user
         )
 
     def test_create_rejects_duplicate_name_within_same_project(self):
@@ -91,3 +98,29 @@ class TestCaseManagementApiTests(APITestCase):
 
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
         self.assertEqual(response.data['name'], 'case-alpha_copy_2')
+
+    def test_batch_delete_removes_multiple_cases(self):
+        case_alpha = self.create_case('case-alpha')
+        case_beta = self.create_case('case-beta')
+
+        response = self.client.post(f'{self.list_url}batch-delete/', {
+            'ids': [case_alpha.id, case_beta.id]
+        }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['deleted_count'], 2)
+        self.assertFalse(TestCase.objects.filter(id__in=[case_alpha.id, case_beta.id]).exists())
+
+    def test_delete_folder_keeps_cases_and_moves_them_to_ungrouped(self):
+        folder = self.create_folder()
+        test_case = self.create_case('case-with-folder')
+        test_case.folder = folder
+        test_case.save(update_fields=['folder'])
+
+        response = self.client.delete(f'/api/ui-automation/test-case-folders/{folder.id}/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['affected_test_case_count'], 1)
+        test_case.refresh_from_db()
+        self.assertIsNone(test_case.folder)
+        self.assertFalse(TestCaseFolder.objects.filter(id=folder.id).exists())

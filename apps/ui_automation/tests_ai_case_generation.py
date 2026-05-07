@@ -797,6 +797,216 @@ class AITestCaseGenerationServiceTests(TestCase):
 
         self.assertEqual(intents[0]['data_definition'], 'SYS Decimal')
 
+    def test_extract_data_element_intent_strips_expected_result_suffix(self):
+        intents = extract_data_element_creation_intents(
+            '用例：创建图片要素 步骤：1.登录 2.进入管理模式 3.新建数据要素，数据定义是SYS Image（预期结果：新建正常） 4.验证新建正常'
+        )
+
+        self.assertEqual(intents[0]['data_definition'], 'SYS Image')
+
+    def test_uploaded_xlsx_generation_does_not_mix_expected_result_into_definition_search(self):
+        xlsx_bytes = build_minimal_xlsx([
+            ['用例名称', '文件夹', '优先级', '前置条件', '步骤序号', '操作描述', '测试数据', '预期结果', '备注'],
+            ['新建SYS Image要素', '', 'high', '用户已存在且账号可用', '1', '登录', '', '', ''],
+            ['', '', '', '', '2', '进入管理模式', '', '', ''],
+            ['', '', '', '', '3', '新建数据要素，数据定义是SYS Image', '', '新建正常', ''],
+            ['', '', '', '', '4', '验证新建成功', '', '新建正常', ''],
+        ])
+        uploaded = SimpleUploadedFile(
+            'cases_template.xlsx',
+            xlsx_bytes,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+
+        parsed = parse_uploaded_case_source(uploaded)
+        manifest, warnings, mode = generate_ui_test_case_manifest(
+            self.project,
+            parsed.text,
+            use_ai=False,
+        )
+
+        search_steps = [
+            step for step in manifest['test_cases'][0]['steps']
+            if step.get('action_type') == 'fillAndEnter' and '数据定义' in str(step.get('description') or '')
+        ]
+
+        self.assertEqual(mode, 'heuristic')
+        self.assertTrue(search_steps)
+        self.assertEqual(search_steps[0]['input_value'], 'SYS Image')
+        self.assertNotIn('预期结果', search_steps[0]['input_value'])
+        self.assertFalse(any('SYS Image（预期结果：新建正常）' in line for line in parsed.text.splitlines()))
+        self.assertTrue(any('用例 1 已按自然语言步骤重建关键流程' in warning for warning in warnings))
+
+    def test_uploaded_xlsx_generation_keeps_success_verification_minimal_and_normalized_label(self):
+        xlsx_bytes = build_minimal_xlsx([
+            ['用例名称', '文件夹', '优先级', '前置条件', '步骤序号', '操作描述', '测试数据', '预期结果', '备注'],
+            ['新建SYS Currency要素', '', 'high', '用户已存在且账号可用', '1', '登录', '', '', ''],
+            ['', '', '', '', '2', '进入管理模式', '', '', ''],
+            ['', '', '', '', '3', '新建数据要素，数据定义是SYS Currency', '', '', ''],
+            ['', '', '', '', '4', '验证新建成功', '', '新建成功，弹出成功toast', ''],
+        ])
+        uploaded = SimpleUploadedFile(
+            'cases_template.xlsx',
+            xlsx_bytes,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+
+        parsed = parse_uploaded_case_source(uploaded)
+        manifest, warnings, mode = generate_ui_test_case_manifest(
+            self.project,
+            parsed.text,
+            use_ai=False,
+        )
+        steps = manifest['test_cases'][0]['steps']
+
+        self.assertEqual(mode, 'heuristic')
+        self.assertTrue(any(step.get('save_as') == 'data_el_name' for step in steps))
+        self.assertTrue(any(step.get('input_value') == 'currency_${random_string(6, letters, 1)}' for step in steps))
+        self.assertTrue(any(step.get('description') == '等待操作成功提示出现' for step in steps))
+        self.assertFalse(any(step.get('input_value') == '${data_el_name}' for step in steps))
+        self.assertFalse(any(step.get('assert_type') == 'isVisible' and step.get('assert_value') == '${data_el_name}' for step in steps))
+        self.assertTrue(any('用例 1 已按自然语言步骤重建关键流程' in warning for warning in warnings))
+
+    def test_multi_case_ai_generation_rebuilds_each_case_from_original_uploaded_source(self):
+        xlsx_bytes = build_minimal_xlsx([
+            ['用例名称', '文件夹', '优先级', '前置条件', '步骤序号', '操作描述', '测试数据', '预期结果', '备注'],
+            ['新建SYS Integer要素', '', 'high', '用户已存在且账号可用', '1', '登录', '', '', ''],
+            ['', '', '', '', '2', '进入管理模式', '', '', ''],
+            ['', '', '', '', '3', '新建数据要素，数据定义是SYS Integer', '', '', ''],
+            ['', '', '', '', '4', '验证新建成功', '', '新建成功，弹出成功toast', ''],
+            ['新建SYS Currency要素', '', 'high', '用户已存在且账号可用', '1', '登录', '', '', ''],
+            ['', '', '', '', '2', '进入管理模式', '', '', ''],
+            ['', '', '', '', '3', '新建数据要素，数据定义是SYS Currency', '', '', ''],
+            ['', '', '', '', '4', '验证新建成功', '', '新建成功，弹出成功toast', ''],
+            ['新建SYS Image要素', '', 'high', '用户已存在且账号可用', '1', '登录', '', '', ''],
+            ['', '', '', '', '2', '进入管理模式', '', '', ''],
+            ['', '', '', '', '3', '新建数据要素，数据定义是SYS Image', '', '', ''],
+            ['', '', '', '', '4', '验证新建成功', '', '新建成功，弹出成功toast', ''],
+        ])
+        uploaded = SimpleUploadedFile(
+            'cases_template.xlsx',
+            xlsx_bytes,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        parsed = parse_uploaded_case_source(uploaded)
+        raw = """
+{
+  "format": "ui_automation_test_cases",
+  "version": 1,
+  "test_cases": [
+    {"name": "创建要素", "description": "创建SYS Integer的", "status": "draft", "priority": "medium", "steps": [{"description": "click", "action_type": "click"}]},
+    {"name": "创建要素", "description": "创建SYS Currency的", "status": "draft", "priority": "medium", "steps": [{"description": "click", "action_type": "click"}]},
+    {"name": "创建要素", "description": "创建SYS Image的", "status": "draft", "priority": "medium", "steps": [{"description": "click", "action_type": "click"}]}
+  ]
+}
+"""
+
+        with patch('apps.ui_automation.ai_case_generator.call_openai_compatible_model', return_value=raw):
+            manifest, warnings, mode = generate_ui_test_case_manifest(
+                self.project,
+                parsed.text,
+                model_config=SimpleNamespace(),
+                use_ai=True,
+            )
+
+        self.assertEqual(mode, 'ai')
+        self.assertEqual(len(manifest['test_cases']), 3)
+        self.assertEqual(manifest['test_cases'][0]['name'], '新建SYS Integer要素')
+        self.assertEqual(manifest['test_cases'][1]['name'], '新建SYS Currency要素')
+        self.assertEqual(manifest['test_cases'][2]['name'], '新建SYS Image要素')
+        self.assertTrue(any(step.get('input_value') == 'SYS Integer' for step in manifest['test_cases'][0]['steps']))
+        self.assertTrue(any(step.get('input_value') == 'SYS Currency' for step in manifest['test_cases'][1]['steps']))
+        self.assertTrue(any(step.get('input_value') == 'SYS Image' for step in manifest['test_cases'][2]['steps']))
+        self.assertFalse(any(step.get('input_value') == 'SYS Image的' for step in manifest['test_cases'][2]['steps']))
+        self.assertTrue(all(len(case.get('steps') or []) >= 20 for case in manifest['test_cases']))
+        self.assertTrue(sum('已按自然语言步骤重建关键流程' in warning for warning in warnings) >= 3)
+
+    def test_multi_case_ai_generation_restores_missing_cases_from_uploaded_source(self):
+        xlsx_bytes = build_minimal_xlsx([
+            ['用例名称', '文件夹', '优先级', '前置条件', '步骤序号', '操作描述', '测试数据', '预期结果', '备注'],
+            ['新建SYS Integer要素', '', 'high', '用户已存在且账号可用', '1', '登录', '', '', ''],
+            ['', '', '', '', '2', '进入管理模式', '', '', ''],
+            ['', '', '', '', '3', '新建数据要素，数据定义是SYS Integer', '', '', ''],
+            ['', '', '', '', '4', '验证新建成功', '', '新建成功，弹出成功toast', ''],
+            ['新建SYS Currency要素', '', 'high', '用户已存在且账号可用', '1', '登录', '', '', ''],
+            ['', '', '', '', '2', '进入管理模式', '', '', ''],
+            ['', '', '', '', '3', '新建数据要素，数据定义是SYS Currency', '', '', ''],
+            ['', '', '', '', '4', '验证新建成功', '', '新建成功，弹出成功toast', ''],
+        ])
+        uploaded = SimpleUploadedFile(
+            'cases_template.xlsx',
+            xlsx_bytes,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        )
+        parsed = parse_uploaded_case_source(uploaded)
+        raw = """
+{
+  "format": "ui_automation_test_cases",
+  "version": 1,
+  "test_cases": [
+    {"name": "创建要素", "description": "只返回第一条", "status": "draft", "priority": "medium", "steps": [{"description": "click", "action_type": "click"}]}
+  ]
+}
+"""
+
+        with patch('apps.ui_automation.ai_case_generator.call_openai_compatible_model', return_value=raw):
+            manifest, warnings, mode = generate_ui_test_case_manifest(
+                self.project,
+                parsed.text,
+                model_config=SimpleNamespace(),
+                use_ai=True,
+            )
+
+        self.assertEqual(mode, 'ai')
+        self.assertEqual(len(manifest['test_cases']), 2)
+        self.assertEqual(manifest['test_cases'][1]['name'], '新建SYS Currency要素')
+        self.assertTrue(any('已按原始用例补齐剩余 1 条' in warning for warning in warnings))
+        self.assertTrue(any(step.get('input_value') == 'SYS Currency' for step in manifest['test_cases'][1]['steps']))
+
+    def test_explicit_search_verification_keeps_ai_skill_generated_steps(self):
+        raw = """
+{
+  "format": "ui_automation_test_cases",
+  "version": 1,
+  "test_cases": [
+    {
+      "name": "创建数据要素",
+      "status": "draft",
+      "priority": "medium",
+      "steps": [
+        {"description": "点击搜索按钮", "action_type": "click", "element": {"name": "搜索按钮", "locator_strategy": "XPath", "locator_value": "//button[normalize-space()='搜索']"}},
+        {"description": "等待500ms", "action_type": "wait", "wait_time": 500},
+        {"description": "输入${data_el_name}", "action_type": "fill", "input_value": "${data_el_name}", "element": {"name": "搜索输入框", "locator_strategy": "XPath", "locator_value": "//input[@placeholder='请输入搜索内容']"}},
+        {"description": "点击确定搜索", "action_type": "click", "element": {"name": "确定搜索按钮", "locator_strategy": "XPath", "locator_value": "//button[normalize-space()='确定']"}}
+      ]
+    }
+  ]
+}
+"""
+
+        with patch('apps.ui_automation.ai_case_generator.call_openai_compatible_model', return_value=raw):
+            manifest, warnings, mode = generate_ui_test_case_manifest(
+                self.project,
+                '用例：创建数据要素 步骤：1.登录 2.进入管理模式 3.创建SYS Decimal类型数据要素 4.通过搜索方式验证创建成功，需要点击搜索按钮，等待500ms，再输入要素名称并点击确定搜索',
+                model_config=SimpleNamespace(),
+                use_ai=True,
+            )
+
+        descriptions = [step['description'] for step in manifest['test_cases'][0]['steps']]
+        transaction_names = [step['transaction_name'] for step in manifest['test_cases'][0]['steps']]
+
+        self.assertEqual(mode, 'ai')
+        self.assertIn('login', transaction_names)
+        self.assertIn('进入管理模式', transaction_names)
+        self.assertIn('创建要素', transaction_names)
+        self.assertIn('验证新建要素成功', transaction_names)
+        self.assertIn('点击搜索按钮', descriptions)
+        self.assertIn('等待500ms', descriptions)
+        self.assertIn('输入${data_el_name}', descriptions)
+        self.assertIn('点击确定搜索', descriptions)
+        self.assertTrue(any('已按自然语言步骤重建关键流程' in warning for warning in warnings))
+        self.assertTrue(any('显式搜索验证要求' in warning for warning in warnings))
+
     def test_bad_ai_placeholder_clicks_are_rebuilt_into_transaction_blocks(self):
         for name, page, locator_value, element_type in [
             ('账号输入框', '登录', "//input[@placeholder='请输入账号']", 'INPUT'),

@@ -32,7 +32,10 @@ from .models import (
     TestCase, TestCaseFolder, TestCaseStep, TestCaseExecution, OperationRecord,
     TestCase, TestCaseStep, TestCaseExecution, OperationRecord,
     UiScheduledTask, UiNotificationLog, UiTaskNotificationSetting,
-    AITestCaseGenerationSkill, AITestCaseGenerationRecord,
+    AITestCaseGenerationSkill, AITestCaseGenerationSkillCategory,
+    AITestCaseGenerationSkillDependency, AITestCaseGenerationSkillExecutionLog,
+    AITestCaseGenerationSkillModule, AITestCaseGenerationSkillTrigger,
+    AITestCaseGenerationRecord,
     AICase, AIExecutionRecord, LocalRunner
 )
 from .serializers import (
@@ -51,11 +54,15 @@ from .serializers import (
     TestCaseSerializer, TestCaseFolderSerializer, TestCaseStepSerializer, TestCaseExecutionSerializer, TestCaseRunSerializer,
     OperationRecordSerializer,
     UiScheduledTaskSerializer, UiNotificationLogSerializer, UiTaskNotificationSettingSerializer,
-    AITestCaseGenerationSkillSerializer, AITestCaseGenerationRecordSerializer,
+    AITestCaseGenerationSkillSerializer, AITestCaseGenerationSkillCategorySerializer,
+    AITestCaseGenerationSkillDependencySerializer, AITestCaseGenerationSkillExecutionLogSerializer,
+    AITestCaseGenerationSkillModuleSerializer, AITestCaseGenerationSkillTriggerSerializer,
+    AITestCaseGenerationRecordSerializer,
     AICaseSerializer, AIExecutionRecordSerializer
 )
 from .operation_logger import log_operation
 from .locator_strategy_defaults import ensure_default_locator_strategies
+from .group_paths import has_group_path_separator, normalize_group_path
 from .variable_resolver import (
     parse_scroll_action_payload,
     resolve_element_locator_payload,
@@ -83,6 +90,9 @@ from .scroll_coordinate_picker import (
 )
 from .ai_case_generator import (
     DEFAULT_UI_GENERATION_SKILL,
+    build_routed_generation_skill_content,
+    ensure_builtin_generation_skill_modules,
+    generate_skill_module_content_draft,
     generate_ui_test_case_manifest,
     get_generation_model_config,
     optimize_skill_with_ai,
@@ -1435,13 +1445,12 @@ def get_element_group_path(group):
 
 
 def ensure_element_group(project, group_path):
-    if not group_path:
+    normalized_group_path = normalize_group_path(group_path)
+    if not normalized_group_path:
         return None
 
     parent_group = None
-    for index, group_name in enumerate(group_path):
-        if not group_name:
-            continue
+    for index, group_name in enumerate(normalized_group_path):
         group_defaults = {'order': index}
         group, _ = ElementGroup.objects.get_or_create(
             project=project,
@@ -2086,6 +2095,39 @@ class ElementViewSet(viewsets.ModelViewSet):
         log_operation('delete', 'element', instance.id, instance.name, self.request.user)
         instance.delete()
 
+    @action(detail=False, methods=['post'], url_path='batch-delete')
+    def batch_delete(self, request):
+        ids = request.data.get('ids', [])
+
+        if not ids:
+            return Response({'error': '未提供要删除的元素ID'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not isinstance(ids, list):
+            return Response({'error': 'ids参数格式错误，应为数组'}, status=status.HTTP_400_BAD_REQUEST)
+
+        normalized_ids = []
+        for raw_id in ids:
+            try:
+                normalized_ids.append(int(raw_id))
+            except (TypeError, ValueError):
+                return Response({'error': f'无效的元素ID: {raw_id}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        normalized_ids = list(dict.fromkeys(normalized_ids))
+        queryset = self.get_queryset().filter(id__in=normalized_ids)
+        matched_elements = list(queryset)
+
+        if len(matched_elements) != len(normalized_ids):
+            return Response({'error': '部分元素不存在或无权删除'}, status=status.HTTP_400_BAD_REQUEST)
+
+        for element in matched_elements:
+            log_operation('delete', 'element', element.id, element.name, request.user)
+
+        deleted_count = queryset.delete()[0]
+        return Response({
+            'message': f'成功删除 {deleted_count} 个元素',
+            'deleted_count': deleted_count,
+        })
+
     @action(detail=True, methods=['post'])
     def validate_locator(self, request, pk=None):
         """验证元素定位器有效性"""
@@ -2318,9 +2360,65 @@ class ElementGroupViewSet(viewsets.ModelViewSet):
         if not project_id:
             return Response({'error': '需要指定项目ID'}, status=status.HTTP_400_BAD_REQUEST)
 
-        groups = self.get_queryset().filter(project_id=project_id, parent_group__isnull=True)
-        serializer = ElementGroupSerializer(groups, many=True)
-        return Response(serializer.data)
+        groups = list(
+            self.get_queryset()
+            .filter(project_id=project_id)
+            .annotate(elements_count=models.Count('elements', distinct=True))
+        )
+
+        if not groups:
+            return Response([])
+
+        children_map = {}
+        groups_by_name = {}
+
+        for group in groups:
+            children_map.setdefault(group.parent_group_id, []).append(group)
+            groups_by_name.setdefault(group.name, []).append(group)
+
+        def build_group_node(group):
+            child_nodes = []
+            for child_group in children_map.get(group.id, []):
+                child_node = build_group_node(child_group)
+                if child_node is not None:
+                    child_nodes.append(child_node)
+
+            is_empty_leaf = group.elements_count == 0 and not child_nodes
+            has_duplicate_peer = any(
+                peer.id != group.id and (
+                    peer.parent_group_id is not None
+                    or peer.elements_count > 0
+                    or bool(children_map.get(peer.id))
+                )
+                for peer in groups_by_name.get(group.name, [])
+            )
+
+            is_placeholder_group = is_empty_leaf and (
+                has_group_path_separator(group.name) or has_duplicate_peer
+            )
+            if is_placeholder_group:
+                return None
+
+            return {
+                'id': group.id,
+                'name': group.name,
+                'description': group.description,
+                'project': group.project_id,
+                'parent_group': group.parent_group_id,
+                'order': group.order,
+                'created_at': group.created_at,
+                'updated_at': group.updated_at,
+                'elements_count': group.elements_count,
+                'children': child_nodes,
+            }
+
+        tree_nodes = []
+        for root_group in children_map.get(None, []):
+            root_node = build_group_node(root_group)
+            if root_node is not None:
+                tree_nodes.append(root_node)
+
+        return Response(tree_nodes)
 
 
 class PageObjectViewSet(viewsets.ModelViewSet):
@@ -2884,6 +2982,20 @@ class TestCaseFolderViewSet(viewsets.ModelViewSet):
         folder = serializer.save(created_by=self.request.user)
         log_operation('create', 'test_case_folder', folder.id, folder.name, self.request.user)
 
+    def destroy(self, request, *args, **kwargs):
+        folder = self.get_object()
+        folder_name = folder.name
+        affected_case_count = folder.test_cases.count()
+        self.perform_destroy(folder)
+        return Response({
+            'message': f'文件夹“{folder_name}”删除成功',
+            'affected_test_case_count': affected_case_count,
+        }, status=status.HTTP_200_OK)
+
+    def perform_destroy(self, instance):
+        log_operation('delete', 'test_case_folder', instance.id, instance.name, self.request.user)
+        instance.delete()
+
 
 class TestCaseViewSet(viewsets.ModelViewSet):
     """测试用例视图集"""
@@ -2971,6 +3083,39 @@ class TestCaseViewSet(viewsets.ModelViewSet):
             'moved_count': updated_count,
             'folder': TestCaseFolderSerializer(folder).data if folder else None,
             'test_cases': serializer.data
+        })
+
+    @action(detail=False, methods=['post'], url_path='batch-delete')
+    def batch_delete(self, request):
+        ids = request.data.get('ids', [])
+
+        if not ids:
+            return Response({'error': '未提供要删除的用例ID'}, status=status.HTTP_400_BAD_REQUEST)
+
+        if not isinstance(ids, list):
+            return Response({'error': 'ids参数格式错误，应为数组'}, status=status.HTTP_400_BAD_REQUEST)
+
+        normalized_ids = []
+        for raw_id in ids:
+            try:
+                normalized_ids.append(int(raw_id))
+            except (TypeError, ValueError):
+                return Response({'error': f'无效的用例ID: {raw_id}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        normalized_ids = list(dict.fromkeys(normalized_ids))
+        queryset = self.get_queryset().filter(id__in=normalized_ids)
+        matched_cases = list(queryset)
+
+        if len(matched_cases) != len(normalized_ids):
+            return Response({'error': '部分测试用例不存在或无权删除'}, status=status.HTTP_400_BAD_REQUEST)
+
+        for test_case in matched_cases:
+            log_operation('delete', 'test_case', test_case.id, test_case.name, request.user)
+
+        deleted_count = queryset.delete()[0]
+        return Response({
+            'message': f'成功删除 {deleted_count} 条测试用例',
+            'deleted_count': deleted_count,
         })
 
     @action(detail=False, methods=['get'], url_path='export')
@@ -6096,6 +6241,119 @@ class AIExecutionRecordViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+class AITestCaseGenerationSkillCategoryViewSet(viewsets.ModelViewSet):
+    """Manage categories for modular AI UI generation skills."""
+    serializer_class = AITestCaseGenerationSkillCategorySerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [filters.SearchFilter, filters.OrderingFilter]
+    search_fields = ['name', 'code', 'description']
+    ordering_fields = ['order', 'updated_at', 'created_at', 'name']
+    ordering = ['order', 'name']
+
+    def get_queryset(self):
+        return AITestCaseGenerationSkillCategory.objects.filter(
+            models.Q(created_by=self.request.user) | models.Q(created_by__isnull=True)
+        )
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+
+class AITestCaseGenerationSkillModuleViewSet(viewsets.ModelViewSet):
+    """Manage reusable modular AI UI generation skills."""
+    serializer_class = AITestCaseGenerationSkillModuleSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['module_type', 'category', 'is_active']
+    search_fields = ['name', 'code', 'description', 'summary', 'content']
+    ordering_fields = ['priority', 'updated_at', 'created_at', 'name']
+    ordering = ['-priority', 'module_type', 'name']
+
+    def get_queryset(self):
+        return AITestCaseGenerationSkillModule.objects.filter(
+            models.Q(created_by=self.request.user) | models.Q(created_by__isnull=True)
+        ).select_related('category', 'created_by').prefetch_related('triggers', 'dependency_edges__depends_on')
+
+    def perform_create(self, serializer):
+        serializer.save(created_by=self.request.user)
+
+    @action(detail=False, methods=['post'], url_path='ensure-builtin')
+    def ensure_builtin(self, request):
+        ensure_builtin_generation_skill_modules()
+        queryset = self.get_queryset().filter(created_by__isnull=True)
+        return Response({
+            'success': True,
+            'modules': self.get_serializer(queryset, many=True).data,
+        })
+
+    @action(detail=False, methods=['post'], url_path='generate-content')
+    def generate_content(self, request):
+        summary = str(request.data.get('summary') or '').strip()
+        if not summary:
+            raise ValidationError('请先填写摘要规则')
+
+        content = generate_skill_module_content_draft(
+            name=str(request.data.get('name') or '').strip(),
+            code=str(request.data.get('code') or '').strip(),
+            module_type=str(request.data.get('module_type') or 'business_flow').strip() or 'business_flow',
+            summary=summary,
+            keywords=request.data.get('keywords') or [],
+            intents=request.data.get('intents') or [],
+            pages=request.data.get('pages') or [],
+        )
+        return Response({
+            'success': True,
+            'content': content,
+        })
+
+
+class AITestCaseGenerationSkillTriggerViewSet(viewsets.ModelViewSet):
+    """Manage trigger rules for modular AI UI generation skills."""
+    serializer_class = AITestCaseGenerationSkillTriggerSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['module', 'trigger_type', 'is_active']
+    search_fields = ['value']
+    ordering_fields = ['weight', 'updated_at', 'created_at']
+    ordering = ['-weight', 'trigger_type', 'value']
+
+    def get_queryset(self):
+        return AITestCaseGenerationSkillTrigger.objects.filter(
+            models.Q(module__created_by=self.request.user) | models.Q(module__created_by__isnull=True)
+        ).select_related('module')
+
+
+class AITestCaseGenerationSkillDependencyViewSet(viewsets.ModelViewSet):
+    """Manage dependencies between modular AI UI generation skills."""
+    serializer_class = AITestCaseGenerationSkillDependencySerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['module', 'depends_on']
+    ordering_fields = ['created_at']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        return AITestCaseGenerationSkillDependency.objects.filter(
+            models.Q(module__created_by=self.request.user) | models.Q(module__created_by__isnull=True)
+        ).select_related('module', 'depends_on')
+
+
+class AITestCaseGenerationSkillExecutionLogViewSet(viewsets.ReadOnlyModelViewSet):
+    """Read skill routing logs for AI UI generation debugging."""
+    serializer_class = AITestCaseGenerationSkillExecutionLogSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['project', 'root_skill']
+    ordering_fields = ['created_at', 'prompt_chars']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        accessible_projects = get_accessible_projects_for_user(self.request.user)
+        return AITestCaseGenerationSkillExecutionLog.objects.filter(
+            project__in=accessible_projects
+        ).select_related('project', 'root_skill', 'created_by')
+
+
 class AITestCaseGenerationSkillViewSet(viewsets.ModelViewSet):
     """Manage skills used by AI UI test case generation."""
     serializer_class = AITestCaseGenerationSkillSerializer
@@ -6167,15 +6425,26 @@ class AITestCaseGenerationViewSet(viewsets.ModelViewSet):
         model_config_id = request.data.get('model_config_id') or request.data.get('ai_model_config_id')
         model_config = get_generation_model_config(model_config_id)
         use_ai = not str(request.data.get('use_ai', '1')).strip().lower() in {'0', 'false', 'no', 'off'}
+        skill_content, skill_route_info = build_routed_generation_skill_content(
+            project,
+            source_text,
+            root_skill=skill,
+            user=request.user,
+        )
 
         manifest, warnings, generation_mode = generate_ui_test_case_manifest(
             project,
             source_text,
-            skill_content=skill.content if skill else DEFAULT_UI_GENERATION_SKILL,
+            skill_content=skill_content,
             model_config=model_config,
             use_ai=use_ai
         )
-        warnings = list(uploaded_source.warnings) + warnings
+        route_warnings = skill_route_info.get('warnings') or []
+        selected_modules = skill_route_info.get('selected_modules') or []
+        if selected_modules:
+            module_names = '、'.join(module.get('name') or module.get('code') for module in selected_modules[:6])
+            route_warnings.append(f'已按用例意图加载 {len(selected_modules)} 个Skill模块: {module_names}')
+        warnings = list(uploaded_source.warnings) + list(route_warnings) + warnings
 
         if natural_text and uploaded_source.text:
             source_type = 'mixed'
@@ -6196,6 +6465,20 @@ class AITestCaseGenerationViewSet(viewsets.ModelViewSet):
             status='generated',
             created_by=request.user
         )
+        try:
+            AITestCaseGenerationSkillExecutionLog.objects.create(
+                project=project,
+                root_skill=skill,
+                source_text=source_text[:200000],
+                detected_intents=skill_route_info.get('detected_intents') or [],
+                detected_entities=skill_route_info.get('detected_entities') or {},
+                selected_modules=selected_modules,
+                prompt_chars=skill_route_info.get('prompt_chars') or len(skill_content),
+                warnings=route_warnings,
+                created_by=request.user,
+            )
+        except Exception as exc:
+            logger.warning('Failed to write AI generation skill routing log: %s', exc, exc_info=True)
 
         return Response({
             'success': True,
@@ -6203,6 +6486,15 @@ class AITestCaseGenerationViewSet(viewsets.ModelViewSet):
             'record': self.get_serializer(record).data,
             'manifest': manifest,
             'warnings': warnings,
+            'skill_route': {
+                'detected_intents': skill_route_info.get('detected_intents') or [],
+                'detected_entities': skill_route_info.get('detected_entities') or {},
+                'matched_modules': skill_route_info.get('matched_modules') or [],
+                'omitted_modules': skill_route_info.get('omitted_modules') or [],
+                'selected_modules': selected_modules,
+                'prompt_chars': skill_route_info.get('prompt_chars') or len(skill_content),
+                'warnings': skill_route_info.get('warnings') or [],
+            },
         })
 
     @action(detail=True, methods=['post'], url_path='import')
@@ -6349,6 +6641,7 @@ class AITestCaseGenerationViewSet(viewsets.ModelViewSet):
 
 
 def ensure_default_ai_generation_skill(user):
+    ensure_builtin_generation_skill_modules()
     skill = AITestCaseGenerationSkill.objects.filter(created_by=user, is_default=True).first()
     if skill:
         return skill

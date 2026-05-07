@@ -118,6 +118,14 @@ export function deleteElement(id) {
   })
 }
 
+export function batchDeleteElements(data) {
+  return request({
+    url: '/ui-automation/elements/batch-delete/',
+    method: 'post',
+    data
+  })
+}
+
 export function exportElements(params) {
   return request({
     url: '/ui-automation/elements/export/',
@@ -686,6 +694,13 @@ export function createTestCaseFolder(data) {
   })
 }
 
+export function deleteTestCaseFolder(id) {
+  return request({
+    url: `/ui-automation/test-case-folders/${id}/`,
+    method: 'delete'
+  })
+}
+
 export function getTestCases(params) {
   return request({
     url: '/ui-automation/test-cases/',
@@ -725,6 +740,14 @@ export function deleteTestCase(id) {
   return request({
     url: `/ui-automation/test-cases/${id}/`,
     method: 'delete'
+  })
+}
+
+export function batchDeleteTestCases(data) {
+  return request({
+    url: '/ui-automation/test-cases/batch-delete/',
+    method: 'post',
+    data
   })
 }
 
@@ -824,6 +847,62 @@ export function optimizeAITestCaseGenerationSkill(data) {
     method: 'post',
     data,
     timeout: 900000
+  })
+}
+
+export function getAITestCaseGenerationSkillCategories(params) {
+  return request({
+    url: '/ui-automation/ai-test-case-generation-skill-categories/',
+    method: 'get',
+    params
+  })
+}
+
+export function getAITestCaseGenerationSkillModules(params) {
+  return request({
+    url: '/ui-automation/ai-test-case-generation-skill-modules/',
+    method: 'get',
+    params
+  })
+}
+
+export function createAITestCaseGenerationSkillModule(data) {
+  return request({
+    url: '/ui-automation/ai-test-case-generation-skill-modules/',
+    method: 'post',
+    data
+  })
+}
+
+export function updateAITestCaseGenerationSkillModule(id, data) {
+  return request({
+    url: `/ui-automation/ai-test-case-generation-skill-modules/${id}/`,
+    method: 'patch',
+    data
+  })
+}
+
+export function generateAITestCaseGenerationSkillModuleContent(data) {
+  return request({
+    url: '/ui-automation/ai-test-case-generation-skill-modules/generate-content/',
+    method: 'post',
+    data,
+    timeout: 900000
+  })
+}
+
+export function ensureBuiltinAITestCaseGenerationSkillModules() {
+  return request({
+    url: '/ui-automation/ai-test-case-generation-skill-modules/ensure-builtin/',
+    method: 'post'
+  })
+}
+
+export function getAITestCaseGenerationSkillLogs(params) {
+  return request({
+    url: '/ui-automation/ai-test-case-generation-skill-logs/',
+    method: 'get',
+    params
   })
 }
 

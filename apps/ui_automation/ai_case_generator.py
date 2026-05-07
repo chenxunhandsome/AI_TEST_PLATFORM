@@ -409,12 +409,23 @@ def get_tabular_row_value(row, index):
     return str(row[index] or '').strip()
 
 
+def should_append_expected_result_to_step(operation):
+    normalized = normalize_match_text(operation)
+    if not normalized:
+        return True
+    keywords = (
+        '验证', '校验', '断言', '检查', '确认', '比对',
+        '预期', '结果', '成功', '失败', 'toast', '提示',
+    )
+    return any(keyword in normalized for keyword in keywords)
+
+
 def build_tabular_step_description(operation, test_data='', expected_result='', remark=''):
     operation = str(operation or '').strip()
     extras = []
     if str(test_data or '').strip():
         extras.append(f'测试数据：{str(test_data).strip()}')
-    if str(expected_result or '').strip():
+    if str(expected_result or '').strip() and should_append_expected_result_to_step(operation):
         extras.append(f'预期结果：{str(expected_result).strip()}')
     if str(remark or '').strip():
         extras.append(f'备注：{str(remark).strip()}')
@@ -2049,15 +2060,45 @@ def enforce_generation_business_rules(project, manifest, source_text):
         return warnings
 
     element_lookup = build_project_element_lookup(project)
+    source_cases = split_source_into_cases(source_text)
+    original_case_count = len(cases)
+
+    if len(source_cases) > len(cases):
+        for source_index in range(len(cases), len(source_cases)):
+            source_case_name, source_case_body = source_cases[source_index]
+            cases.append(normalize_case(
+                heuristic_case(source_case_name, source_case_body, source_index + 1),
+                source_index + 1,
+            ))
+        warnings.append(
+            f'源文本共解析出 {len(source_cases)} 条用例，生成结果仅返回 {original_case_count} 条，'
+            f'已按原始用例补齐剩余 {len(source_cases) - original_case_count} 条'
+        )
 
     for case_index, case in enumerate(cases, start=1):
-        case_source_text = build_case_source_text(case, source_text, len(cases))
+        case_source_text = build_case_source_text(
+            case,
+            source_text,
+            len(cases),
+            source_cases=source_cases,
+            case_index=case_index,
+        )
         intents = extract_data_element_creation_intents(case_source_text)
         structured_request = parse_structured_generation_request(case_source_text)
+        explicit_search_verify = has_explicit_search_verification_requirement(structured_request)
         rebuilt_case = False
 
+        if explicit_search_verify:
+            warnings.append(
+                f'用例 {case_index} 检测到显式搜索验证要求，保留 AI/Skill 生成的验证步骤，不使用硬编码验证模板'
+            )
+
         if should_rebuild_case_from_request(structured_request):
-            rebuilt_steps = build_structured_case_steps(structured_request, element_lookup)
+            rebuilt_steps = build_structured_case_steps(
+                structured_request,
+                element_lookup,
+                case.get('steps') or [],
+            )
             if rebuilt_steps:
                 case['steps'] = rebuilt_steps
                 case_name = structured_request.get('case_name')
@@ -2145,8 +2186,10 @@ def clean_data_definition_name(value):
         value = re.sub(r'^(?:为|是|等于|使用)\s*', '', value, flags=re.I)
         value = re.sub(r'^(?:类型为|类型是)\s*', '', value, flags=re.I)
         value = re.sub(r'\s+\d+\s*[.、].*$', '', value)
-    value = re.sub(r'(?:类型|的数据要素|的数据定义|数据定义)$', '', value, flags=re.I).strip()
-    return value.strip(' ：:=，,。；;')
+        value = re.sub(r'[（(]\s*(?:预期结果|测试数据|备注)\s*[：:][^）)]*[）)]\s*$', '', value, flags=re.I)
+        value = re.sub(r'(?:预期结果|测试数据|备注)\s*[：:]\s*.*$', '', value, flags=re.I)
+    value = re.sub(r'(?:类型|的|的数据要素|的数据定义|数据定义)$', '', value, flags=re.I).strip()
+    return value.strip(' （）()：:=，,。；;')
 
 
 def split_data_definition_names(value):
@@ -2160,13 +2203,25 @@ def split_data_definition_names(value):
 def infer_data_element_type(data_definition):
     lowered = str(data_definition or '').lower()
     known_types = [
-        'decimal', 'integer', 'image', 'text', 'string', 'date', 'datetime',
-        'boolean', 'bool', 'number', 'file',
+        'decimal', 'integer', 'image', 'currency', 'text', 'string', 'date', 'datetime',
+        'boolean', 'bool', 'number', 'file', 'double', 'float',
     ]
     for item in known_types:
         if item in lowered:
             return item
     return str(data_definition or '').strip() or 'data'
+
+
+def build_data_element_label_value(data_definition, element_type=''):
+    candidates = [element_type, clean_data_definition_name(data_definition)]
+    for candidate in candidates:
+        normalized = re.sub(r'^(?:sys[\s_-]*)', '', str(candidate or '').strip(), flags=re.I)
+        normalized = re.sub(r'[^a-zA-Z0-9]+', '_', normalized).strip('_').lower()
+        if normalized:
+            if normalized[0].isdigit():
+                normalized = f'data_{normalized}'
+            return f'{normalized}_${{random_string(6, letters, 1)}}'
+    return 'data_${random_string(6, letters, 1)}'
 
 
 def is_generic_data_definition_name(value):
@@ -2219,7 +2274,7 @@ def build_data_element_creation_template(intent, element_lookup, include_navigat
     data_definition = intent.get('data_definition') or '数据定义'
     element_type = intent.get('element_type') or data_definition
     element_name_value = '${random_string(8, letters, 1)}'
-    element_label_value = f'{element_type}_${{random_string(6, letters, 1)}}'
+    element_label_value = build_data_element_label_value(data_definition, element_type)
 
     steps = []
     if include_navigation:
@@ -2245,6 +2300,12 @@ def build_data_element_creation_template(intent, element_lookup, include_navigat
             element_lookup,
             ['数据要素新建按钮'],
         )),
+        ('wait_create_dialog', make_template_step(
+            'waitFor',
+            '等待新建数据要素弹窗中的名称输入框出现',
+            element_lookup,
+            ['数据要素名称输入框', '数据要素名称'],
+        )),
         ('fill_name', make_template_step(
             'fill',
             '在数据要素名称输入框中填写要素名称，使用8位随机字符串',
@@ -2258,6 +2319,12 @@ def build_data_element_creation_template(intent, element_lookup, include_navigat
             '点击选择数据定义控件，打开选择数据定义弹框',
             element_lookup,
             ['新建数据要素-选择数据定义icon', '选择数据定义控件', '选择数据定义'],
+        )),
+        ('wait_definition_dialog', make_template_step(
+            'waitFor',
+            '等待选择数据定义弹框中的搜索框出现',
+            element_lookup,
+            ['新建要素-选择数据定义搜索框', '选择数据定义搜索框'],
         )),
         ('search_definition', make_template_step(
             'fillAndEnter',
@@ -2424,8 +2491,10 @@ def has_data_element_phase(steps, phase_key, intent):
         'nav_structure': ['数据结构设置'],
         'nav_element': ['数据要素子菜单', '进入数据要素'],
         'open_create': ['新建按钮', '新建数据要素弹窗'],
+        'wait_create_dialog': ['新建数据要素弹窗', '名称输入框'],
         'fill_name': ['数据要素名称', '要素名称'],
         'open_definition_dialog': ['选择数据定义控件', '打开选择数据定义'],
+        'wait_definition_dialog': ['选择数据定义弹框', '搜索框'],
         'search_definition': ['选择数据定义弹框', '搜索框', intent.get('data_definition', '')],
         'wait_search': ['搜索结果', '加载完成'],
         'select_definition': ['选中', '数据定义选项'],
@@ -2434,6 +2503,9 @@ def has_data_element_phase(steps, phase_key, intent):
         'fill_label': ['要素标签'],
         'submit_create': ['新建数据要素', '提交新建'],
         'wait_success': ['操作成功'],
+        'search_created_element': ['搜索数据要素', '${data_el_name}'],
+        'wait_created_element_result': ['数据要素搜索结果', '加载完成'],
+        'assert_created_element': ['创建成功的数据要素', '${data_el_name}'],
     }
     required_keywords = [item for item in phase_keywords.get(phase_key, []) if item]
     for step in steps:
@@ -2485,7 +2557,18 @@ def normalize_match_text(value):
     return re.sub(r'\s+', '', str(value or '').strip().lower())
 
 
-def build_case_source_text(case, source_text, case_count):
+def build_case_source_text(case, source_text, case_count, source_cases=None, case_index=None):
+    if source_cases and case_index and 1 <= case_index <= len(source_cases):
+        source_case_name, source_case_body = source_cases[case_index - 1]
+        parts = []
+        if str(source_case_name or '').strip():
+            parts.append(f'用例：{str(source_case_name).strip()}')
+        if str(source_case_body or '').strip():
+            parts.append(str(source_case_body).strip())
+        resolved = '\n'.join(parts).strip()
+        if resolved:
+            return resolved
+
     if case_count <= 1:
         return str(source_text or '')
     parts = []
@@ -2592,6 +2675,16 @@ def classify_structured_generation_step(step_text, default_data_intent):
     }
 
 
+def has_explicit_search_verification_requirement(structured_request):
+    for step in structured_request.get('steps') or []:
+        if step.get('kind') != 'verify_create_success':
+            continue
+        normalized = normalize_match_text(step.get('raw'))
+        if any(keyword in normalized for keyword in ['搜索', '查询', '查找']):
+            return True
+    return False
+
+
 def should_rebuild_case_from_request(structured_request):
     steps = structured_request.get('steps') or []
     if not steps:
@@ -2604,11 +2697,12 @@ def should_rebuild_case_from_request(structured_request):
     return len(recognized) >= 2
 
 
-def build_structured_case_steps(structured_request, element_lookup):
+def build_structured_case_steps(structured_request, element_lookup, original_steps=None):
     steps = []
     structured_steps = structured_request.get('steps') or []
     credentials = structured_request.get('credentials') or {}
     has_verify_success = any(step.get('kind') == 'verify_create_success' for step in structured_steps)
+    explicit_search_verify = has_explicit_search_verification_requirement(structured_request)
 
     for step in structured_steps:
         kind = step.get('kind')
@@ -2641,7 +2735,11 @@ def build_structured_case_steps(structured_request, element_lookup):
             continue
         if kind == 'verify_create_success':
             steps.extend(assign_transaction_to_steps(
-                build_verify_success_steps(element_lookup),
+                resolve_verify_success_steps(
+                    element_lookup,
+                    original_steps=original_steps,
+                    preserve_ai_verify_steps=explicit_search_verify,
+                ),
                 step.get('transaction_name') or '验证新建要素成功',
             ))
             continue
@@ -2733,7 +2831,77 @@ def build_enter_admin_mode_steps(element_lookup):
     ]
 
 
-def build_verify_success_steps(element_lookup):
+def resolve_verify_success_steps(element_lookup, original_steps=None, preserve_ai_verify_steps=False):
+    if preserve_ai_verify_steps:
+        preserved_steps = extract_search_verify_steps_from_ai_output(original_steps)
+        if preserved_steps:
+            return preserved_steps
+    return build_verify_success_steps_minimal(element_lookup)
+
+
+def extract_search_verify_steps_from_ai_output(original_steps):
+    normalized_steps = [
+        normalize_step(dict(step), index)
+        for index, step in enumerate(original_steps or [], start=1)
+        if isinstance(step, dict)
+    ]
+    if not normalized_steps:
+        return []
+
+    included_indexes = set()
+    for index, step in enumerate(normalized_steps):
+        if not is_search_verify_anchor_step(step):
+            continue
+        included_indexes.add(index)
+        for neighbor in (index - 1, index + 1):
+            if 0 <= neighbor < len(normalized_steps) and is_search_verify_context_step(normalized_steps[neighbor]):
+                included_indexes.add(neighbor)
+
+    if not included_indexes:
+        return []
+
+    preserved_steps = []
+    for index, step in enumerate(normalized_steps):
+        if index not in included_indexes:
+            continue
+        preserved_step = dict(step)
+        preserved_step['transaction_id'] = ''
+        preserved_step['transaction_name'] = ''
+        preserved_steps.append(preserved_step)
+    return preserved_steps
+
+
+def is_search_verify_anchor_step(step):
+    haystack = collect_search_verify_step_text(step)
+    if any(keyword in haystack for keyword in ['搜索', '查询', '查找', 'search', 'query', 'find']):
+        return True
+    return False
+
+
+def is_search_verify_context_step(step):
+    action_type = str(step.get('action_type') or '').strip()
+    if action_type in {'wait', 'waitFor', 'assert'}:
+        return True
+    haystack = collect_search_verify_step_text(step)
+    if '${data_el_name}' in haystack:
+        return True
+    if any(keyword in haystack for keyword in ['结果', '列表', '成功', 'toast', '提示', 'visible']):
+        return True
+    return False
+
+
+def collect_search_verify_step_text(step):
+    parts = [
+        step.get('description'),
+        step.get('input_value'),
+        step.get('assert_value'),
+        (step.get('element') or {}).get('name'),
+        (step.get('element') or {}).get('locator_value'),
+    ]
+    return normalize_match_text(' '.join(str(part or '') for part in parts))
+
+
+def build_verify_success_steps_minimal(element_lookup):
     return [
         make_template_step(
             'waitFor',

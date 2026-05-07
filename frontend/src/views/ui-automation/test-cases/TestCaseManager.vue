@@ -62,6 +62,10 @@
               <el-icon><FolderOpened /></el-icon>
               {{ text.moveCases }}
             </el-button>
+            <el-button size="small" type="danger" :disabled="!selectedCaseIds.length" @click="handleBatchDelete">
+              <el-icon><Delete /></el-icon>
+              {{ text.batchDeleteCases }}
+            </el-button>
           </div>
         </div>
 
@@ -753,7 +757,7 @@
     <!-- 截图预览对话框 -->
     <el-dialog
       v-model="showFolderDialog"
-      :title="text.newFolder"
+      :title="text.manageFolders"
       :close-on-click-modal="false"
       width="420px"
     >
@@ -762,6 +766,26 @@
           <el-input v-model="folderForm.name" :placeholder="text.folderNamePlaceholder" />
         </el-form-item>
       </el-form>
+      <div class="folder-manage-list">
+        <div v-if="testCaseFolders.length" class="folder-manage-items">
+          <div v-for="folder in testCaseFolders" :key="folder.id" class="folder-manage-item">
+            <div class="folder-manage-info">
+              <span class="folder-manage-name">{{ folder.name }}</span>
+              <span class="folder-manage-count">{{ text.folderCaseCount.replace('{count}', folder.test_case_count || 0) }}</span>
+            </div>
+            <el-button
+              size="small"
+              text
+              type="danger"
+              :loading="folderDeletingId === folder.id"
+              @click="deleteFolder(folder)"
+            >
+              <el-icon><Delete /></el-icon>
+            </el-button>
+          </div>
+        </div>
+        <el-empty v-else :description="text.folderEmpty" :image-size="72" />
+      </div>
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="showFolderDialog = false">{{ t('uiAutomation.common.cancel') }}</el-button>
@@ -881,6 +905,13 @@
               />
             </el-tab-pane>
             <el-tab-pane :label="aiText.skillTab" name="skill">
+              <el-alert
+                type="info"
+                :closable="false"
+                show-icon
+                class="ai-skill-router-tip"
+                title="主 Skill 入口仍是上方选择的“生成Skill”。后端会根据自然语言意图自动加载下面的模块化 Skill，不再把所有 Skill 全部揉进主入口。"
+              />
               <el-input
                 v-model="aiSkillOptimizeInstruction"
                 type="textarea"
@@ -900,6 +931,46 @@
                 resize="vertical"
                 :placeholder="aiText.skillPreviewPlaceholder"
               />
+              <el-divider content-position="left">模块化 Skill 管理</el-divider>
+              <div class="ai-skill-module-toolbar">
+                <el-button size="small" :loading="aiSkillModulesLoading" @click="loadAiSkillModules">刷新模块</el-button>
+                <el-button size="small" type="primary" plain :loading="aiSkillModulesLoading" @click="ensureBuiltinAiSkillModules">初始化内置模块</el-button>
+                <el-button size="small" type="success" @click="openAiSkillModuleDialog()">新增模块</el-button>
+              </div>
+              <el-table
+                v-loading="aiSkillModulesLoading"
+                :data="aiSkillModules"
+                size="small"
+                border
+                height="220"
+                class="ai-skill-module-table"
+              >
+                <el-table-column prop="name" label="模块名称" min-width="150" show-overflow-tooltip />
+                <el-table-column prop="code" label="编码" min-width="190" show-overflow-tooltip />
+                <el-table-column label="类型" width="110">
+                  <template #default="{ row }">
+                    <el-tag size="small" :type="aiSkillModuleTypeTag(row.module_type)">
+                      {{ aiSkillModuleTypeLabel(row.module_type) }}
+                    </el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column prop="priority" label="优先级" width="80" />
+                <el-table-column label="触发" min-width="180" show-overflow-tooltip>
+                  <template #default="{ row }">
+                    {{ [...(row.intents || []), ...(row.keywords || [])].slice(0, 4).join(' / ') || '-' }}
+                  </template>
+                </el-table-column>
+                <el-table-column label="状态" width="80">
+                  <template #default="{ row }">
+                    <el-tag size="small" :type="row.is_active ? 'success' : 'info'">{{ row.is_active ? '启用' : '停用' }}</el-tag>
+                  </template>
+                </el-table-column>
+                <el-table-column label="操作" width="90" fixed="right">
+                  <template #default="{ row }">
+                    <el-button link type="primary" size="small" @click="openAiSkillModuleDialog(row)">编辑</el-button>
+                  </template>
+                </el-table-column>
+              </el-table>
             </el-tab-pane>
           </el-tabs>
 
@@ -919,6 +990,108 @@
           <div class="ai-preview-header">
             <span>{{ aiText.previewTitle }}</span>
             <el-tag v-if="aiGenerationMode" size="small">{{ aiGenerationModeLabel }}</el-tag>
+          </div>
+          <div v-if="aiSkillRoute?.selected_modules?.length" class="ai-route-summary">
+            <span>已命中 Skill 模块：</span>
+            <el-tag
+              v-for="module in aiSkillRoute.selected_modules.slice(0, 5)"
+              :key="module.code"
+              size="small"
+              type="info"
+            >
+              {{ module.name || module.code }}
+            </el-tag>
+          </div>
+          <div v-if="aiSkillRoute" class="ai-route-debug">
+            <div class="ai-route-meta">
+              <el-tag size="small" type="success">已加载 {{ aiSkillRoute.selected_modules?.length || 0 }}</el-tag>
+              <el-tag size="small" type="info">命中 {{ aiSkillRoute.matched_modules?.length || aiSkillRoute.selected_modules?.length || 0 }}</el-tag>
+              <el-tag v-if="aiSkillRoute.omitted_modules?.length" size="small" type="warning">未加载 {{ aiSkillRoute.omitted_modules.length }}</el-tag>
+              <el-tag size="small">Prompt {{ aiSkillRoute.prompt_chars || 0 }} chars</el-tag>
+            </div>
+            <div v-if="aiSkillRoute.detected_intents?.length" class="ai-route-block">
+              <div class="ai-route-block-title">识别意图</div>
+              <div class="ai-route-tag-list">
+                <el-tag v-for="intent in aiSkillRoute.detected_intents" :key="intent" size="small" type="success">{{ intent }}</el-tag>
+              </div>
+            </div>
+            <div v-if="aiSkillRouteEntityEntries.length" class="ai-route-block">
+              <div class="ai-route-block-title">识别实体</div>
+              <div class="ai-route-entity-list">
+                <div v-for="entry in aiSkillRouteEntityEntries" :key="entry.key" class="ai-route-entity-item">
+                  <span class="ai-route-entity-key">{{ entry.key }}</span>
+                  <span class="ai-route-entity-value">{{ formatAiSkillRouteEntityValue(entry.value) }}</span>
+                </div>
+              </div>
+            </div>
+            <div v-if="aiSkillRoute.selected_modules?.length" class="ai-route-block">
+              <div class="ai-route-block-title">命中并加载的 Skill</div>
+              <div class="ai-route-module-list">
+                <div v-for="module in aiSkillRoute.selected_modules" :key="module.id || module.code" class="ai-route-module-card">
+                  <div class="ai-route-module-header">
+                    <div class="ai-route-module-title">
+                      <span>{{ module.name || module.code }}</span>
+                      <span class="ai-route-module-code">{{ module.code }}</span>
+                    </div>
+                    <div class="ai-route-tag-list">
+                      <el-tag size="small" :type="aiSkillModuleTypeTag(module.module_type)">{{ aiSkillModuleTypeLabel(module.module_type) }}</el-tag>
+                      <el-tag size="small" type="info">score {{ module.score || 0 }}</el-tag>
+                    </div>
+                  </div>
+                  <div v-if="module.summary" class="ai-route-module-summary">{{ module.summary }}</div>
+                  <div v-if="module.reason_labels?.length" class="ai-route-module-line">
+                    <span class="ai-route-line-label">命中原因</span>
+                    <div class="ai-route-tag-list">
+                      <el-tag v-for="reason in module.reason_labels" :key="reason" size="small">{{ reason }}</el-tag>
+                    </div>
+                  </div>
+                  <div v-if="module.matched_triggers?.length" class="ai-route-module-line">
+                    <span class="ai-route-line-label">触发规则</span>
+                    <div class="ai-route-tag-list">
+                      <el-tag v-for="trigger in module.matched_triggers" :key="`${module.code}-${trigger.trigger_type}-${trigger.value}`" size="small" type="warning">
+                        {{ trigger.trigger_type_label || trigger.trigger_type }}: {{ trigger.value }} (+{{ trigger.weight }})
+                      </el-tag>
+                    </div>
+                  </div>
+                  <div v-if="module.matched_intents?.length" class="ai-route-module-line">
+                    <span class="ai-route-line-label">命中意图</span>
+                    <div class="ai-route-tag-list">
+                      <el-tag v-for="intent in module.matched_intents" :key="`${module.code}-intent-${intent}`" size="small" type="success">{{ intent }}</el-tag>
+                    </div>
+                  </div>
+                  <div v-if="module.matched_keywords?.length" class="ai-route-module-line">
+                    <span class="ai-route-line-label">命中关键词</span>
+                    <div class="ai-route-tag-list">
+                      <el-tag v-for="keyword in module.matched_keywords" :key="`${module.code}-keyword-${keyword}`" size="small" type="info">{{ keyword }}</el-tag>
+                    </div>
+                  </div>
+                  <div v-if="module.matched_pages?.length" class="ai-route-module-line">
+                    <span class="ai-route-line-label">命中页面</span>
+                    <div class="ai-route-tag-list">
+                      <el-tag v-for="page in module.matched_pages" :key="`${module.code}-page-${page}`" size="small">{{ page }}</el-tag>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div v-if="aiSkillRoute.omitted_modules?.length" class="ai-route-block">
+              <div class="ai-route-block-title">命中但未加载</div>
+              <div class="ai-route-module-list">
+                <div v-for="module in aiSkillRoute.omitted_modules" :key="`omitted-${module.id || module.code}`" class="ai-route-module-card ai-route-module-card-omitted">
+                  <div class="ai-route-module-header">
+                    <div class="ai-route-module-title">
+                      <span>{{ module.name || module.code }}</span>
+                      <span class="ai-route-module-code">{{ module.code }}</span>
+                    </div>
+                    <div class="ai-route-tag-list">
+                      <el-tag size="small" :type="aiSkillModuleTypeTag(module.module_type)">{{ aiSkillModuleTypeLabel(module.module_type) }}</el-tag>
+                      <el-tag size="small" type="warning">{{ formatAiSkillRouteOmittedReason(module.omitted_reason) }}</el-tag>
+                    </div>
+                  </div>
+                  <div v-if="module.summary" class="ai-route-module-summary">{{ module.summary }}</div>
+                </div>
+              </div>
+            </div>
           </div>
           <el-alert
             v-if="aiGenerateWarnings.length"
@@ -957,6 +1130,81 @@
           <el-button :disabled="!aiGeneratedRecordId" type="success" :loading="aiImporting" @click="submitImportGeneratedCases">
             {{ aiText.importToManager }}
           </el-button>
+        </span>
+      </template>
+    </el-dialog>
+
+    <el-dialog
+      v-model="showAiSkillModuleDialog"
+      :title="aiSkillModuleForm.id ? '编辑 Skill 模块' : '新增 Skill 模块'"
+      :close-on-click-modal="false"
+      width="760px"
+    >
+      <el-form :model="aiSkillModuleForm" label-width="104px">
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="模块名称" required>
+              <el-input v-model="aiSkillModuleForm.name" placeholder="例如：创建数据要素流程" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="模块编码" required>
+              <el-input v-model="aiSkillModuleForm.code" placeholder="例如：ui.flow.data_element.create" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-row :gutter="12">
+          <el-col :span="8">
+            <el-form-item label="类型">
+              <el-select v-model="aiSkillModuleForm.module_type" style="width: 100%">
+                <el-option label="全局规范" value="global" />
+                <el-option label="页面模块" value="page" />
+                <el-option label="业务流程" value="business_flow" />
+                <el-option label="修复规则" value="repair" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="优先级">
+              <el-input-number v-model="aiSkillModuleForm.priority" :min="0" :max="999" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="8">
+            <el-form-item label="启用">
+              <el-switch v-model="aiSkillModuleForm.is_active" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item label="关键词">
+          <el-input v-model="aiSkillModuleForm.keywordsText" placeholder="逗号分隔，例如：创建数据要素,SYS Decimal,数据定义" />
+        </el-form-item>
+        <el-form-item label="意图">
+          <el-input v-model="aiSkillModuleForm.intentsText" placeholder="逗号分隔，例如：create_data_element,data_element" />
+        </el-form-item>
+        <el-form-item label="页面">
+          <el-input v-model="aiSkillModuleForm.pagesText" placeholder="逗号分隔，例如：数据结构设置,数据要素" />
+        </el-form-item>
+        <el-form-item label="摘要">
+          <el-input v-model="aiSkillModuleForm.summary" type="textarea" :rows="2" resize="vertical" />
+        </el-form-item>
+        <el-form-item label="模块内容" required>
+          <div class="ai-skill-module-actions">
+            <el-button size="small" :loading="aiSkillModuleGenerating" @click="generateAiSkillModuleContentPreview">系统生成提示词</el-button>
+            <span class="ai-skill-module-tip">根据摘要、关键词、意图和页面自动生成规范模块提示词，可继续手工调整。</span>
+          </div>
+          <el-input
+            v-model="aiSkillModuleForm.content"
+            type="textarea"
+            :rows="9"
+            resize="vertical"
+            placeholder="填写这个模块的具体业务规则。后端只会在命中关键词/意图时加载它。"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <span class="dialog-footer">
+          <el-button @click="showAiSkillModuleDialog = false">取消</el-button>
+          <el-button type="primary" :loading="aiSkillModuleSaving" @click="submitAiSkillModule">保存模块</el-button>
         </span>
       </template>
     </el-dialog>
@@ -1205,7 +1453,9 @@ import {
   getElementGroupTree,
   createTestCase,
   createTestCaseFolder,
+  deleteTestCaseFolder,
   updateTestCase,
+  batchDeleteTestCases,
   deleteTestCase as deleteTestCaseApi,
   getTestCaseFolders,
   getTestCases,
@@ -1221,6 +1471,11 @@ import {
   importGeneratedAITestCases,
   optimizeAITestCaseGenerationSkill,
   downloadAITestCaseTemplate,
+  getAITestCaseGenerationSkillModules,
+  createAITestCaseGenerationSkillModule,
+  updateAITestCaseGenerationSkillModule,
+  generateAITestCaseGenerationSkillModuleContent,
+  ensureBuiltinAITestCaseGenerationSkillModules,
   getUiAutomationAIModelConfigs,
   getLocatorStrategies,
   getLocalRunners,
@@ -1245,20 +1500,32 @@ const text = {
   selectedPrefix: '\u5df2\u9009',
   selectedSuffix: '\u9879',
   moveCases: '\u79fb\u52a8\u7528\u4f8b',
+  batchDeleteCases: '\u6279\u91cf\u5220\u9664',
   emptyList: '\u6682\u65e0\u6d4b\u8bd5\u7528\u4f8b',
   ungrouped: '\u672a\u5206\u7ec4',
   folderLabel: '\u6240\u5c5e\u6587\u4ef6\u5939',
   folderPlaceholder: '\u8bf7\u9009\u62e9\u6587\u4ef6\u5939',
   folderName: '\u6587\u4ef6\u5939\u540d\u79f0',
   folderNamePlaceholder: '\u8bf7\u8f93\u5165\u6587\u4ef6\u5939\u540d\u79f0',
+  manageFolders: '\u7ba1\u7406\u6587\u4ef6\u5939',
   moveCount: '\u79fb\u52a8\u6570\u91cf',
   targetFolder: '\u76ee\u6807\u6587\u4ef6\u5939',
   folderNameRequired: '\u8bf7\u8f93\u5165\u6587\u4ef6\u5939\u540d\u79f0',
   folderCreateSuccess: '\u6587\u4ef6\u5939\u521b\u5efa\u6210\u529f',
   folderCreateFailed: '\u6587\u4ef6\u5939\u521b\u5efa\u5931\u8d25',
+  folderDeleteTitle: '\u5220\u9664\u6587\u4ef6\u5939',
+  folderDeleteSuccess: '\u6587\u4ef6\u5939\u5220\u9664\u6210\u529f',
+  folderDeleteFailed: '\u6587\u4ef6\u5939\u5220\u9664\u5931\u8d25',
+  folderDeleteConfirm: '\u786e\u8ba4\u5220\u9664\u6587\u4ef6\u5939\u300c{name}\u300d\u5417\uff1f\u5176\u4e2d\u7684\u7528\u4f8b\u5c06\u81ea\u52a8\u79fb\u5230\u672a\u5206\u7ec4\u3002',
+  folderEmpty: '\u6682\u65e0\u6587\u4ef6\u5939',
+  folderCaseCount: '\u5171 {count} \u6761\u7528\u4f8b',
   moveCasesEmpty: '\u8bf7\u5148\u9009\u62e9\u9700\u8981\u79fb\u52a8\u7684\u7528\u4f8b',
   moveSuccess: '\u7528\u4f8b\u79fb\u52a8\u6210\u529f',
   moveFailed: '\u7528\u4f8b\u79fb\u52a8\u5931\u8d25',
+  batchDeleteTitle: '\u6279\u91cf\u5220\u9664\u7528\u4f8b',
+  batchDeleteConfirm: '\u786e\u8ba4\u5220\u9664\u5df2\u9009\u4e2d\u7684 {count} \u6761\u7528\u4f8b\u5417\uff1f',
+  batchDeleteSuccess: '\u6279\u91cf\u5220\u9664\u6210\u529f',
+  batchDeleteFailed: '\u6279\u91cf\u5220\u9664\u5931\u8d25',
   selectElement: '\u9009\u62e9\u5143\u7d20',
   selectElementPlaceholder: '\u8bf7\u9009\u62e9\u5143\u7d20',
   searchElementPlaceholder: '\u641c\u7d22\u5143\u7d20\u540d\u79f0\u6216\u5b9a\u4f4d\u5185\u5bb9',
@@ -1373,6 +1640,7 @@ const showDataFactorySelector = ref(false)
 const currentStepForDataFactory = ref(null)
 const currentFieldForDataFactory = ref('')
 const currentSelectingStep = ref(null)
+const folderDeletingId = ref(null)
 const currentSelectingField = ref('element_id')
 const elementSelectorKeyword = ref('')
 const variableCategories = ref([])
@@ -1408,8 +1676,14 @@ const aiGeneratedManifest = ref(null)
 const aiGeneratedCases = ref([])
 const aiGenerateWarnings = ref([])
 const aiGenerationMode = ref('')
+const aiSkillRoute = ref(null)
 const aiSkillPreview = ref('')
 const aiSkillOptimizeInstruction = ref('')
+const aiSkillModules = ref([])
+const aiSkillModulesLoading = ref(false)
+const showAiSkillModuleDialog = ref(false)
+const aiSkillModuleSaving = ref(false)
+const aiSkillModuleGenerating = ref(false)
 const aiGenerateForm = reactive({
   text: '',
   model_config_id: null,
@@ -1417,6 +1691,19 @@ const aiGenerateForm = reactive({
   folder_id: null,
   overwrite: false,
   use_ai: true
+})
+const aiSkillModuleForm = reactive({
+  id: null,
+  name: '',
+  code: '',
+  module_type: 'business_flow',
+  summary: '',
+  content: '',
+  keywordsText: '',
+  intentsText: '',
+  pagesText: '',
+  priority: 100,
+  is_active: true
 })
 const importCaseStepsForm = reactive({
   source_case_id: null,
@@ -1623,6 +1910,57 @@ const aiGenerationModeLabel = computed(() => {
   return aiGenerationMode.value
 })
 
+const aiSkillRouteEntityEntries = computed(() => {
+  const entities = aiSkillRoute.value?.detected_entities || {}
+  return Object.entries(entities).filter(([, value]) => {
+    if (Array.isArray(value)) {
+      return value.length > 0
+    }
+    if (value && typeof value === 'object') {
+      return Object.keys(value).length > 0
+    }
+    return Boolean(value)
+  }).map(([key, value]) => ({ key, value }))
+})
+
+const aiSkillModuleTypeLabel = (type) => {
+  const labels = {
+    global: '全局规范',
+    page: '页面模块',
+    business_flow: '业务流程',
+    repair: '修复规则'
+  }
+  return labels[type] || type || '-'
+}
+
+const aiSkillModuleTypeTag = (type) => {
+  const tags = {
+    global: 'info',
+    page: 'warning',
+    business_flow: 'success',
+    repair: 'danger'
+  }
+  return tags[type] || 'info'
+}
+
+const formatAiSkillRouteEntityValue = (value) => {
+  if (Array.isArray(value)) {
+    return value.map(item => (typeof item === 'object' ? JSON.stringify(item) : String(item))).join(' | ')
+  }
+  if (value && typeof value === 'object') {
+    return JSON.stringify(value)
+  }
+  return String(value ?? '')
+}
+
+const formatAiSkillRouteOmittedReason = (reason) => {
+  const labels = {
+    max_modules: '超过模块数量上限',
+    max_prompt_chars: '超过 Prompt 长度上限'
+  }
+  return labels[reason] || reason || '未加载'
+}
+
 const projectVariableCategory = computed(() => {
   const variables = (selectedProject.value?.global_variables || []).map(item => ({
     name: item.name,
@@ -1717,7 +2055,7 @@ const filteredElementTreeOptions = computed(() => {
 
 // 方法定义
 const canStoreVariable = (actionType) => {
-  return ['fill', 'fillAndEnter', 'switchTab', 'assert'].includes(actionType)
+  return ['fill', 'fillAndEnter', 'getText', 'switchTab', 'assert'].includes(actionType)
 }
 
 const parseDragTargetPayload = (inputValue) => {
@@ -2203,7 +2541,7 @@ const createTransactionBlock = async () => {
     normalizeTransactionBlocks()
     ElMessage.success(`已创建事务块“${transactionName}”`)
   } catch (error) {
-    if (error !== 'cancel') {
+    if (error !== 'cancel' && error !== 'close') {
       ElMessage.error('创建事务块失败')
     }
   }
@@ -3024,8 +3362,9 @@ const openCreateDialog = () => {
   showCreateDialog.value = true
 }
 
-const openFolderDialog = () => {
+const openFolderDialog = async () => {
   folderForm.name = ''
+  await loadTestCaseFolders()
   showFolderDialog.value = true
 }
 
@@ -3041,18 +3380,17 @@ const saveFolder = async () => {
   }
 
   try {
-    const response = await createTestCaseFolder({
+    await createTestCaseFolder({
       project: projectId.value,
       name: folderForm.name.trim()
     })
-    testCaseFolders.value.push(response.data)
-    testCaseFolders.value.sort((a, b) => a.name.localeCompare(b.name, 'zh-Hans-CN'))
+    await loadTestCaseFolders()
     showFolderDialog.value = false
     folderForm.name = ''
     ElMessage.success(text.folderCreateSuccess)
   } catch (error) {
     console.error('创建用例文件夹失败:', error)
-    ElMessage.error(text.folderCreateFailed)
+    ElMessage.error(extractRequestErrorMessage(error, text.folderCreateFailed))
   }
 }
 
@@ -3086,11 +3424,14 @@ const submitMoveCases = async () => {
     })
     showMoveDialog.value = false
     ElMessage.success(text.moveSuccess)
-    await loadTestCases()
+    await Promise.all([
+      loadTestCases(),
+      loadTestCaseFolders()
+    ])
     selectedCaseIds.value = selectedCaseIds.value.filter(id => testCases.value.some(item => item.id === id))
   } catch (error) {
     console.error('移动用例失败:', error)
-    ElMessage.error(text.moveFailed)
+    ElMessage.error(extractRequestErrorMessage(error, text.moveFailed))
   }
 }
 
@@ -3195,6 +3536,7 @@ const resetAiGenerateState = () => {
   aiGeneratedCases.value = []
   aiGenerateWarnings.value = []
   aiGenerationMode.value = ''
+  aiSkillRoute.value = null
   aiSkillOptimizeInstruction.value = ''
   aiSkillPreview.value = ''
   aiSourceUploadRef.value?.clearFiles?.()
@@ -3232,6 +3574,193 @@ const normalizeAiSkills = (skills) => {
   })
 }
 
+const normalizeSkillTextList = (value) => {
+  if (Array.isArray(value)) return value.filter(Boolean).join(',')
+  return String(value || '')
+}
+
+const parseSkillTextList = (value) => {
+  return String(value || '')
+    .split(/[,，;；\n]/)
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
+const loadAiSkillModules = async () => {
+  aiSkillModulesLoading.value = true
+  try {
+    const response = await getAITestCaseGenerationSkillModules()
+    aiSkillModules.value = normalizeApiList(response.data)
+  } catch (error) {
+    console.warn('加载模块化 Skill 失败:', error)
+    ElMessage.error(extractRequestErrorMessage(error, '加载模块化 Skill 失败'))
+  } finally {
+    aiSkillModulesLoading.value = false
+  }
+}
+
+const ensureBuiltinAiSkillModules = async () => {
+  aiSkillModulesLoading.value = true
+  try {
+    await ensureBuiltinAITestCaseGenerationSkillModules()
+    const response = await getAITestCaseGenerationSkillModules()
+    aiSkillModules.value = normalizeApiList(response.data)
+    ElMessage.success('内置 Skill 模块已初始化')
+  } catch (error) {
+    console.error('初始化内置 Skill 模块失败:', error)
+    ElMessage.error(extractRequestErrorMessage(error, '初始化内置 Skill 模块失败'))
+  } finally {
+    aiSkillModulesLoading.value = false
+  }
+}
+
+const resetAiSkillModuleForm = () => {
+  Object.assign(aiSkillModuleForm, {
+    id: null,
+    name: '',
+    code: '',
+    module_type: 'business_flow',
+    summary: '',
+    content: '',
+    keywordsText: '',
+    intentsText: '',
+    pagesText: '',
+    priority: 100,
+    is_active: true
+  })
+}
+
+const openAiSkillModuleDialog = (module = null) => {
+  resetAiSkillModuleForm()
+  if (module) {
+    Object.assign(aiSkillModuleForm, {
+      id: module.id,
+      name: module.name || '',
+      code: module.code || '',
+      module_type: module.module_type || 'business_flow',
+      summary: module.summary || '',
+      content: module.content || '',
+      keywordsText: normalizeSkillTextList(module.keywords),
+      intentsText: normalizeSkillTextList(module.intents),
+      pagesText: normalizeSkillTextList(module.pages),
+      priority: module.priority ?? 100,
+      is_active: module.is_active !== false
+    })
+  }
+  showAiSkillModuleDialog.value = true
+}
+
+const buildAiSkillModulePayload = (contentOverride = aiSkillModuleForm.content) => ({
+  name: aiSkillModuleForm.name.trim(),
+  code: aiSkillModuleForm.code.trim(),
+  module_type: aiSkillModuleForm.module_type,
+  summary: aiSkillModuleForm.summary,
+  description: aiSkillModuleForm.summary,
+  content: contentOverride,
+  keywords: parseSkillTextList(aiSkillModuleForm.keywordsText),
+  intents: parseSkillTextList(aiSkillModuleForm.intentsText),
+  pages: parseSkillTextList(aiSkillModuleForm.pagesText),
+  priority: aiSkillModuleForm.priority,
+  is_active: aiSkillModuleForm.is_active
+})
+
+const generateAiSkillModuleContentPreview = async ({ silent = false } = {}) => {
+  if (!aiSkillModuleForm.summary.trim()) {
+    ElMessage.warning('请先在摘要中输入模块规则')
+    return ''
+  }
+
+  aiSkillModuleGenerating.value = true
+  try {
+    const response = await generateAITestCaseGenerationSkillModuleContent(buildAiSkillModulePayload(''))
+    const generatedContent = response.data?.content || ''
+    aiSkillModuleForm.content = generatedContent
+    if (!silent) {
+      ElMessage.success('系统提示词已生成')
+    }
+    return generatedContent
+  } catch (error) {
+    console.error('生成 Skill 模块提示词失败:', error)
+    ElMessage.error(extractRequestErrorMessage(error, '生成 Skill 模块提示词失败'))
+    return ''
+  } finally {
+    aiSkillModuleGenerating.value = false
+  }
+}
+
+const saveAiSkillModule = async () => {
+  if (!aiSkillModuleForm.name.trim() || !aiSkillModuleForm.code.trim() || !aiSkillModuleForm.content.trim()) {
+    ElMessage.warning('请填写模块名称、编码和内容')
+    return
+  }
+  aiSkillModuleSaving.value = true
+  const payload = {
+    name: aiSkillModuleForm.name.trim(),
+    code: aiSkillModuleForm.code.trim(),
+    module_type: aiSkillModuleForm.module_type,
+    summary: aiSkillModuleForm.summary,
+    description: aiSkillModuleForm.summary,
+    content: aiSkillModuleForm.content,
+    keywords: parseSkillTextList(aiSkillModuleForm.keywordsText),
+    intents: parseSkillTextList(aiSkillModuleForm.intentsText),
+    pages: parseSkillTextList(aiSkillModuleForm.pagesText),
+    priority: aiSkillModuleForm.priority,
+    is_active: aiSkillModuleForm.is_active
+  }
+  try {
+    if (aiSkillModuleForm.id) {
+      await updateAITestCaseGenerationSkillModule(aiSkillModuleForm.id, payload)
+    } else {
+      await createAITestCaseGenerationSkillModule(payload)
+    }
+    showAiSkillModuleDialog.value = false
+    await loadAiSkillModules()
+    ElMessage.success('Skill 模块已保存')
+  } catch (error) {
+    console.error('保存 Skill 模块失败:', error)
+    ElMessage.error(extractRequestErrorMessage(error, '保存 Skill 模块失败'))
+  } finally {
+    aiSkillModuleSaving.value = false
+  }
+}
+
+const submitAiSkillModule = async () => {
+  if (!aiSkillModuleForm.name.trim() || !aiSkillModuleForm.code.trim()) {
+    ElMessage.warning('请填写模块名称和编码')
+    return
+  }
+
+  let content = aiSkillModuleForm.content.trim()
+  if (!content) {
+    if (!aiSkillModuleForm.summary.trim()) {
+      ElMessage.warning('请填写摘要，或先生成模块提示词')
+      return
+    }
+    content = await generateAiSkillModuleContentPreview({ silent: true })
+    if (!content.trim()) {
+      return
+    }
+  }
+
+  aiSkillModuleSaving.value = true
+  const payload = buildAiSkillModulePayload(content)
+  try {
+    if (aiSkillModuleForm.id) {
+      await updateAITestCaseGenerationSkillModule(aiSkillModuleForm.id, payload)
+    } else {
+      await createAITestCaseGenerationSkillModule(payload)
+    }
+    showAiSkillModuleDialog.value = false
+    await loadAiSkillModules()
+    ElMessage.success('Skill 模块已保存')
+  } catch (error) {
+    console.error('保存 Skill 模块失败:', error)
+    ElMessage.error(extractRequestErrorMessage(error, '保存 Skill 模块失败'))
+  } finally {
+    aiSkillModuleSaving.value = false
+  }
+}
+
 const loadAiGenerateOptions = async () => {
   const defaultSkillResponse = await ensureDefaultAITestCaseGenerationSkill()
   const ensuredDefaultSkill = defaultSkillResponse.data
@@ -3240,10 +3769,11 @@ const loadAiGenerateOptions = async () => {
   aiGenerateForm.skill_id = ensuredDefaultSkill.id
   aiSkillPreview.value = ensuredDefaultSkill.content || ''
 
-  const [skillsResult, generalModelsResult, uiAutomationModelsResult] = await Promise.allSettled([
+  const [skillsResult, generalModelsResult, uiAutomationModelsResult, skillModulesResult] = await Promise.allSettled([
     getAITestCaseGenerationSkills(),
     getAIModelConfigs({ is_active: true }),
-    getUiAutomationAIModelConfigs()
+    getUiAutomationAIModelConfigs(),
+    getAITestCaseGenerationSkillModules()
   ])
 
   if (skillsResult.status === 'fulfilled') {
@@ -3267,6 +3797,11 @@ const loadAiGenerateOptions = async () => {
   }
   if (uiAutomationModelsResult.status === 'rejected') {
     console.warn('加载UI自动化AI模型配置失败:', uiAutomationModelsResult.reason)
+  }
+  if (skillModulesResult.status === 'fulfilled') {
+    aiSkillModules.value = normalizeApiList(skillModulesResult.value.data)
+  } else {
+    console.warn('加载模块化 Skill 失败:', skillModulesResult.reason)
   }
 
   const defaultSkill = aiSkills.value.find(item => item.id === ensuredDefaultSkill.id)
@@ -3385,6 +3920,7 @@ const submitAiGenerateCases = async () => {
     aiGeneratedCases.value = manifest.test_cases || []
     aiGenerateWarnings.value = data.warnings || record.warnings || []
     aiGenerationMode.value = data.generation_mode || ''
+    aiSkillRoute.value = data.skill_route || null
     ElMessage.success(aiText.generateSuccess)
   } catch (error) {
     console.error('AI生成用例失败:', error)
@@ -3499,6 +4035,27 @@ const toggleCaseSelection = (caseId, checked) => {
   }
 
   selectedCaseIds.value = selectedCaseIds.value.filter(id => id !== caseId)
+}
+
+const clearSelectedTestCaseState = () => {
+  selectedTestCase.value = null
+  currentSteps.value = []
+  selectedStepId.value = null
+  checkedStepIds.value = []
+  transactionCollapseState.value = {}
+  executionResult.value = null
+}
+
+const removeTestCaseFromState = (testCaseId) => {
+  const index = testCases.value.findIndex(tc => tc.id === testCaseId)
+  if (index !== -1) {
+    testCases.value.splice(index, 1)
+  }
+
+  selectedCaseIds.value = selectedCaseIds.value.filter(id => id !== testCaseId)
+  if (selectedTestCase.value?.id === testCaseId) {
+    clearSelectedTestCaseState()
+  }
 }
 
 const selectTestCase = (testCase) => {
@@ -3835,6 +4392,9 @@ const deleteTestCase = async (testCase) => {
 
     await deleteTestCaseApi(testCase.id)
     ElMessage.success(t('uiAutomation.testCase.delete.success'))
+    removeTestCaseFromState(testCase.id)
+    await loadTestCaseFolders()
+    return
 
     // 从列表中移除
     const index = testCases.value.findIndex(tc => tc.id === testCase.id)
@@ -3856,6 +4416,82 @@ const deleteTestCase = async (testCase) => {
       console.error('删除测试用例失败:', error)
       ElMessage.error('删除失败')
     }
+  }
+}
+
+const handleBatchDelete = async () => {
+  if (!selectedCaseIds.value.length) {
+    ElMessage.warning(text.moveCasesEmpty)
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      text.batchDeleteConfirm.replace('{count}', selectedCaseIds.value.length),
+      text.batchDeleteTitle,
+      {
+        confirmButtonText: t('uiAutomation.common.confirm'),
+        cancelButtonText: t('uiAutomation.common.cancel'),
+        type: 'warning'
+      }
+    )
+
+    await batchDeleteTestCases({ ids: selectedCaseIds.value })
+    selectedCaseIds.value = []
+    clearSelectedTestCaseState()
+    await Promise.all([
+      loadTestCases(),
+      loadTestCaseFolders()
+    ])
+    ElMessage.success(text.batchDeleteSuccess)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      console.error('鎵归噺鍒犻櫎娴嬭瘯鐢ㄤ緥澶辫触:', error)
+      ElMessage.error(extractRequestErrorMessage(error, text.batchDeleteFailed))
+    }
+  }
+}
+
+const deleteFolder = async (folder) => {
+  try {
+    await ElMessageBox.confirm(
+      text.folderDeleteConfirm.replace('{name}', folder.name),
+      text.folderDeleteTitle,
+      {
+        confirmButtonText: t('uiAutomation.common.confirm'),
+        cancelButtonText: t('uiAutomation.common.cancel'),
+        type: 'warning'
+      }
+    )
+
+    folderDeletingId.value = folder.id
+    await deleteTestCaseFolder(folder.id)
+
+    if (folderFilter.value === String(folder.id)) {
+      folderFilter.value = 'all'
+    }
+    if (testCaseForm.folder_id === folder.id) {
+      testCaseForm.folder_id = null
+    }
+    if (moveForm.folder_id === folder.id) {
+      moveForm.folder_id = null
+    }
+    if (aiGenerateForm.folder_id === folder.id) {
+      aiGenerateForm.folder_id = null
+    }
+
+    await Promise.all([
+      loadTestCases(),
+      loadTestCaseFolders()
+    ])
+    ElMessage.success(text.folderDeleteSuccess)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      console.error('鍒犻櫎鏂囦欢澶瑰け璐?', error)
+      ElMessage.error(extractRequestErrorMessage(error, text.folderDeleteFailed))
+    }
+  } finally {
+    folderDeletingId.value = null
   }
 }
 
@@ -4107,7 +4743,10 @@ const saveTestCaseForm = async () => {
       testCases.value.push(response.data)
     }
 
-    await loadTestCases()
+    await Promise.all([
+      loadTestCases(),
+      loadTestCaseFolders()
+    ])
     showCreateDialog.value = false
     editingTestCase.value = null
     resetForm()
@@ -5517,12 +6156,162 @@ onBeforeUnmount(() => {
   margin: 12px 0;
 }
 
+.ai-skill-router-tip {
+  margin-bottom: 12px;
+}
+
+.ai-skill-module-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.ai-skill-module-table {
+  margin-bottom: 8px;
+}
+
+.ai-skill-module-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 10px;
+  flex-wrap: wrap;
+}
+
+.ai-skill-module-tip {
+  color: #909399;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .ai-preview-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 12px;
   font-weight: 600;
+}
+
+.ai-route-summary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 12px;
+  color: #606266;
+  font-size: 12px;
+}
+
+.ai-route-debug {
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.ai-route-meta,
+.ai-route-tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ai-route-meta {
+  margin-bottom: 10px;
+}
+
+.ai-route-block + .ai-route-block {
+  margin-top: 12px;
+}
+
+.ai-route-block-title {
+  margin-bottom: 8px;
+  color: #303133;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ai-route-entity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: #606266;
+}
+
+.ai-route-entity-item {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.ai-route-entity-key,
+.ai-route-line-label {
+  flex: 0 0 auto;
+  color: #909399;
+}
+
+.ai-route-entity-value {
+  word-break: break-all;
+}
+
+.ai-route-module-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ai-route-module-card {
+  padding: 10px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  background: white;
+}
+
+.ai-route-module-card-omitted {
+  background: #fff9f5;
+  border-color: #f7d7c1;
+}
+
+.ai-route-module-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.ai-route-module-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #303133;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ai-route-module-code {
+  color: #909399;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.ai-route-module-summary {
+  margin-top: 8px;
+  color: #606266;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.ai-route-module-line {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin-top: 8px;
+  font-size: 12px;
+  color: #606266;
 }
 
 .ai-warning {
@@ -5533,6 +6322,50 @@ onBeforeUnmount(() => {
   font-size: 12px;
   line-height: 1.6;
   color: #606266;
+}
+
+.folder-manage-list {
+  margin-top: 8px;
+  border-top: 1px solid #ebeef5;
+  padding-top: 12px;
+}
+
+.folder-manage-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.folder-manage-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+  background: #fafafa;
+}
+
+.folder-manage-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.folder-manage-name {
+  color: #303133;
+  font-size: 13px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.folder-manage-count {
+  color: #909399;
+  font-size: 12px;
 }
 
 @media (max-width: 1180px) {

@@ -86,6 +86,7 @@
         <div class="content-toolbar">
           <el-button :disabled="!selectedProject" @click="openImportDialog">导入文件</el-button>
           <el-button :disabled="!selectedElementCount" @click="handleExportSelectedElement">导出选中元素</el-button>
+          <el-button type="danger" :disabled="!selectedElementCount" @click="handleBatchDeleteElements">批量删除元素</el-button>
           <el-button :disabled="!selectedProject" @click="handleExportAllElements">导出全部元素</el-button>
           <el-button :disabled="!selectedElementCount" @click="openTransferDialog('selected')">复制选中元素</el-button>
           <el-button :disabled="!selectedProject" @click="openTransferDialog('all')">复制全部元素</el-button>
@@ -384,6 +385,7 @@ import {
   getElementDetail,
   updateElement,
   deleteElement,
+  batchDeleteElements,
   getElementTree,
   getElementGroupTree,
   getElementGroups,
@@ -1239,6 +1241,46 @@ const handleExportAllElements = async () => {
   } catch (error) {
     console.error('Export all elements failed:', error)
     ElMessage.error('导出失败')
+  }
+}
+
+const handleBatchDeleteElements = async () => {
+  if (!selectedElementCount.value) {
+    ElMessage.warning('请先勾选要删除的元素')
+    return
+  }
+
+  try {
+    await ElMessageBox.confirm(
+      `确定要删除选中的 ${selectedElementCount.value} 个元素吗？`,
+      '批量删除确认',
+      {
+        confirmButtonText: t('uiAutomation.common.confirm'),
+        cancelButtonText: t('uiAutomation.common.cancel'),
+        type: 'warning'
+      }
+    )
+
+    const deletingIds = [...checkedElementIds.value]
+    await batchDeleteElements({ ids: deletingIds })
+
+    if (selectedElement.value && deletingIds.includes(selectedElement.value.id)) {
+      selectedElement.value = null
+      suggestions.value = []
+    }
+    checkedElementIds.value = []
+
+    await Promise.all([
+      loadPages(),
+      loadElementTree()
+    ])
+    treeKey.value += 1
+    ElMessage.success('批量删除成功')
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      console.error('Batch delete elements failed:', error)
+      ElMessage.error(error.response?.data?.error || '批量删除失败')
+    }
   }
 }
 
