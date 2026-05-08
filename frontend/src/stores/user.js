@@ -7,6 +7,7 @@ export const useUserStore = defineStore('user', () => {
   const accessToken = ref(localStorage.getItem('access_token') || '')
   const refreshToken = ref(localStorage.getItem('refresh_token') || '')
   const tokenExpiresAt = ref(parseInt(localStorage.getItem('token_expires_at') || '0'))
+  const TOKEN_LIFETIME_MS = 24 * 60 * 60 * 1000
 
   // token刷新定时器
   let refreshTimer = null
@@ -66,8 +67,8 @@ export const useUserStore = defineStore('user', () => {
       refreshToken.value = response.data.refresh
       user.value = response.data.user
 
-      // 计算过期时间（当前时间 + 30分钟）
-      const expiresAt = Date.now() + 30 * 60 * 1000
+      // 计算过期时间（当前时间 + 24小时）
+      const expiresAt = Date.now() + TOKEN_LIFETIME_MS
       tokenExpiresAt.value = expiresAt
 
       // 持久化存储
@@ -150,7 +151,7 @@ export const useUserStore = defineStore('user', () => {
 
       // 更新access token和过期时间
       accessToken.value = response.data.access
-      const expiresAt = Date.now() + 30 * 60 * 1000
+      const expiresAt = Date.now() + TOKEN_LIFETIME_MS
       tokenExpiresAt.value = expiresAt
 
       // 如果返回了新的refresh token（启用了ROTATE_REFRESH_TOKENS）
