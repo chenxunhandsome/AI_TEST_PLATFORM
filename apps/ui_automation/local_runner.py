@@ -4,6 +4,7 @@ import os
 import platform
 import socket
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -13,6 +14,7 @@ from playwright.sync_api import sync_playwright
 
 
 DEFAULT_STATE_FILE = Path.home() / '.testhub_ui_runner.json'
+PICKER_PROFILE_ROOT = Path(tempfile.gettempdir()) / 'testhub-ui-coordinate-picker-local-runner'
 
 
 class ApiClient:
@@ -119,6 +121,97 @@ def _normalize_picker_browser(browser):
     }.get(str(browser or 'chrome').lower(), 'chromium')
 
 
+def _get_picker_launch_args(browser_name):
+    if browser_name != 'chromium':
+        return []
+
+    return [
+        '--disable-blink-features=AutomationControlled',
+        '--ignore-certificate-errors',
+        '--allow-insecure-localhost',
+        '--disable-translate',
+        '--disable-features=Translate,TranslateUI',
+        '--lang=zh-CN',
+        '--start-maximized',
+        '--disable-dev-shm-usage',
+        '--disable-background-timer-throttling',
+        '--disable-renderer-backgrounding',
+        '--enable-webgl',
+        '--enable-webgl2',
+        '--enable-accelerated-2d-canvas',
+        '--ignore-gpu-blocklist',
+    ]
+
+
+def _get_picker_context_options(browser_name):
+    context_options = {
+        'locale': 'zh-CN',
+    }
+    if browser_name == 'chromium':
+        context_options['no_viewport'] = True
+        context_options['extra_http_headers'] = {
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
+        }
+    else:
+        context_options['viewport'] = {'width': 1440, 'height': 900}
+    return context_options
+
+
+def _get_picker_profile_dir(session_id, browser_name, browser_channel, isolated=False):
+    profile_key = ''.join(
+        item if item.isalnum() or item in {'_', '.', '-'} else '_'
+        for item in (browser_channel or browser_name or 'browser')
+    )
+    profile_dir = PICKER_PROFILE_ROOT / profile_key
+    if isolated:
+        profile_dir = profile_dir / str(session_id or 'default')[:16]
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    return str(profile_dir)
+
+
+def _is_blank_picker_url(url):
+    return str(url or '').strip().lower() in {'', 'about:blank'}
+
+
+def _is_fatal_navigation_error(error):
+    error_text = str(error or '').lower()
+    if not error_text:
+        return False
+
+    fatal_keywords = [
+        'err_name_not_resolved',
+        'err_internet_disconnected',
+        'err_connection_refused',
+        'err_connection_reset',
+        'err_address_unreachable',
+        'err_tunnel_connection_failed',
+        'err_proxy_connection_failed',
+        'err_cert',
+        'err_ssl',
+    ]
+    return any(keyword in error_text for keyword in fatal_keywords)
+
+
+def _format_picker_navigation_error(base_url, browser_name, browser_channel, profile_dir, diagnostics, navigation_error):
+    current_url = diagnostics.get('url') or 'about:blank'
+    title = diagnostics.get('title') or ''
+    ready_state = diagnostics.get('ready_state') or ''
+    detail = (
+        f'Local coordinate picker failed to open target page. '
+        f'base_url={base_url!r}, current_url={current_url!r}, title={title!r}, '
+        f'ready_state={ready_state!r}, browser={browser_name!r}, '
+        f'browser_channel={browser_channel!r}, profile_dir={profile_dir!r}'
+    )
+    if navigation_error:
+        detail = f'{detail}, navigation_error={navigation_error}'
+    detail = (
+        f'{detail}. Please verify the local runner machine can access the base_url, '
+        f'DNS/proxy/certificate settings are correct, and the local runner is started '
+        f'in an interactive desktop session rather than a non-interactive Windows service session.'
+    )
+    return detail
+
+
 class LocalScrollCoordinatePicker:
     def __init__(self):
         self.playwright = None
@@ -134,6 +227,7 @@ class LocalScrollCoordinatePicker:
         self.click_setup_script = ''
         self.page_meta = {}
         self.hooked_page_ids = set()
+        self.launch_info = {}
 
     def _close_runtime(self):
         for item in [self.context, self.browser]:
@@ -163,6 +257,7 @@ class LocalScrollCoordinatePicker:
         self.click_setup_script = ''
         self.page_meta = {}
         self.hooked_page_ids = set()
+        self.launch_info = {}
 
     def _get_locator(self, element_data, page=None):
         target_page = page or self._get_active_page()
@@ -373,6 +468,53 @@ class LocalScrollCoordinatePicker:
         self._ensure_page_hooks(page)
         self._install_click_listener(page)
 
+    def _read_page_diagnostics(self, page):
+        diagnostics = {
+            'url': '',
+            'title': '',
+            'ready_state': '',
+            'body_text_length': 0,
+            'element_count': 0,
+        }
+        if page is None:
+            return diagnostics
+
+        try:
+            page.wait_for_timeout(500)
+        except Exception:
+            pass
+
+        try:
+            diagnostics['url'] = str(getattr(page, 'url', '') or '')
+        except Exception:
+            pass
+
+        try:
+            diagnostics['title'] = str(page.title() or '')
+        except Exception:
+            pass
+
+        try:
+            page_state = page.evaluate("""
+                () => ({
+                    ready_state: document.readyState || '',
+                    body_text_length: ((document.body && document.body.innerText) || '').trim().length,
+                    element_count: document.querySelectorAll('*').length
+                })
+            """)
+            if isinstance(page_state, dict):
+                diagnostics['ready_state'] = str(page_state.get('ready_state') or '')
+                diagnostics['body_text_length'] = int(page_state.get('body_text_length') or 0)
+                diagnostics['element_count'] = int(page_state.get('element_count') or 0)
+        except Exception:
+            pass
+
+        self.page_meta[id(page)] = {
+            'title': diagnostics.get('title') or '',
+            'url': diagnostics.get('url') or '',
+        }
+        return diagnostics
+
     def _get_active_page(self):
         try:
             if self.active_page is not None and not self.active_page.is_closed():
@@ -445,6 +587,7 @@ class LocalScrollCoordinatePicker:
             'session_id': self.session_id,
             'url': url,
             'title': title,
+            **self.launch_info,
         }
 
     def list_pages(self):
@@ -488,7 +631,7 @@ class LocalScrollCoordinatePicker:
             pass
         return self._build_pages_payload()
 
-    def start(self, session_id, base_url, browser='chrome', picker_element_data=None):
+    def start(self, session_id, base_url, browser='chrome', picker_element_data=None, browser_channel=''):
         if self.session_id and self.session_id != session_id:
             self._close_runtime()
         elif self.context is not None and self.session_id == session_id:
@@ -502,39 +645,39 @@ class LocalScrollCoordinatePicker:
             return self._build_open_response()
 
         browser_name = _normalize_picker_browser(browser)
+        browser_channel = str(browser_channel or '').strip()
         self._close_runtime()
 
         self.playwright = sync_playwright().start()
         launcher = getattr(self.playwright, browser_name, self.playwright.chromium)
 
-        launch_args = []
-        if browser_name == 'chromium':
-            launch_args = [
-                '--disable-blink-features=AutomationControlled',
-                '--ignore-certificate-errors',
-                '--allow-insecure-localhost',
-                '--disable-web-security',
-                '--disable-translate',
-                '--disable-features=Translate,TranslateUI',
-                '--lang=zh-CN',
-                '--start-maximized',
-            ]
-
-        self.browser = launcher.launch(headless=False, args=launch_args)
-
-        context_options = {
-            'locale': 'zh-CN',
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
+        launch_args = _get_picker_launch_args(browser_name)
+        context_options = _get_picker_context_options(browser_name)
+        profile_dir = _get_picker_profile_dir(session_id, browser_name, browser_channel)
+        actual_profile_dir = profile_dir
+        launch_kwargs = {
+            **context_options,
+            'headless': False,
+            'args': launch_args,
         }
-        if browser_name == 'chromium':
-            context_options['no_viewport'] = True
-            context_options['extra_http_headers'] = {
-                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
-            }
-        else:
-            context_options['viewport'] = {'width': 1440, 'height': 900}
+        if browser_channel and browser_name == 'chromium':
+            launch_kwargs['channel'] = browser_channel
 
-        self.context = self.browser.new_context(**context_options)
+        try:
+            self.context = launcher.launch_persistent_context(profile_dir, **launch_kwargs)
+        except Exception:
+            fallback_profile_dir = _get_picker_profile_dir(session_id, browser_name, browser_channel, isolated=True)
+            if launch_kwargs.pop('channel', None):
+                try:
+                    self.context = launcher.launch_persistent_context(profile_dir, **launch_kwargs)
+                except Exception:
+                    self.context = launcher.launch_persistent_context(fallback_profile_dir, **launch_kwargs)
+                    actual_profile_dir = fallback_profile_dir
+            else:
+                self.context = launcher.launch_persistent_context(fallback_profile_dir, **launch_kwargs)
+                actual_profile_dir = fallback_profile_dir
+
+        self.browser = self.context.browser
         self.binding_name = f'__testhubScrollCoordinatePickerReportClick_{session_id[:8]}'
         self.click_setup_script = self._build_click_setup_script()
         self.context.expose_binding(self.binding_name, self._handle_click)
@@ -542,7 +685,32 @@ class LocalScrollCoordinatePicker:
         self.context.on('page', self._register_page)
         self.page = self.context.new_page()
         self._register_page(self.page)
-        self.page.goto(base_url, wait_until='domcontentloaded', timeout=30000)
+
+        navigation_errors = []
+        for timeout in [15000, 30000]:
+            try:
+                self.page.goto(base_url, wait_until='domcontentloaded', timeout=timeout)
+                break
+            except Exception as exc:
+                navigation_errors.append(str(exc))
+                diagnostics = self._read_page_diagnostics(self.page)
+                if not _is_blank_picker_url(diagnostics.get('url')):
+                    break
+
+        diagnostics = self._read_page_diagnostics(self.page)
+        navigation_error = ' | '.join(item for item in navigation_errors if item)
+        if _is_blank_picker_url(diagnostics.get('url')) or _is_fatal_navigation_error(navigation_error):
+            error_message = _format_picker_navigation_error(
+                base_url,
+                browser_name,
+                browser_channel,
+                actual_profile_dir,
+                diagnostics,
+                navigation_error,
+            )
+            self._close_runtime()
+            raise RuntimeError(error_message)
+
         try:
             self.page.bring_to_front()
         except Exception:
@@ -551,6 +719,14 @@ class LocalScrollCoordinatePicker:
         self.session_id = session_id
         self.picker_element_data = picker_element_data or None
         self.active_page = self.page
+        self.launch_info = {
+            'requested_url': str(base_url or ''),
+            'browser_name': browser_name,
+            'browser_channel': browser_channel,
+            'profile_dir': actual_profile_dir,
+            'navigation_error': navigation_error,
+            'page_diagnostics': diagnostics,
+        }
         return self._build_open_response()
 
     def read_position(self):
@@ -866,6 +1042,7 @@ def main():
                             session_id,
                             task.get('base_url', ''),
                             task.get('browser', 'chrome'),
+                            browser_channel=task.get('browser_channel') or '',
                             picker_element_data=task.get('picker_element_data') or None,
                         )
                     elif action == 'read_position':

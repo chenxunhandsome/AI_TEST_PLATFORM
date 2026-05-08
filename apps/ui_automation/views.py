@@ -17,9 +17,11 @@ import logging
 import json
 import re
 import random
+import tempfile
 import time
 import traceback
 import uuid
+from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, RLock, Thread
 from urllib.parse import quote
@@ -106,6 +108,7 @@ IMPORT_EXPORT_FORMAT_VERSION = 1
 SCROLL_COORDINATE_PICKER_SESSION_TTL = 1800
 SCROLL_COORDINATE_PICKER_SESSIONS = {}
 SCROLL_COORDINATE_PICKER_PLAYWRIGHT_START_LOCK = RLock()
+SCROLL_COORDINATE_PICKER_PROFILE_ROOT = Path(tempfile.gettempdir()) / 'testhub-ui-coordinate-picker'
 
 
 def _describe_scroll_coordinate_picker_page(page):
@@ -813,37 +816,12 @@ def _scroll_coordinate_picker_worker(session):
 
     try:
         browser_name = session['browser_name']
+        browser_channel = session.get('browser_channel') or ''
         playwright = _start_sync_playwright_for_subprocesses()
         browser_launcher = getattr(playwright, browser_name, playwright.chromium)
 
-        launch_args = []
-        if browser_name == 'chromium':
-            launch_args = [
-                '--disable-blink-features=AutomationControlled',
-                '--ignore-certificate-errors',
-                '--allow-insecure-localhost',
-                '--disable-web-security',
-                '--disable-translate',
-                '--disable-features=Translate,TranslateUI',
-                '--lang=zh-CN',
-                '--start-maximized',
-            ]
-
-        browser = browser_launcher.launch(headless=False, args=launch_args)
-
-        context_options = {
-            'locale': 'zh-CN',
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36',
-        }
-        if browser_name == 'chromium':
-            context_options['no_viewport'] = True
-            context_options['extra_http_headers'] = {
-                'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
-            }
-        else:
-            context_options['viewport'] = {'width': 1440, 'height': 900}
-
-        context = browser.new_context(**context_options)
+        context = _launch_scroll_coordinate_picker_context(playwright, session, browser_launcher)
+        browser = context.browser
         binding_name = f'__testhubScrollCoordinatePickerReportClick_{session["session_id"][:8]}'
         click_setup_script = _get_scroll_coordinate_picker_click_setup_script(binding_name)
 
@@ -857,6 +835,7 @@ def _scroll_coordinate_picker_worker(session):
             'active_page': None,
             'binding_name': binding_name,
             'click_setup_script': click_setup_script,
+            'browser_channel': browser_channel,
         }
 
         def _handle_click(source, payload):
@@ -1045,18 +1024,128 @@ def _normalize_scroll_coordinate_picker_browser(browser):
     }.get(str(browser or 'chrome').lower(), 'chromium')
 
 
+def _get_scroll_coordinate_picker_browser_channel(browser):
+    browser_key = str(browser or 'chrome').lower()
+    if browser_key == 'chrome':
+        return 'chrome'
+    if browser_key == 'edge':
+        return 'msedge'
+    return ''
+
+
+def _get_scroll_coordinate_picker_launch_args(browser_name):
+    if browser_name != 'chromium':
+        return []
+
+    return [
+        '--disable-blink-features=AutomationControlled',
+        '--ignore-certificate-errors',
+        '--allow-insecure-localhost',
+        '--disable-translate',
+        '--disable-features=Translate,TranslateUI',
+        '--lang=zh-CN',
+        '--start-maximized',
+        '--disable-dev-shm-usage',
+        '--disable-background-timer-throttling',
+        '--disable-renderer-backgrounding',
+        '--enable-webgl',
+        '--enable-webgl2',
+        '--enable-accelerated-2d-canvas',
+        '--ignore-gpu-blocklist',
+    ]
+
+
+def _get_scroll_coordinate_picker_context_options(browser_name):
+    context_options = {
+        'locale': 'zh-CN',
+    }
+    if browser_name == 'chromium':
+        context_options['no_viewport'] = True
+        context_options['extra_http_headers'] = {
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
+        }
+    else:
+        context_options['viewport'] = {'width': 1440, 'height': 900}
+    return context_options
+
+
+def _get_scroll_coordinate_picker_profile_dir(user_id, browser_name, browser_channel, session_id=''):
+    profile_key = re.sub(r'[^A-Za-z0-9_.-]+', '_', browser_channel or browser_name or 'browser')
+    profile_dir = SCROLL_COORDINATE_PICKER_PROFILE_ROOT / f'user-{int(user_id)}' / profile_key
+    if session_id:
+        profile_dir = profile_dir / f'session-{str(session_id)[:12]}'
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    return str(profile_dir)
+
+
+def _launch_scroll_coordinate_picker_context(playwright, session, browser_launcher):
+    browser_name = session.get('browser_name') or 'chromium'
+    browser_channel = session.get('browser_channel') or ''
+    launch_args = _get_scroll_coordinate_picker_launch_args(browser_name)
+    context_options = _get_scroll_coordinate_picker_context_options(browser_name)
+
+    if browser_name == 'chromium':
+        user_data_dir = _get_scroll_coordinate_picker_profile_dir(
+            session.get('user_id') or 0,
+            browser_name,
+            browser_channel,
+        )
+        launch_kwargs = {
+            **context_options,
+            'headless': False,
+            'args': launch_args,
+        }
+        if browser_channel:
+            launch_kwargs['channel'] = browser_channel
+
+        try:
+            return browser_launcher.launch_persistent_context(user_data_dir, **launch_kwargs)
+        except Exception:
+            if not browser_channel:
+                session_profile_dir = _get_scroll_coordinate_picker_profile_dir(
+                    session.get('user_id') or 0,
+                    browser_name,
+                    browser_channel,
+                    session_id=session.get('session_id') or '',
+                )
+                logger.warning('使用持久化浏览器目录启动采集失败，回退到本次会话专用目录', exc_info=True)
+                return browser_launcher.launch_persistent_context(session_profile_dir, **launch_kwargs)
+            logger.warning('使用系统浏览器通道 %s 启动画布采集失败，回退到 Playwright Chromium', browser_channel, exc_info=True)
+            launch_kwargs.pop('channel', None)
+            try:
+                return browser_launcher.launch_persistent_context(user_data_dir, **launch_kwargs)
+            except Exception:
+                session_profile_dir = _get_scroll_coordinate_picker_profile_dir(
+                    session.get('user_id') or 0,
+                    browser_name,
+                    browser_channel,
+                    session_id=session.get('session_id') or '',
+                )
+                logger.warning('使用持久化浏览器目录启动采集失败，回退到本次会话专用目录', exc_info=True)
+                return browser_launcher.launch_persistent_context(session_profile_dir, **launch_kwargs)
+
+    return browser_launcher.launch_persistent_context(
+        _get_scroll_coordinate_picker_profile_dir(session.get('user_id') or 0, browser_name, browser_channel),
+        headless=False,
+        args=launch_args,
+        **context_options,
+    )
+
+
 def _create_scroll_coordinate_picker_session(user_id, base_url, browser='chrome', picker_element_data=None):
     _cleanup_scroll_coordinate_picker_sessions(user_id=user_id)
     _close_user_scroll_coordinate_picker_sessions(user_id)
 
     try:
         browser_name = _normalize_scroll_coordinate_picker_browser(browser)
+        browser_channel = _get_scroll_coordinate_picker_browser_channel(browser)
         session_id = uuid.uuid4().hex
         session = {
             'session_id': session_id,
             'user_id': user_id,
             'base_url': base_url,
             'browser_name': browser_name,
+            'browser_channel': browser_channel,
             'picker_element_data': picker_element_data or None,
             'created_at': time.time(),
             'last_used_at': time.time(),
@@ -1185,15 +1274,21 @@ def start_scroll_coordinate_picker(request):
                 picker_element_data=picker_element_data,
             )
             wait_local_scroll_coordinate_picker_ready(session, timeout=45)
+            start_payload = session.get('start_payload') or {}
             return Response({
                 'session_id': session['session_id'],
                 'base_url': session['base_url'],
                 'browser': session.get('browser_name') or 'chromium',
+                'browser_channel': session.get('browser_channel') or '',
                 'mode': 'local',
                 'runner_id': runner.id,
                 'runner_name': runner.name,
                 'target_scope': 'element' if picker_element_data else 'window',
                 'target_name': picker_element_data.get('name', '') if picker_element_data else '',
+                'current_url': start_payload.get('url') or '',
+                'current_title': start_payload.get('title') or '',
+                'navigation_error': start_payload.get('navigation_error') or '',
+                'page_diagnostics': start_payload.get('page_diagnostics') or {},
             })
 
         session = _create_scroll_coordinate_picker_session(
@@ -1203,12 +1298,13 @@ def start_scroll_coordinate_picker(request):
             picker_element_data=picker_element_data,
         )
         return Response({
-            'session_id': session['session_id'],
-            'base_url': session['base_url'],
-            'browser': session.get('browser_name') or 'chromium',
-            'mode': 'server',
-            'target_scope': 'element' if picker_element_data else 'window',
-            'target_name': picker_element_data.get('name', '') if picker_element_data else '',
+                'session_id': session['session_id'],
+                'base_url': session['base_url'],
+                'browser': session.get('browser_name') or 'chromium',
+                'browser_channel': session.get('browser_channel') or '',
+                'mode': 'server',
+                'target_scope': 'element' if picker_element_data else 'window',
+                'target_name': picker_element_data.get('name', '') if picker_element_data else '',
         })
     except Exception as exc:
         logger.exception('启动滚动坐标采集浏览器失败')
@@ -1363,7 +1459,7 @@ def _record_step_failure(
     return False
 
 
-def _append_skipped_step_result(step_results, step_number, action_type, description):
+def _append_skipped_step_result(step_results, step_number, action_type, description, message='步骤已禁用，已跳过执行'):
     step_results.append({
         'step_number': step_number,
         'action_type': action_type,
@@ -1371,7 +1467,7 @@ def _append_skipped_step_result(step_results, step_number, action_type, descript
         'success': True,
         'error': None,
         'status': 'skipped',
-        'message': '步骤已禁用，已跳过执行'
+        'message': message
     })
 
 
@@ -1686,6 +1782,7 @@ def build_test_case_manifest_item(test_case):
             'save_as': step.save_as or '',
             'transaction_id': step.transaction_id or '',
             'transaction_name': step.transaction_name or '',
+            'transaction_disabled': step.transaction_disabled,
             'element': build_element_manifest_item(step.element) if step.element else None,
             'drag_target_element': build_element_manifest_item(drag_target_element) if drag_target_element else None,
         })
@@ -1756,6 +1853,7 @@ def resolve_imported_test_case_step(project, step_data, created_by=None, overwri
         'save_as': str(step_data.get('save_as', '') or '').strip(),
         'transaction_id': transaction_id,
         'transaction_name': transaction_name,
+        'transaction_disabled': normalize_import_bool(step_data.get('transaction_disabled', False), False),
         'element': element,
     }
 
@@ -1792,6 +1890,7 @@ def validate_test_case_steps_payload(steps_data):
         step_data['save_as'] = save_as
         step_data['transaction_id'] = transaction_id
         step_data['transaction_name'] = transaction_name
+        step_data['transaction_disabled'] = normalize_import_bool(step_data.get('transaction_disabled', False), False)
         validated_steps.append(step_data)
 
     return validated_steps
@@ -1871,6 +1970,7 @@ def import_test_case_manifest_into_project(project, manifest, user, overwrite=Fa
                     save_as=resolved_step['save_as'],
                     transaction_id=resolved_step['transaction_id'],
                     transaction_name=resolved_step['transaction_name'],
+                    transaction_disabled=resolved_step.get('transaction_disabled', False),
                 )
 
     return summary
@@ -1916,6 +2016,7 @@ def build_test_case_step_payload(step):
         'save_as': step.save_as or '',
         'transaction_id': step.transaction_id or '',
         'transaction_name': step.transaction_name or '',
+        'transaction_disabled': step.transaction_disabled,
     }
 
 
@@ -1944,7 +2045,8 @@ def create_test_case_steps(test_case, steps_data):
                 is_enabled=step_data.get('is_enabled', True),
                 save_as=step_data.get('save_as', ''),
                 transaction_id=step_data.get('transaction_id', ''),
-                transaction_name=step_data.get('transaction_name', '')
+                transaction_name=step_data.get('transaction_name', ''),
+                transaction_disabled=step_data.get('transaction_disabled', False)
             )
             created_count += 1
         except Exception as exc:
@@ -3277,7 +3379,8 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                     is_enabled=step.is_enabled,
                     save_as=step.save_as,
                     transaction_id=step.transaction_id,
-                    transaction_name=step.transaction_name
+                    transaction_name=step.transaction_name,
+                    transaction_disabled=step.transaction_disabled
                 ))
 
             if new_steps:
@@ -3642,6 +3745,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                     'action_type': step.action_type,
                     'description': step.description,
                     'is_enabled': step.is_enabled,
+                    'transaction_disabled': step.transaction_disabled,
                     'save_as': step.save_as,
                     'input_value': step.input_value,
                     'wait_time': step.wait_time,
@@ -3768,10 +3872,11 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                                 else:
                                     execution_logs.append(f"  (此步骤不需要元素)")
 
-                                if step_info.get('is_enabled', True) is False:
-                                    execution_logs.append("  步骤已禁用，已跳过执行")
+                                if step_info.get('is_enabled', True) is False or step_info.get('transaction_disabled', False) is True:
+                                    skip_message = '事务块已禁用，已跳过执行' if step_info.get('transaction_disabled', False) is True else '步骤已禁用，已跳过执行'
+                                    execution_logs.append(f"  {skip_message}")
                                     execution_logs.append("")
-                                    _append_skipped_step_result(step_results, i, action_type, description)
+                                    _append_skipped_step_result(step_results, i, action_type, description, skip_message)
                                     continue
 
                                 try:
@@ -3980,10 +4085,11 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                                         else:
                                             execution_logs.append(f"  (此步骤不需要元素)")
 
-                                        if step_info.get('is_enabled', True) is False:
-                                            execution_logs.append("  步骤已禁用，已跳过执行")
+                                        if step_info.get('is_enabled', True) is False or step_info.get('transaction_disabled', False) is True:
+                                            skip_message = '事务块已禁用，已跳过执行' if step_info.get('transaction_disabled', False) is True else '步骤已禁用，已跳过执行'
+                                            execution_logs.append(f"  {skip_message}")
                                             execution_logs.append("")
-                                            _append_skipped_step_result(step_results, i, action_type, description)
+                                            _append_skipped_step_result(step_results, i, action_type, description, skip_message)
                                             continue
 
                                         # 执行步骤
@@ -4638,6 +4744,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                         'action_type': step.action_type,
                                         'description': step.description,
                                         'is_enabled': step.is_enabled,
+                                        'transaction_disabled': step.transaction_disabled,
                                         'save_as': step.save_as,
                                         'input_value': step.input_value,
                                         'wait_time': step.wait_time,
@@ -4709,13 +4816,15 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                             action_type = step_info['action_type']
                                             element_data = step_info['element_data']
 
-                                            if step_info.get('is_enabled', True) is False:
-                                                execution_logs.append(f"步骤 {i}: 已禁用，跳过执行")
+                                            if step_info.get('is_enabled', True) is False or step_info.get('transaction_disabled', False) is True:
+                                                skip_message = '事务块已禁用，已跳过执行' if step_info.get('transaction_disabled', False) is True else '步骤已禁用，已跳过执行'
+                                                execution_logs.append(f"步骤 {i}: {skip_message}")
                                                 _append_skipped_step_result(
                                                     step_results,
                                                     i,
                                                     action_type,
                                                     step_info['description'],
+                                                    skip_message,
                                                 )
                                                 continue
 
@@ -4811,13 +4920,15 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                                 action_type = step_info['action_type']
                                                 element_data = step_info['element_data']
 
-                                                if step_info.get('is_enabled', True) is False:
-                                                    execution_logs.append(f"步骤 {i}: 已禁用，跳过执行")
+                                                if step_info.get('is_enabled', True) is False or step_info.get('transaction_disabled', False) is True:
+                                                    skip_message = '事务块已禁用，已跳过执行' if step_info.get('transaction_disabled', False) is True else '步骤已禁用，已跳过执行'
+                                                    execution_logs.append(f"步骤 {i}: {skip_message}")
                                                     _append_skipped_step_result(
                                                         step_results,
                                                         i,
                                                         action_type,
                                                         step_info['description'],
+                                                        skip_message,
                                                     )
                                                     continue
 

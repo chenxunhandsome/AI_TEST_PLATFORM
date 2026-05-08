@@ -21,6 +21,34 @@ from .variable_resolver import (
 
 logger = logging.getLogger(__name__)
 RUNTIME_VARIABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+DEFAULT_STEP_WAIT_TIME_MS = 1000
+DEFAULT_ELEMENT_TIMEOUT_MS = 5000
+
+
+def _normalize_positive_number(value):
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError):
+        return None
+    if normalized <= 0:
+        return None
+    return normalized
+
+
+def resolve_element_action_timeout_ms(step, element_data: Dict) -> int:
+    """Resolve timeout for element actions without letting element default hide manual step timeout."""
+    step_wait_time = _normalize_positive_number(getattr(step, 'wait_time', None))
+    if step_wait_time and int(step_wait_time) != DEFAULT_STEP_WAIT_TIME_MS:
+        return int(step_wait_time)
+
+    element_wait_timeout = _normalize_positive_number((element_data or {}).get('wait_timeout'))
+    if element_wait_timeout:
+        return int(element_wait_timeout * 1000)
+
+    if step_wait_time:
+        return int(step_wait_time)
+
+    return DEFAULT_ELEMENT_TIMEOUT_MS
 
 
 def append_runtime_variable_log(step, log, value):
@@ -445,6 +473,22 @@ class PlaywrightTestEngine:
                 except Exception:
                     continue
 
+        # Fixed page indexes are useful during coordinate collection, but during
+        # execution they can become stale after a switchTab step. Only honor the
+        # saved index when the payload explicitly opts in.
+        if not payload.get('lock_page_index'):
+            if self.page is not None:
+                try:
+                    if not self.page.is_closed():
+                        return self.page
+                except Exception:
+                    pass
+
+            if pages:
+                self.page = pages[-1]
+                return self.page
+            return self.page
+
         page_index = payload.get('page_index')
         if page_index is None:
             page_index = payload.get('active_page_index')
@@ -456,13 +500,6 @@ class PlaywrightTestEngine:
         if pages and page_index is not None and 0 <= page_index < len(pages):
             self.page = pages[page_index]
             return self.page
-
-        if self.page is not None:
-            try:
-                if not self.page.is_closed():
-                    return self.page
-            except Exception:
-                pass
 
         if pages:
             self.page = pages[-1]
@@ -788,15 +825,7 @@ class PlaywrightTestEngine:
             # 获取强制操作选项（用于visibility:hidden的元素）
             force_action = element_data.get('force_action', False)
 
-            # 计算超时时间：优先使用元素的wait_timeout（秒），其次使用步骤的wait_time（毫秒）
-            # 如果元素有wait_timeout，转换为毫秒；否则使用步骤的wait_time
-            element_wait_timeout = element_data.get('wait_timeout')  # 秒
-            if element_wait_timeout is not None and element_wait_timeout > 0:
-                timeout_ms = element_wait_timeout * 1000  # 转换为毫秒
-            elif step.wait_time:
-                timeout_ms = step.wait_time
-            else:
-                timeout_ms = 5000  # 默认5秒
+            timeout_ms = resolve_element_action_timeout_ms(step, element_data)
 
             # 根据定位策略获取元素
             if locator_strategy.lower() == 'id':

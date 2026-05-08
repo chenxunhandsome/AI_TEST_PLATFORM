@@ -605,7 +605,7 @@ class TestCaseStepSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'step_number', 'action_type', 'element', 'element_name', 'element_locator',
             'input_value', 'wait_time', 'assert_type', 'assert_value', 'description', 'is_enabled',
-            'save_as', 'transaction_id', 'transaction_name', 'created_at'
+            'save_as', 'transaction_id', 'transaction_name', 'transaction_disabled', 'created_at'
         ]
 
 
@@ -733,68 +733,79 @@ class AITestCaseGenerationSkillSerializer(serializers.ModelSerializer):
 
 
 class AITestCaseGenerationSkillCategorySerializer(serializers.ModelSerializer):
-    """Serializer for AI UI generation skill categories."""
+    """Serializer for modular AI generation skill categories."""
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
 
     class Meta:
         model = AITestCaseGenerationSkillCategory
         fields = [
             'id', 'name', 'code', 'description', 'order', 'is_active',
-            'created_at', 'updated_at'
-        ]
-        read_only_fields = ['created_at', 'updated_at']
-
-
-class AITestCaseGenerationSkillModuleSerializer(serializers.ModelSerializer):
-    """Serializer for routed AI UI generation skill modules."""
-    category_name = serializers.CharField(source='category.name', read_only=True)
-    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
-
-    class Meta:
-        model = AITestCaseGenerationSkillModule
-        fields = [
-            'id', 'category', 'category_name', 'name', 'code', 'module_type',
-            'description', 'summary', 'content', 'keywords', 'intents', 'pages',
-            'config', 'priority', 'max_prompt_chars', 'is_active',
             'created_by', 'created_by_name', 'created_at', 'updated_at'
         ]
         read_only_fields = ['created_by', 'created_at', 'updated_at']
 
     def create(self, validated_data):
-        request = self.context.get('request')
-        if request and request.user and request.user.is_authenticated:
-            validated_data['created_by'] = request.user
+        validated_data['created_by'] = self.context['request'].user
         return super().create(validated_data)
 
 
 class AITestCaseGenerationSkillTriggerSerializer(serializers.ModelSerializer):
-    """Serializer for AI UI generation skill module triggers."""
-    module_name = serializers.CharField(source='module.name', read_only=True)
+    """Serializer for modular AI generation skill triggers."""
 
     class Meta:
         model = AITestCaseGenerationSkillTrigger
         fields = [
-            'id', 'module', 'module_name', 'trigger_type', 'value', 'weight',
-            'is_active', 'created_at', 'updated_at'
+            'id', 'module', 'trigger_type', 'value', 'weight', 'is_active',
+            'created_at', 'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at']
 
 
 class AITestCaseGenerationSkillDependencySerializer(serializers.ModelSerializer):
-    """Serializer for AI UI generation skill module dependencies."""
-    module_name = serializers.CharField(source='module.name', read_only=True)
-    depends_on_name = serializers.CharField(source='depends_on.name', read_only=True)
+    """Serializer for modular AI generation skill dependencies."""
+    module_code = serializers.CharField(source='module.code', read_only=True)
+    depends_on_code = serializers.CharField(source='depends_on.code', read_only=True)
 
     class Meta:
         model = AITestCaseGenerationSkillDependency
-        fields = [
-            'id', 'module', 'module_name', 'depends_on', 'depends_on_name',
-            'created_at'
-        ]
+        fields = ['id', 'module', 'module_code', 'depends_on', 'depends_on_code', 'created_at']
         read_only_fields = ['created_at']
 
 
+class AITestCaseGenerationSkillModuleSerializer(serializers.ModelSerializer):
+    """Serializer for reusable modular AI generation skill modules."""
+    category_name = serializers.CharField(source='category.name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+    triggers = AITestCaseGenerationSkillTriggerSerializer(many=True, read_only=True)
+    dependencies = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AITestCaseGenerationSkillModule
+        fields = [
+            'id', 'name', 'code', 'category', 'category_name', 'module_type',
+            'description', 'summary', 'content', 'keywords', 'intents', 'pages',
+            'config', 'priority', 'max_prompt_chars', 'is_active', 'triggers',
+            'dependencies', 'created_by', 'created_by_name', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['created_by', 'created_at', 'updated_at']
+
+    def get_dependencies(self, obj):
+        return [
+            {
+                'id': edge.depends_on_id,
+                'code': edge.depends_on.code,
+                'name': edge.depends_on.name,
+            }
+            for edge in obj.dependency_edges.select_related('depends_on').all()
+        ]
+
+    def create(self, validated_data):
+        validated_data['created_by'] = self.context['request'].user
+        return super().create(validated_data)
+
+
 class AITestCaseGenerationSkillExecutionLogSerializer(serializers.ModelSerializer):
-    """Serializer for AI UI generation skill routing logs."""
+    """Serializer for skill routing debug logs."""
     project_name = serializers.CharField(source='project.name', read_only=True)
     root_skill_name = serializers.CharField(source='root_skill.name', read_only=True)
     created_by_name = serializers.CharField(source='created_by.username', read_only=True)
@@ -803,11 +814,10 @@ class AITestCaseGenerationSkillExecutionLogSerializer(serializers.ModelSerialize
         model = AITestCaseGenerationSkillExecutionLog
         fields = [
             'id', 'project', 'project_name', 'root_skill', 'root_skill_name',
-            'source_text', 'detected_intents', 'detected_entities',
-            'selected_modules', 'prompt_chars', 'warnings',
-            'created_by', 'created_by_name', 'created_at'
+            'source_text', 'detected_intents', 'detected_entities', 'selected_modules',
+            'prompt_chars', 'warnings', 'created_by', 'created_by_name', 'created_at'
         ]
-        read_only_fields = ['created_by', 'created_at']
+        read_only_fields = fields
 
 
 class AITestCaseGenerationRecordSerializer(serializers.ModelSerializer):

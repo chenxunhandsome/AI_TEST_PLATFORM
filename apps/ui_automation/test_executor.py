@@ -83,6 +83,11 @@ def _normalize_step_result(step_result):
 
 
 def _build_skipped_step_result(step_data):
+    message = (
+        '事务块已禁用，已跳过执行'
+        if step_data.get('transaction_disabled', False) is True
+        else '步骤已禁用，已跳过执行'
+    )
     return {
         'step_number': step_data['step_number'],
         'action_type': step_data['action_type'],
@@ -90,7 +95,7 @@ def _build_skipped_step_result(step_data):
         'success': True,
         'error': None,
         'status': 'skipped',
-        'message': '步骤已禁用，已跳过执行',
+        'message': message,
     }
 
 
@@ -501,6 +506,7 @@ class TestExecutor:
                     'action_type': step.action_type,
                     'description': step.description,
                     'is_enabled': step.is_enabled,
+                    'transaction_disabled': step.transaction_disabled,
                     'save_as': step.save_as or '',
                     'input_value': step.input_value,
                     'wait_time': step.wait_time,
@@ -739,7 +745,7 @@ class TestExecutor:
                 step_data['_just_switched_tab'] = just_switched_tab
                 just_switched_tab = False  # 重置标志
 
-                if step_data.get('is_enabled', True) is False:
+                if step_data.get('is_enabled', True) is False or step_data.get('transaction_disabled', False) is True:
                     result['steps'].append(_build_skipped_step_result(step_data))
                     continue
 
@@ -904,7 +910,7 @@ class TestExecutor:
         try:
             # 遍历预先准备好的步骤数据
             for step_data in case_data['steps']:
-                if step_data.get('is_enabled', True) is False:
+                if step_data.get('is_enabled', True) is False or step_data.get('transaction_disabled', False) is True:
                     result['steps'].append(_build_skipped_step_result(step_data))
                     continue
 
@@ -1753,6 +1759,7 @@ class TestExecutor:
                     'action_type': step.action_type,
                     'description': step.description,
                     'is_enabled': step.is_enabled,
+                    'transaction_disabled': step.transaction_disabled,
                     'save_as': step.save_as or '',
                     'input_value': step.input_value,
                     'wait_time': step.wait_time,
@@ -2241,11 +2248,7 @@ class TestExecutor:
             initialize_project_runtime_variables(global_variables=case_data.get('project_global_variables'))
             # 遍历预先准备好的步骤数据
             for step_data in case_data['steps']:
-                if step_data.get('is_enabled', True) is False:
-                    result['steps'].append(_build_skipped_step_result(step_data))
-                    continue
-
-                if step_data.get('is_enabled', True) is False:
+                if step_data.get('is_enabled', True) is False or step_data.get('transaction_disabled', False) is True:
                     result['steps'].append(_build_skipped_step_result(step_data))
                     continue
 

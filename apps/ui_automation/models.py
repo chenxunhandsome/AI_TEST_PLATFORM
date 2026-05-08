@@ -697,6 +697,7 @@ class TestCaseStep(models.Model):
     save_as = models.CharField(max_length=100, blank=True, verbose_name='Stored Variable Name')
     transaction_id = models.CharField(max_length=64, blank=True, db_index=True, verbose_name='事务块ID')
     transaction_name = models.CharField(max_length=100, blank=True, verbose_name='事务块名称')
+    transaction_disabled = models.BooleanField(default=False, verbose_name='事务块是否禁用')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
 
     class Meta:
@@ -1163,12 +1164,20 @@ class AITestCaseGenerationSkill(models.Model):
 
 
 class AITestCaseGenerationSkillCategory(models.Model):
-    """Category for modular AI UI test case generation skills."""
+    """Category for modular AI UI generation skills."""
     name = models.CharField(max_length=120, verbose_name='Category Name')
     code = models.CharField(max_length=120, unique=True, verbose_name='Category Code')
     description = models.TextField(blank=True, verbose_name='Description')
     order = models.IntegerField(default=0, verbose_name='Order')
     is_active = models.BooleanField(default=True, verbose_name='Active')
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_ui_ai_generation_skill_categories',
+        verbose_name='Created By'
+    )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created At')
     updated_at = models.DateTimeField(auto_now=True, verbose_name='Updated At')
 
@@ -1183,14 +1192,16 @@ class AITestCaseGenerationSkillCategory(models.Model):
 
 
 class AITestCaseGenerationSkillModule(models.Model):
-    """Reusable routed skill module for AI UI test case generation."""
+    """Reusable modular skill selected by the generation router."""
     MODULE_TYPE_CHOICES = [
-        ('global', 'Global'),
-        ('page', 'Page'),
+        ('global', 'Global Rule'),
+        ('page', 'Page Module'),
         ('business_flow', 'Business Flow'),
-        ('repair', 'Repair'),
+        ('repair', 'Repair Rule'),
     ]
 
+    name = models.CharField(max_length=160, verbose_name='Module Name')
+    code = models.CharField(max_length=160, unique=True, verbose_name='Module Code')
     category = models.ForeignKey(
         AITestCaseGenerationSkillCategory,
         on_delete=models.SET_NULL,
@@ -1199,18 +1210,16 @@ class AITestCaseGenerationSkillModule(models.Model):
         related_name='modules',
         verbose_name='Category'
     )
-    name = models.CharField(max_length=160, verbose_name='Module Name')
-    code = models.CharField(max_length=160, unique=True, verbose_name='Module Code')
-    module_type = models.CharField(max_length=32, choices=MODULE_TYPE_CHOICES, default='business_flow', verbose_name='Module Type')
+    module_type = models.CharField(max_length=30, choices=MODULE_TYPE_CHOICES, default='business_flow', verbose_name='Module Type')
     description = models.TextField(blank=True, verbose_name='Description')
     summary = models.TextField(blank=True, verbose_name='Summary')
-    content = models.TextField(verbose_name='Content')
+    content = models.TextField(verbose_name='Module Content')
     keywords = models.JSONField(default=list, blank=True, verbose_name='Keywords')
     intents = models.JSONField(default=list, blank=True, verbose_name='Intents')
     pages = models.JSONField(default=list, blank=True, verbose_name='Pages')
     config = models.JSONField(default=dict, blank=True, verbose_name='Config')
     priority = models.IntegerField(default=0, verbose_name='Priority')
-    max_prompt_chars = models.IntegerField(default=4000, verbose_name='Max Prompt Characters')
+    max_prompt_chars = models.IntegerField(default=4000, verbose_name='Max Prompt Chars')
     is_active = models.BooleanField(default=True, verbose_name='Active')
     created_by = models.ForeignKey(
         User,
@@ -1238,7 +1247,7 @@ class AITestCaseGenerationSkillModule(models.Model):
 
 
 class AITestCaseGenerationSkillTrigger(models.Model):
-    """Explicit trigger used by routed AI generation skill modules."""
+    """Trigger used by the router to select a skill module."""
     TRIGGER_TYPE_CHOICES = [
         ('keyword', 'Keyword'),
         ('regex', 'Regex'),
@@ -1253,8 +1262,8 @@ class AITestCaseGenerationSkillTrigger(models.Model):
         related_name='triggers',
         verbose_name='Module'
     )
-    trigger_type = models.CharField(max_length=32, choices=TRIGGER_TYPE_CHOICES, default='keyword', verbose_name='Trigger Type')
-    value = models.CharField(max_length=500, verbose_name='Value')
+    trigger_type = models.CharField(max_length=30, choices=TRIGGER_TYPE_CHOICES, default='keyword', verbose_name='Trigger Type')
+    value = models.CharField(max_length=300, verbose_name='Trigger Value')
     weight = models.IntegerField(default=50, verbose_name='Weight')
     is_active = models.BooleanField(default=True, verbose_name='Active')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created At')
@@ -1264,28 +1273,27 @@ class AITestCaseGenerationSkillTrigger(models.Model):
         db_table = 'ui_ai_test_case_generation_skill_triggers'
         verbose_name = 'UI AI Test Case Generation Skill Trigger'
         verbose_name_plural = 'UI AI Test Case Generation Skill Triggers'
-        unique_together = ['module', 'trigger_type', 'value']
-        ordering = ['module', '-weight', 'trigger_type', 'value']
+        ordering = ['-weight', 'trigger_type', 'value']
         indexes = [
             models.Index(fields=['trigger_type', 'is_active']),
         ]
 
     def __str__(self):
-        return f'{self.module.code}:{self.trigger_type}:{self.value}'
+        return f'{self.module.code}: {self.trigger_type}={self.value}'
 
 
 class AITestCaseGenerationSkillDependency(models.Model):
-    """Dependency between routed AI generation skill modules."""
+    """Dependency edge between skill modules."""
     module = models.ForeignKey(
         AITestCaseGenerationSkillModule,
         on_delete=models.CASCADE,
-        related_name='dependencies',
+        related_name='dependency_edges',
         verbose_name='Module'
     )
     depends_on = models.ForeignKey(
         AITestCaseGenerationSkillModule,
         on_delete=models.CASCADE,
-        related_name='dependents',
+        related_name='dependent_edges',
         verbose_name='Depends On'
     )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created At')
@@ -1301,7 +1309,7 @@ class AITestCaseGenerationSkillDependency(models.Model):
 
 
 class AITestCaseGenerationSkillExecutionLog(models.Model):
-    """Routing log for AI UI test case generation skill modules."""
+    """Debug log for modular skill routing and prompt composition."""
     project = models.ForeignKey(
         UiProject,
         on_delete=models.CASCADE,
@@ -1320,14 +1328,14 @@ class AITestCaseGenerationSkillExecutionLog(models.Model):
     detected_intents = models.JSONField(default=list, blank=True, verbose_name='Detected Intents')
     detected_entities = models.JSONField(default=dict, blank=True, verbose_name='Detected Entities')
     selected_modules = models.JSONField(default=list, blank=True, verbose_name='Selected Modules')
-    prompt_chars = models.IntegerField(default=0, verbose_name='Prompt Characters')
+    prompt_chars = models.IntegerField(default=0, verbose_name='Prompt Chars')
     warnings = models.JSONField(default=list, blank=True, verbose_name='Warnings')
     created_by = models.ForeignKey(
         User,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='created_ui_ai_generation_skill_execution_logs',
+        related_name='ui_ai_generation_skill_execution_logs',
         verbose_name='Created By'
     )
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created At')
@@ -1337,13 +1345,9 @@ class AITestCaseGenerationSkillExecutionLog(models.Model):
         verbose_name = 'UI AI Test Case Generation Skill Execution Log'
         verbose_name_plural = 'UI AI Test Case Generation Skill Execution Logs'
         ordering = ['-created_at']
-        indexes = [
-            models.Index(fields=['project', '-created_at']),
-            models.Index(fields=['root_skill', '-created_at']),
-        ]
 
     def __str__(self):
-        return f'{self.project_id}:{self.root_skill_id or ""}:{self.created_at}'
+        return f'{self.project_id} {self.created_at}'
 
 
 class AITestCaseGenerationRecord(models.Model):

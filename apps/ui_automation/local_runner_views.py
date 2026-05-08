@@ -1,3 +1,5 @@
+import json
+
 from django.db import transaction
 from django.utils import timezone
 from rest_framework import status, viewsets
@@ -16,6 +18,36 @@ from .scroll_coordinate_picker import (
     report_local_scroll_coordinate_picker_task,
 )
 from .serializers import LocalRunnerSerializer, TestCaseExecutionSerializer
+
+
+def _parse_reported_step_results(logs):
+    try:
+        parsed = json.loads(logs or '[]')
+    except (TypeError, ValueError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _validate_local_execution_integrity(execution, reported_status, logs, error_message):
+    if reported_status != 'passed':
+        return reported_status, error_message
+
+    planned_step_count = execution.test_case.steps.count()
+    if planned_step_count <= 0:
+        return reported_status, error_message
+
+    reported_step_count = len(_parse_reported_step_results(logs))
+    if reported_step_count >= planned_step_count:
+        return reported_status, error_message
+
+    integrity_error = (
+        f'本地执行器执行步骤不完整: 当前用例计划 {planned_step_count} 步，'
+        f'本地执行器只上报 {reported_step_count} 步，已阻止错误标记为成功。'
+        f'请同步并重启本地执行器后重新执行。'
+    )
+    if error_message:
+        integrity_error = f'{error_message}\n{integrity_error}'
+    return 'failed', integrity_error
 
 
 class LocalRunnerViewSet(viewsets.ReadOnlyModelViewSet):
@@ -165,6 +197,7 @@ class LocalRunnerViewSet(viewsets.ReadOnlyModelViewSet):
         try:
             execution = TestCaseExecution.objects.select_related(
                 'assigned_runner',
+                'test_case',
                 'test_suite',
                 'scheduled_task',
             ).get(
@@ -179,12 +212,20 @@ class LocalRunnerViewSet(viewsets.ReadOnlyModelViewSet):
         reported_status = request.data.get('status') or ('passed' if request.data.get('success') else 'failed')
         if reported_status not in {'passed', 'failed', 'error'}:
             reported_status = 'error'
+        execution_logs = request.data.get('logs', '')
+        error_message = request.data.get('error_message', '')
+        reported_status, error_message = _validate_local_execution_integrity(
+            execution,
+            reported_status,
+            execution_logs,
+            error_message,
+        )
 
         execution.status = reported_status
-        execution.execution_logs = request.data.get('logs', '')
+        execution.execution_logs = execution_logs
         execution.screenshots = request.data.get('screenshots') or []
         execution.execution_time = request.data.get('execution_time') or 0
-        execution.error_message = request.data.get('error_message', '')
+        execution.error_message = error_message
         execution.finished_at = timezone.now()
         execution.save(
             update_fields=[

@@ -33,6 +33,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 RUNTIME_VARIABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+DEFAULT_STEP_WAIT_TIME_MS = 1000
+DEFAULT_ELEMENT_TIMEOUT_SECONDS = 5
 CHROMIUM_DISABLED_FEATURES = (
     'PasswordLeakDetection',
     'PrivacySandboxSettings4',
@@ -44,6 +46,32 @@ CHROMIUM_DISABLED_FEATURES = (
     'HeaderUI',
     'AccountConsistency',
 )
+
+
+def _normalize_positive_number(value):
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError):
+        return None
+    if normalized <= 0:
+        return None
+    return normalized
+
+
+def resolve_element_action_timeout_seconds(step, element_data: Dict) -> float:
+    """Resolve timeout for element actions without letting element default hide manual step timeout."""
+    step_wait_time = _normalize_positive_number(getattr(step, 'wait_time', None))
+    if step_wait_time and int(step_wait_time) != DEFAULT_STEP_WAIT_TIME_MS:
+        return step_wait_time / 1000
+
+    element_wait_timeout = _normalize_positive_number((element_data or {}).get('wait_timeout'))
+    if element_wait_timeout:
+        return element_wait_timeout
+
+    if step_wait_time:
+        return step_wait_time / 1000
+
+    return DEFAULT_ELEMENT_TIMEOUT_SECONDS
 
 
 def append_runtime_variable_log(step, log, value):
@@ -453,6 +481,9 @@ class SeleniumTestEngine:
             return None
 
         handles = list(self.driver.window_handles)
+        if not payload.get('lock_page_index'):
+            return self.driver
+
         page_index = payload.get('page_index')
         if page_index is None:
             page_index = payload.get('active_page_index')
@@ -815,14 +846,7 @@ class SeleniumTestEngine:
             # 获取强制操作选项
             force_action = element_data.get('force_action', False)
 
-            # 计算超时时间
-            element_wait_timeout = element_data.get('wait_timeout')
-            if element_wait_timeout is not None and element_wait_timeout > 0:
-                timeout_seconds = element_wait_timeout
-            elif step.wait_time:
-                timeout_seconds = step.wait_time / 1000
-            else:
-                timeout_seconds = 5
+            timeout_seconds = resolve_element_action_timeout_seconds(step, element_data)
 
             # 获取定位器
             by_type, by_value = self._get_locator(locator_strategy, locator_value)

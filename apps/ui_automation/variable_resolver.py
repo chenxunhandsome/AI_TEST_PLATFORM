@@ -54,6 +54,10 @@ def parse_scroll_action_payload(input_value):
     if direction not in {'vertical', 'horizontal', 'up', 'down'}:
         direction = 'vertical'
 
+    scroll_scope = str(payload.get('scroll_scope') or 'window').strip().lower()
+    if scroll_scope not in {'window', 'element'}:
+        scroll_scope = 'window'
+
     def normalize_int(value):
         if value in (None, ''):
             return None
@@ -65,6 +69,7 @@ def parse_scroll_action_payload(input_value):
     normalized = {
         'scroll_mode': 'coordinates',
         'scroll_direction': direction,
+        'scroll_scope': scroll_scope,
         'start_x': normalize_int(payload.get('start_x')),
         'start_y': normalize_int(payload.get('start_y')),
         'target_x': normalize_int(payload.get('target_x')),
@@ -114,12 +119,20 @@ def parse_canvas_action_payload(input_value):
         except (TypeError, ValueError):
             return default
 
+    def normalize_bool(value, default=False):
+        if isinstance(value, bool):
+            return value
+        if value in (None, ''):
+            return default
+        return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
     frame_selector = str(payload.get('frame_selector') or '').strip() or '#plt-workflow-iframe'
     normalized = {
         'mode': 'canvas',
         'action': action,
         'page_index': normalize_int(payload.get('page_index'), payload.get('active_page_index')),
         'active_page_index': normalize_int(payload.get('active_page_index'), payload.get('page_index')),
+        'lock_page_index': normalize_bool(payload.get('lock_page_index'), False),
         'frame_selector': frame_selector,
         'frame_url': str(payload.get('frame_url') or '').strip(),
         'frame_url_keyword': str(payload.get('frame_url_keyword') or '').strip(),

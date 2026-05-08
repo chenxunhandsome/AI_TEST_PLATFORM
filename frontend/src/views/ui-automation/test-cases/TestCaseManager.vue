@@ -224,9 +224,19 @@
                       <div
                         v-if="shouldRenderTransactionHeader(index)"
                         class="transaction-block"
-                        :class="{ collapsed: isTransactionCollapsed(element.transaction_id) }"
+                        :class="{
+                          collapsed: isTransactionCollapsed(element.transaction_id),
+                          'transaction-block--disabled': isTransactionDisabled(element.transaction_id),
+                          'transaction-block--dragging': draggingTransactionId === getTransactionId(element)
+                        }"
+                        draggable="true"
+                        @dragstart="handleTransactionDragStart(element.transaction_id, $event)"
+                        @dragover.prevent
+                        @drop.prevent="handleTransactionDrop(element.transaction_id, $event)"
+                        @dragend="handleTransactionDragEnd"
                       >
                         <div class="transaction-block-main" @click="toggleTransactionCollapse(element.transaction_id)">
+                          <el-icon class="transaction-block-drag" @click.stop><Rank /></el-icon>
                           <el-icon class="transaction-block-toggle">
                             <component :is="isTransactionCollapsed(element.transaction_id) ? 'ArrowDown' : 'ArrowUp'" />
                           </el-icon>
@@ -239,11 +249,25 @@
                           <el-icon class="transaction-block-icon"><Folder /></el-icon>
                           <span class="transaction-block-name">{{ element.transaction_name }}</span>
                           <el-tag size="small" type="info">{{ getTransactionStepCount(element.transaction_id) }} 步</el-tag>
+                          <el-tag v-if="isTransactionDisabled(element.transaction_id)" size="small" type="warning" effect="plain">已禁用</el-tag>
                           <span class="transaction-block-summary">{{ getTransactionSummary(element.transaction_id) }}</span>
                         </div>
                         <div class="transaction-block-actions" @click.stop>
+                          <el-switch
+                            size="small"
+                            :model-value="!isTransactionDisabled(element.transaction_id)"
+                            active-text="启用"
+                            inactive-text="禁用"
+                            @change="toggleTransactionDisabled(element.transaction_id, $event)"
+                          />
+                          <el-button size="small" text @click="copyTransactionBlock(element.transaction_id)">
+                            复制
+                          </el-button>
                           <el-button size="small" text @click="renameTransactionBlock(element.transaction_id)">
                             重命名
+                          </el-button>
+                          <el-button size="small" text type="danger" @click="deleteTransactionBlock(element.transaction_id)">
+                            删除
                           </el-button>
                           <el-button size="small" text type="danger" @click="clearTransactionBlock(element.transaction_id)">
                             解散事务块
@@ -1708,6 +1732,7 @@ const currentSteps = ref([])
 const selectedStepId = ref(null)
 const checkedStepIds = ref([])
 const transactionCollapseState = ref({})
+const draggingTransactionId = ref('')
 const availableElements = ref([])
 const searchKeyword = ref('')
 const folderFilter = ref('all')
@@ -2308,8 +2333,6 @@ const buildCanvasPayload = (step) => {
   const basePayload = {
     mode: 'canvas',
     action: step.action_type === 'canvasDrag' ? 'drag' : 'click',
-    page_index: hasCoordinateValue(step.canvas_page_index) ? Number(step.canvas_page_index) : undefined,
-    active_page_index: hasCoordinateValue(step.canvas_page_index) ? Number(step.canvas_page_index) : undefined,
     frame_selector: frameSelector,
     frame_url: String(step.canvas_frame_url || '').trim(),
     frame_url_keyword: 'workflow-modeler',
@@ -2394,6 +2417,7 @@ const createStepDraft = (step = {}, expanded = false) => ({
   save_as: step.save_as || '',
   transaction_id: String(step.transaction_id || '').trim(),
   transaction_name: String(step.transaction_name || '').trim(),
+  transaction_disabled: step.transaction_disabled === true,
   expanded
 })
 
@@ -2434,6 +2458,7 @@ const cloneImportedSteps = (sourceSteps = []) => {
     if (!originalTransactionId) {
       clonedStep.transaction_id = ''
       clonedStep.transaction_name = ''
+      clonedStep.transaction_disabled = false
       return clonedStep
     }
 
@@ -2472,6 +2497,10 @@ const getTransactionName = (step) => {
   return String(step?.transaction_name || '').trim()
 }
 
+const getTransactionDisabled = (step) => {
+  return step?.transaction_disabled === true
+}
+
 const hasTransaction = (step) => {
   return Boolean(getTransactionId(step))
 }
@@ -2504,21 +2533,25 @@ const clearTransactionFromSteps = (steps = []) => {
   steps.forEach((step) => {
     step.transaction_id = ''
     step.transaction_name = ''
+    step.transaction_disabled = false
   })
 }
 
 const applyTransactionToStep = (step, transactionSource) => {
   const transactionId = getTransactionId(transactionSource)
   const transactionName = getTransactionName(transactionSource)
+  const transactionDisabled = getTransactionDisabled(transactionSource)
 
   if (!transactionId || !transactionName) {
     step.transaction_id = ''
     step.transaction_name = ''
+    step.transaction_disabled = false
     return
   }
 
   step.transaction_id = transactionId
   step.transaction_name = transactionName
+  step.transaction_disabled = transactionDisabled
 }
 
 const getAdjacentTransactionSource = (index) => {
@@ -2547,6 +2580,7 @@ const normalizeTransactionBlocks = () => {
   let segmentSteps = []
   let segmentTransactionId = ''
   let segmentTransactionName = ''
+  let segmentTransactionDisabled = false
 
   const finalizeSegment = () => {
     if (!segmentSteps.length) {
@@ -2560,6 +2594,7 @@ const normalizeTransactionBlocks = () => {
       segmentSteps.forEach((step) => {
         step.transaction_id = segmentTransactionId
         step.transaction_name = segmentTransactionName
+        step.transaction_disabled = segmentTransactionDisabled
       })
       seenTransactionIds.add(segmentTransactionId)
     }
@@ -2567,6 +2602,7 @@ const normalizeTransactionBlocks = () => {
     segmentSteps = []
     segmentTransactionId = ''
     segmentTransactionName = ''
+    segmentTransactionDisabled = false
   }
 
   currentSteps.value.forEach((step) => {
@@ -2577,12 +2613,14 @@ const normalizeTransactionBlocks = () => {
       finalizeSegment()
       step.transaction_id = ''
       step.transaction_name = ''
+      step.transaction_disabled = false
       return
     }
 
     if (!segmentSteps.length || segmentTransactionId === transactionId) {
       segmentSteps.push(step)
       segmentTransactionId = transactionId
+      segmentTransactionDisabled = segmentTransactionDisabled || getTransactionDisabled(step)
       segmentTransactionName = segmentTransactionName || transactionName || '未命名事务块'
       return
     }
@@ -2590,49 +2628,11 @@ const normalizeTransactionBlocks = () => {
     finalizeSegment()
     segmentSteps = [step]
     segmentTransactionId = transactionId
+    segmentTransactionDisabled = getTransactionDisabled(step)
     segmentTransactionName = transactionName || '未命名事务块'
   })
 
   finalizeSegment()
-
-  syncCheckedStepIds()
-  syncTransactionCollapseMap()
-  return
-
-  const groups = new Map()
-
-  currentSteps.value.forEach((step) => {
-    const transactionId = getTransactionId(step)
-    const transactionName = getTransactionName(step)
-
-    if (!transactionId || !transactionName) {
-      step.transaction_id = ''
-      step.transaction_name = ''
-      return
-    }
-
-    if (!groups.has(transactionId)) {
-      groups.set(transactionId, [])
-    }
-    groups.get(transactionId).push(step)
-  })
-
-  groups.forEach((steps, transactionId) => {
-    if (steps.length < 2) {
-      steps.forEach((step) => {
-        step.transaction_id = ''
-        step.transaction_name = ''
-      })
-      delete transactionCollapseState.value[transactionId]
-      return
-    }
-
-    const transactionName = steps.map(step => getTransactionName(step)).find(Boolean) || '未命名事务块'
-    steps.forEach((step) => {
-      step.transaction_id = transactionId
-      step.transaction_name = transactionName
-    })
-  })
 
   syncCheckedStepIds()
   syncTransactionCollapseMap()
@@ -2701,6 +2701,19 @@ const getTransactionStepCount = (transactionId) => {
   return getTransactionSteps(transactionId).length
 }
 
+const isTransactionDisabled = (transactionId) => {
+  const steps = getTransactionSteps(transactionId)
+  return steps.length > 0 && steps.every(step => step.transaction_disabled === true)
+}
+
+const toggleTransactionDisabled = (transactionId, enabled) => {
+  const disabled = !Boolean(enabled)
+  getTransactionSteps(transactionId).forEach((step) => {
+    step.transaction_disabled = disabled
+  })
+  ElMessage.success(disabled ? '事务块已禁用，执行时将跳过块内所有步骤' : '事务块已启用')
+}
+
 const getTransactionSummary = (transactionId) => {
   const steps = getTransactionSteps(transactionId)
   const labels = steps
@@ -2763,6 +2776,7 @@ const createTransactionBlock = async () => {
       if (isStepChecked(step.id)) {
         step.transaction_id = transactionId
         step.transaction_name = transactionName
+        step.transaction_disabled = false
       }
     })
 
@@ -2789,6 +2803,7 @@ const removeSelectedFromTransaction = () => {
     if (isStepChecked(step.id)) {
       step.transaction_id = ''
       step.transaction_name = ''
+      step.transaction_disabled = false
     }
   })
 
@@ -2824,10 +2839,76 @@ const renameTransactionBlock = async (transactionId) => {
   }
 }
 
+const copyTransactionBlock = (transactionId) => {
+  const steps = getTransactionSteps(transactionId)
+  if (!steps.length) {
+    return
+  }
+
+  const range = getTransactionRange(transactionId)
+  const newTransactionId = createTransactionId()
+  const newTransactionName = `${getTransactionName(steps[0]) || '事务块'} 副本`
+  const transactionDisabled = isTransactionDisabled(transactionId)
+  const copiedSteps = steps.map((step) => {
+    const copiedStep = createStepDraft({
+      ...step,
+      id: null,
+      transaction_id: newTransactionId,
+      transaction_name: newTransactionName,
+      transaction_disabled: transactionDisabled
+    }, false)
+    copiedStep.expanded = false
+    return copiedStep
+  })
+
+  currentSteps.value.splice((range?.end ?? currentSteps.value.length - 1) + 1, 0, ...copiedSteps)
+  selectedStepId.value = copiedSteps[0]?.id ?? null
+  checkedStepIds.value = copiedSteps.map(step => step.id)
+  transactionCollapseState.value = {
+    ...transactionCollapseState.value,
+    [newTransactionId]: false
+  }
+  normalizeTransactionBlocks()
+  ElMessage.success(`已复制事务块“${newTransactionName}”，请保存用例`)
+}
+
+const deleteTransactionBlock = async (transactionId) => {
+  const steps = getTransactionSteps(transactionId)
+  if (!steps.length) {
+    return
+  }
+
+  const transactionName = getTransactionName(steps[0]) || '事务块'
+  try {
+    await ElMessageBox.confirm(
+      `确认删除事务块“${transactionName}”及块内 ${steps.length} 个步骤？此操作保存后生效。`,
+      '删除事务块',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch (error) {
+    return
+  }
+
+  const stepIds = new Set(steps.map(step => String(step.id)))
+  currentSteps.value = currentSteps.value.filter(step => !stepIds.has(String(step.id)))
+  checkedStepIds.value = checkedStepIds.value.filter(id => !stepIds.has(String(id)))
+  if (selectedStepId.value && stepIds.has(String(selectedStepId.value))) {
+    selectedStepId.value = currentSteps.value[0]?.id ?? null
+  }
+  delete transactionCollapseState.value[String(transactionId || '')]
+  normalizeTransactionBlocks()
+  ElMessage.success(`已删除事务块“${transactionName}”，请保存用例`)
+}
+
 const clearTransactionBlock = (transactionId) => {
   getTransactionSteps(transactionId).forEach((step) => {
     step.transaction_id = ''
     step.transaction_name = ''
+    step.transaction_disabled = false
   })
 
   normalizeTransactionBlocks()
@@ -2873,7 +2954,8 @@ const buildStepPayload = (step, index) => ({
   is_enabled: step.is_enabled !== false,
   save_as: canStoreVariable(step.action_type) ? String(step.save_as || '').trim() : '',
   transaction_id: getTransactionId(step),
-  transaction_name: getTransactionName(step)
+  transaction_name: getTransactionName(step),
+  transaction_disabled: hasTransaction(step) && step.transaction_disabled === true
 })
 
 const formatStoredVariable = (name) => {
@@ -3020,6 +3102,73 @@ const normalizeElementSelectorDialogSize = () => {
     Math.max(elementSelectorDialogSize.height, ELEMENT_SELECTOR_MIN_HEIGHT),
     getElementSelectorMaxHeight()
   )
+}
+
+const getTransactionRange = (transactionId) => {
+  const normalizedId = String(transactionId || '')
+  const indices = currentSteps.value.reduce((result, step, index) => {
+    if (getTransactionId(step) === normalizedId) {
+      result.push(index)
+    }
+    return result
+  }, [])
+
+  if (!indices.length) {
+    return null
+  }
+
+  return {
+    start: Math.min(...indices),
+    end: Math.max(...indices),
+    length: indices.length
+  }
+}
+
+const handleTransactionDragStart = (transactionId, event) => {
+  const normalizedId = String(transactionId || '')
+  if (!normalizedId) {
+    return
+  }
+
+  draggingTransactionId.value = normalizedId
+  if (event?.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', normalizedId)
+  }
+}
+
+const handleTransactionDragEnd = () => {
+  draggingTransactionId.value = ''
+}
+
+const handleTransactionDrop = (targetTransactionId, event) => {
+  const sourceTransactionId = draggingTransactionId.value
+  const targetId = String(targetTransactionId || '')
+  draggingTransactionId.value = ''
+
+  if (!sourceTransactionId || !targetId || sourceTransactionId === targetId) {
+    return
+  }
+
+  const sourceRange = getTransactionRange(sourceTransactionId)
+  const targetRange = getTransactionRange(targetId)
+  if (!sourceRange || !targetRange) {
+    return
+  }
+
+  const movedSteps = currentSteps.value.splice(sourceRange.start, sourceRange.length)
+  const targetRect = event?.currentTarget?.getBoundingClientRect?.()
+  const dropAfterTarget = targetRect
+    ? event.clientY > targetRect.top + targetRect.height / 2
+    : false
+  let insertIndex = dropAfterTarget ? targetRange.end + 1 : targetRange.start
+  if (sourceRange.start < insertIndex) {
+    insertIndex = Math.max(0, insertIndex - sourceRange.length)
+  }
+
+  currentSteps.value.splice(insertIndex, 0, ...movedSteps)
+  normalizeTransactionBlocks()
+  ElMessage.success('事务块顺序已调整，请保存用例')
 }
 
 const extractRequestErrorMessage = (error, fallback) => {
@@ -3195,6 +3344,9 @@ const ensureScrollCoordinatePickerSession = async (step, options = {}) => {
       runner_id: useLocalScrollCoordinatePicker.value ? selectedRunnerId.value : undefined,
       element_id: step?.element_id || undefined
     })
+    if (response.data?.mode === 'local' && response.data?.navigation_error) {
+      ElMessage.warning(`本地执行器打开页面存在异常：${response.data.navigation_error}`)
+    }
     scrollCoordinatePickerSessionId.value = response.data?.session_id || ''
     scrollCoordinatePickerProjectId.value = currentProjectId
     scrollCoordinatePickerMode.value = response.data?.mode || expectedMode
@@ -4544,6 +4696,7 @@ const addStep = () => {
     ) {
       newStep.transaction_id = selectedStep.transaction_id
       newStep.transaction_name = selectedStep.transaction_name
+      newStep.transaction_disabled = selectedStep.transaction_disabled === true
     }
   }
 
@@ -4588,6 +4741,7 @@ const handleStepsReorder = (event) => {
       } else if (hasTransaction(movedStep)) {
         movedStep.transaction_id = ''
         movedStep.transaction_name = ''
+        movedStep.transaction_disabled = false
       }
     }
   }
@@ -5763,6 +5917,15 @@ onBeforeUnmount(() => {
   margin-bottom: 8px;
 }
 
+.transaction-block--disabled {
+  border-color: #f3d19e;
+  background: linear-gradient(90deg, #fff8ed 0%, #fff3df 100%);
+}
+
+.transaction-block--dragging {
+  opacity: 0.55;
+}
+
 .transaction-block.collapsed {
   margin-bottom: 10px;
 }
@@ -5777,8 +5940,19 @@ onBeforeUnmount(() => {
 }
 
 .transaction-block-toggle,
-.transaction-block-icon {
+.transaction-block-icon,
+.transaction-block-drag {
   color: #409eff;
+}
+
+.transaction-block-drag {
+  cursor: grab;
+}
+
+.transaction-block--disabled .transaction-block-icon,
+.transaction-block--disabled .transaction-block-toggle,
+.transaction-block--disabled .transaction-block-drag {
+  color: #e6a23c;
 }
 
 .transaction-block-checkbox {

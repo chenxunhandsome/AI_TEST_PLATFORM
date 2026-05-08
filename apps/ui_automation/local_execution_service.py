@@ -38,8 +38,9 @@ def _resolve_serialized_step_payload(step):
         resolved_assert_value = resolve_variables(step.assert_value)
 
     is_enabled = getattr(step, 'is_enabled', True) is not False
+    transaction_disabled = getattr(step, 'transaction_disabled', False) is True
     save_as = _normalize_runtime_variable_name(step.save_as)
-    if is_enabled and save_as:
+    if is_enabled and not transaction_disabled and save_as:
         if step.action_type in {'fill', 'fillAndEnter', 'switchTab'}:
             set_runtime_variable(save_as, resolved_input_value)
         elif step.action_type == 'assert':
@@ -50,6 +51,7 @@ def _resolve_serialized_step_payload(step):
         'action_type': step.action_type,
         'description': step.description or '',
         'is_enabled': is_enabled,
+        'transaction_disabled': transaction_disabled,
         'save_as': save_as,
         'input_value': resolved_input_value,
         'wait_time': step.wait_time,
@@ -132,6 +134,7 @@ def _make_step(step_data):
         action_type=step_data.get('action_type', ''),
         description=step_data.get('description', ''),
         is_enabled=step_data.get('is_enabled', True),
+        transaction_disabled=step_data.get('transaction_disabled', False),
         save_as=step_data.get('save_as', ''),
         input_value=step_data.get('input_value', ''),
         wait_time=step_data.get('wait_time') or 1000,
@@ -160,6 +163,45 @@ def _format_final_result(start_time, step_results, screenshots, detailed_errors,
         'errors': detailed_errors,
         'error_message': error_message or '',
     }
+
+
+def _finalize_local_execution_result(
+    start_time,
+    payload,
+    step_results,
+    screenshots,
+    detailed_errors,
+    error_message,
+    status_value,
+):
+    planned_step_count = len(payload.get('steps') or [])
+    actual_step_count = len(step_results)
+    if status_value == 'passed' and actual_step_count < planned_step_count:
+        status_value = 'failed'
+        error_message = (
+            f'本地执行器执行步骤不完整: 计划 {planned_step_count} 步，'
+            f'实际只上报 {actual_step_count} 步，已阻止错误标记为成功'
+        )
+        detailed_errors.append({
+            'step_number': None,
+            'action_type': 'local_execution_integrity_check',
+            'element': '',
+            'message': '本地执行器执行步骤不完整',
+            'details': error_message,
+            'description': '本地执行器结果完整性校验',
+        })
+
+    result = _format_final_result(
+        start_time,
+        step_results,
+        screenshots,
+        detailed_errors,
+        error_message,
+        status_value,
+    )
+    result['planned_step_count'] = planned_step_count
+    result['reported_step_count'] = actual_step_count
+    return result
 
 
 def _append_step_result(step_results, step_number, action_type, description, success, error=None, status=None, message=''):
@@ -272,7 +314,12 @@ def _run_selenium(payload, browser, headless, start_time, step_results, screensh
             step = _make_step(step_data)
             action_text = dict(TestCaseStep.ACTION_TYPE_CHOICES).get(step.action_type, step.action_type)
 
-            if getattr(step, 'is_enabled', True) is False:
+            if getattr(step, 'is_enabled', True) is False or getattr(step, 'transaction_disabled', False) is True:
+                skip_message = (
+                    '事务块已禁用，已跳过执行'
+                    if getattr(step, 'transaction_disabled', False) is True
+                    else '步骤已禁用，已跳过执行'
+                )
                 _append_step_result(
                     step_results,
                     index,
@@ -281,7 +328,7 @@ def _run_selenium(payload, browser, headless, start_time, step_results, screensh
                     True,
                     None,
                     status='skipped',
-                    message='步骤已禁用，已跳过执行',
+                    message=skip_message,
                 )
                 continue
 
@@ -329,7 +376,15 @@ def _run_selenium(payload, browser, headless, start_time, step_results, screensh
         except Exception:
             logger.exception("关闭本地 Selenium 浏览器失败")
 
-    return _format_final_result(start_time, step_results, screenshots, detailed_errors, error_message, status_value)
+    return _finalize_local_execution_result(
+        start_time,
+        payload,
+        step_results,
+        screenshots,
+        detailed_errors,
+        error_message,
+        status_value,
+    )
 
 
 def _run_playwright(payload, browser, headless, start_time, step_results, screenshots, detailed_errors):
@@ -373,7 +428,12 @@ async def _run_playwright_async(payload, browser, headless, start_time, step_res
             step = _make_step(step_data)
             action_text = dict(TestCaseStep.ACTION_TYPE_CHOICES).get(step.action_type, step.action_type)
 
-            if getattr(step, 'is_enabled', True) is False:
+            if getattr(step, 'is_enabled', True) is False or getattr(step, 'transaction_disabled', False) is True:
+                skip_message = (
+                    '事务块已禁用，已跳过执行'
+                    if getattr(step, 'transaction_disabled', False) is True
+                    else '步骤已禁用，已跳过执行'
+                )
                 _append_step_result(
                     step_results,
                     index,
@@ -382,7 +442,7 @@ async def _run_playwright_async(payload, browser, headless, start_time, step_res
                     True,
                     None,
                     status='skipped',
-                    message='步骤已禁用，已跳过执行',
+                    message=skip_message,
                 )
                 continue
 
@@ -430,4 +490,12 @@ async def _run_playwright_async(payload, browser, headless, start_time, step_res
         except Exception:
             logger.exception("关闭本地 Playwright 浏览器失败")
 
-    return _format_final_result(start_time, step_results, screenshots, detailed_errors, error_message, status_value)
+    return _finalize_local_execution_result(
+        start_time,
+        payload,
+        step_results,
+        screenshots,
+        detailed_errors,
+        error_message,
+        status_value,
+    )

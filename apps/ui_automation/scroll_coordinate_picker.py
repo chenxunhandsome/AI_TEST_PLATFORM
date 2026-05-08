@@ -19,6 +19,15 @@ def _normalize_browser_name(browser):
     }.get(str(browser or 'chrome').lower(), 'chromium')
 
 
+def _get_browser_channel(browser):
+    browser_key = str(browser or 'chrome').lower()
+    if browser_key == 'chrome':
+        return 'chrome'
+    if browser_key == 'edge':
+        return 'msedge'
+    return ''
+
+
 def cleanup_local_scroll_coordinate_picker_sessions(user_id=None, runner_id=None):
     now = time.time()
     with LOCAL_SCROLL_COORDINATE_PICKER_LOCK:
@@ -58,11 +67,13 @@ def create_local_scroll_coordinate_picker_session(user_id, runner_id, base_url, 
         'runner_id': runner_id,
         'base_url': base_url,
         'browser_name': _normalize_browser_name(browser),
+        'browser_channel': _get_browser_channel(browser),
         'picker_element_data': picker_element_data or None,
         'created_at': time.time(),
         'last_used_at': time.time(),
         'state': 'pending_start',
         'error': '',
+        'start_payload': {},
         'ready_event': Event(),
         'command': None,
         'next_sequence': 1,
@@ -254,6 +265,7 @@ def claim_local_scroll_coordinate_picker_task(user_id, runner_id):
                     'session_id': session['session_id'],
                     'action': 'start',
                     'browser': session.get('browser_name') or 'chromium',
+                    'browser_channel': session.get('browser_channel') or '',
                     'base_url': session['base_url'],
                     'picker_element_data': session.get('picker_element_data') or None,
                 }
@@ -272,6 +284,7 @@ def claim_local_scroll_coordinate_picker_task(user_id, runner_id):
                 'page_index': command.get('page_index'),
                 'command_sequence': command['sequence'],
                 'browser': session.get('browser_name') or 'chromium',
+                'browser_channel': session.get('browser_channel') or '',
                 'base_url': session['base_url'],
                 'picker_element_data': session.get('picker_element_data') or None,
             }
@@ -295,6 +308,7 @@ def report_local_scroll_coordinate_picker_task(
 
     session['last_used_at'] = time.time()
     if action == 'start':
+        session['start_payload'] = payload or {}
         if success:
             session['state'] = 'ready'
             session['error'] = ''
