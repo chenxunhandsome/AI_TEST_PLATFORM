@@ -282,6 +282,7 @@
                               <div class="step-summary-meta">
                                 <span>{{ getActionTypeText(element.action_type) }}</span>
                                 <span v-if="needsElement(element.action_type)">{{ getStepElementSummary(element) }}</span>
+                                <span v-else-if="isCanvasAction(element.action_type)">{{ getStepElementSummary(element) }}</span>
                                 <span v-if="element.transaction_name">事务块：{{ element.transaction_name }}</span>
                                 <span v-if="canStoreVariable(element.action_type) && element.save_as">
                                   {{ formatStoredVariable(element.save_as) }}
@@ -351,6 +352,8 @@
                             <el-option :label="t('uiAutomation.testCase.actionSwitchTab')" value="switchTab" />
                             <el-option label="刷新当前页" value="refreshCurrentPage" />
                             <el-option :label="t('uiAutomation.testCase.actionCloseCurrentPage')" value="closeCurrentPage" />
+                            <el-option label="画布点击" value="canvasClick" />
+                            <el-option label="画布拖拽" value="canvasDrag" />
                           </el-select>
                         </div>
 
@@ -485,6 +488,110 @@
                             <el-icon><FolderOpened /></el-icon>
                             <span class="element-selector-text">{{ getSelectedElementLabel(element.drag_target_element_id) }}</span>
                           </el-button>
+                        </div>
+
+                        <div v-if="isCanvasAction(element.action_type)" class="step-param step-param--stacked">
+                          <label>{{ element.action_type === 'canvasDrag' ? '画布拖拽' : '画布点击' }}</label>
+                          <div class="step-param-main">
+                            <div class="canvas-config-grid">
+                              <el-input
+                                v-model="element.canvas_frame_selector"
+                                size="small"
+                                placeholder="iframe选择器，默认 #plt-workflow-iframe"
+                              />
+                              <el-input-number
+                                v-model="element.canvas_hold_ms"
+                                :min="0"
+                                :max="5000"
+                                :step="100"
+                                size="small"
+                                placeholder="按住ms"
+                              />
+                              <el-input-number
+                                v-model="element.canvas_steps"
+                                :min="1"
+                                :max="100"
+                                :step="1"
+                                size="small"
+                                placeholder="拖拽步数"
+                              />
+                            </div>
+                            <div class="canvas-coordinate-summary">
+                              <span v-if="element.action_type === 'canvasClick'">
+                                点击位置：{{ formatCanvasPoint(element.canvas_click_x, element.canvas_click_y) }}
+                              </span>
+                              <span v-else>
+                                起点：{{ formatCanvasPoint(element.canvas_start_x, element.canvas_start_y) }}
+                                <span class="canvas-coordinate-arrow">-></span>
+                                终点：{{ formatCanvasPoint(element.canvas_target_x, element.canvas_target_y) }}
+                              </span>
+                            </div>
+                            <div class="scroll-picker-actions">
+                              <el-button
+                                size="small"
+                                :loading="scrollCoordinatePickerStarting"
+                                :disabled="!selectedProject?.base_url || (executionMode === 'local' && !selectedRunnerId) || scrollCoordinatePickerReadingStart || scrollCoordinatePickerReadingTarget"
+                                @click="openCanvasCoordinatePickerPage(element)"
+                              >
+                                打开采集页面
+                              </el-button>
+                              <el-button
+                                v-if="element.action_type === 'canvasClick'"
+                                size="small"
+                                :loading="scrollCoordinatePickerStarting || scrollCoordinatePickerReadingStart"
+                                :disabled="!selectedProject?.base_url || (executionMode === 'local' && !selectedRunnerId) || scrollCoordinatePickerReadingTarget"
+                                @click="captureCanvasCoordinate(element, 'click')"
+                              >
+                                采集点击位置
+                              </el-button>
+                              <template v-else>
+                                <el-button
+                                  size="small"
+                                  :loading="scrollCoordinatePickerStarting || scrollCoordinatePickerReadingStart"
+                                  :disabled="!selectedProject?.base_url || (executionMode === 'local' && !selectedRunnerId) || scrollCoordinatePickerReadingTarget"
+                                  @click="captureCanvasCoordinate(element, 'start')"
+                                >
+                                  采集起点
+                                </el-button>
+                                <el-button
+                                  size="small"
+                                  :loading="scrollCoordinatePickerStarting || scrollCoordinatePickerReadingTarget"
+                                  :disabled="!selectedProject?.base_url || (executionMode === 'local' && !selectedRunnerId) || scrollCoordinatePickerReadingStart"
+                                  @click="captureCanvasCoordinate(element, 'target')"
+                                >
+                                  采集终点
+                                </el-button>
+                              </template>
+                            </div>
+                            <div class="scroll-picker-actions">
+                              <el-select
+                                :model-value="scrollCoordinatePickerActivePageIndex"
+                                size="small"
+                                placeholder="选择采集页面"
+                                style="width: 320px"
+                                :disabled="!scrollCoordinatePickerSessionId || scrollCoordinatePickerPagesLoading || scrollCoordinatePickerSwitchingPage"
+                                @change="switchScrollCoordinatePickerPage"
+                              >
+                                <el-option
+                                  v-for="page in scrollCoordinatePickerPages"
+                                  :key="page.index"
+                                  :label="`[${page.index}] ${page.title || page.url || '未命名页面'}${page.is_active ? '（当前）' : ''}`"
+                                  :value="page.index"
+                                />
+                              </el-select>
+                              <el-button
+                                size="small"
+                                :loading="scrollCoordinatePickerPagesLoading"
+                                :disabled="!scrollCoordinatePickerSessionId || scrollCoordinatePickerSwitchingPage"
+                                @click="refreshScrollCoordinatePickerPages(true)"
+                              >
+                                刷新页面列表
+                              </el-button>
+                            </div>
+                            <div class="step-help">
+                              打开采集页面后，在工作流设计 iframe 内对准图形按钮或连接点右键一次即可采集坐标；执行时会自动换算 iframe 偏移并回放鼠标操作。
+                            </div>
+                          </div>
                         </div>
 
                         <div v-if="needsInputValue(element.action_type)" class="step-param">
@@ -1325,7 +1432,7 @@
           </template>
         </el-input>
 
-        <div class="element-selector-tree-wrapper">
+        <div class="element-selector-tree-wrapper" v-loading="elementSelectorLoading">
           <el-tree
             :data="filteredElementTreeOptions"
             :props="{ children: 'children', label: 'name' }"
@@ -1456,6 +1563,7 @@ import {
   createTestCaseFolder,
   deleteTestCaseFolder,
   updateTestCase,
+  getTestCaseDetail,
   batchDeleteTestCases,
   deleteTestCase as deleteTestCaseApi,
   getTestCaseFolders,
@@ -1645,6 +1753,7 @@ const currentSelectingStep = ref(null)
 const folderDeletingId = ref(null)
 const currentSelectingField = ref('element_id')
 const elementSelectorKeyword = ref('')
+const elementSelectorLoading = ref(false)
 const variableCategories = ref([])
 const loading = ref(false)
 const importing = ref(false)
@@ -1981,7 +2090,29 @@ const projectVariableCategory = computed(() => {
   }
 })
 
+const isSameEntityId = (left, right) => {
+  if (left === null || left === undefined || right === null || right === undefined) {
+    return false
+  }
+
+  return String(left) === String(right)
+}
+
+const collectElementGroupIds = (groups = [], target = new Set()) => {
+  groups.forEach((group) => {
+    if (group?.id !== null && group?.id !== undefined) {
+      target.add(String(group.id))
+    }
+    if (group?.children?.length) {
+      collectElementGroupIds(group.children, target)
+    }
+  })
+  return target
+}
+
 const elementTreeOptions = computed(() => {
+  const groupIds = collectElementGroupIds(elementGroups.value || [])
+
   const mapElementNode = (element) => ({
     ...element,
     treeKey: `element-${element.id}`,
@@ -1993,7 +2124,7 @@ const elementTreeOptions = computed(() => {
     return groups.map((group) => {
       const childGroups = buildGroupNodes(group.children || [])
       const childElements = availableElements.value
-        .filter(element => element.group_id === group.id)
+        .filter(element => isSameEntityId(element.group_id, group.id))
         .map(mapElementNode)
 
       return {
@@ -2007,7 +2138,7 @@ const elementTreeOptions = computed(() => {
 
   const groupNodes = buildGroupNodes(elementGroups.value || [])
   const ungroupedElements = availableElements.value
-    .filter(element => !element.group_id)
+    .filter(element => !element.group_id || !groupIds.has(String(element.group_id)))
     .map(mapElementNode)
 
   if (ungroupedElements.length > 0) {
@@ -2139,17 +2270,116 @@ const buildScrollPayload = (step) => {
   })
 }
 
+const parseCanvasPayload = (inputValue) => {
+  const rawValue = String(inputValue || '').trim()
+  if (!rawValue) {
+    return {}
+  }
+
+  try {
+    const payload = JSON.parse(rawValue)
+    if (payload?.mode !== 'canvas') {
+      return {}
+    }
+
+    return {
+      canvas_action: payload.action || '',
+      canvas_frame_selector: payload.frame_selector || '#plt-workflow-iframe',
+      canvas_frame_url: payload.frame_url || '',
+      canvas_page_index: payload.page_index ?? payload.active_page_index ?? null,
+      canvas_click_x: payload.x ?? null,
+      canvas_click_y: payload.y ?? null,
+      canvas_start_x: payload.start?.x ?? null,
+      canvas_start_y: payload.start?.y ?? null,
+      canvas_target_x: payload.target?.x ?? null,
+      canvas_target_y: payload.target?.y ?? null,
+      canvas_hold_ms: payload.hold_ms ?? 300,
+      canvas_steps: payload.steps ?? 30
+    }
+  } catch (error) {
+    return {}
+  }
+}
+
+const hasCoordinateValue = (value) => value !== null && value !== '' && value !== undefined
+
+const buildCanvasPayload = (step) => {
+  const frameSelector = String(step.canvas_frame_selector || '').trim() || '#plt-workflow-iframe'
+  const basePayload = {
+    mode: 'canvas',
+    action: step.action_type === 'canvasDrag' ? 'drag' : 'click',
+    page_index: hasCoordinateValue(step.canvas_page_index) ? Number(step.canvas_page_index) : undefined,
+    active_page_index: hasCoordinateValue(step.canvas_page_index) ? Number(step.canvas_page_index) : undefined,
+    frame_selector: frameSelector,
+    frame_url: String(step.canvas_frame_url || '').trim(),
+    frame_url_keyword: 'workflow-modeler',
+    hold_ms: Number(step.canvas_hold_ms ?? 300) || 300,
+    steps: Number(step.canvas_steps ?? 30) || 30
+  }
+
+  if (step.action_type === 'canvasClick') {
+    if (!hasCoordinateValue(step.canvas_click_x) || !hasCoordinateValue(step.canvas_click_y)) {
+      return ''
+    }
+    return JSON.stringify({
+      ...basePayload,
+      x: Number(step.canvas_click_x),
+      y: Number(step.canvas_click_y)
+    })
+  }
+
+  if (
+    !hasCoordinateValue(step.canvas_start_x) ||
+    !hasCoordinateValue(step.canvas_start_y) ||
+    !hasCoordinateValue(step.canvas_target_x) ||
+    !hasCoordinateValue(step.canvas_target_y)
+  ) {
+    return ''
+  }
+
+  return JSON.stringify({
+    ...basePayload,
+    start: {
+      x: Number(step.canvas_start_x),
+      y: Number(step.canvas_start_y)
+    },
+    target: {
+      x: Number(step.canvas_target_x),
+      y: Number(step.canvas_target_y)
+    }
+  })
+}
+
+const formatCanvasPoint = (x, y) => {
+  if (!hasCoordinateValue(x) || !hasCoordinateValue(y)) {
+    return '未采集'
+  }
+  return `(${x}, ${y})`
+}
+
 const createStepDraft = (step = {}, expanded = false) => ({
   ...(() => {
     const dragPayload = parseDragTargetPayload(step.input_value)
     const scrollPayload = parseScrollPayload(step.input_value)
+    const canvasPayload = parseCanvasPayload(step.input_value)
     return {
       drag_target_element_id: dragPayload.target_element_id || '',
       scroll_direction: scrollPayload.scroll_direction || '',
       scroll_start_x: scrollPayload.start_x ?? null,
       scroll_start_y: scrollPayload.start_y ?? null,
       scroll_target_x: scrollPayload.target_x ?? null,
-      scroll_target_y: scrollPayload.target_y ?? null
+      scroll_target_y: scrollPayload.target_y ?? null,
+      canvas_frame_selector: canvasPayload.canvas_frame_selector || '#plt-workflow-iframe',
+      canvas_frame_url: canvasPayload.canvas_frame_url || '',
+      canvas_page_index: canvasPayload.canvas_page_index ?? null,
+      canvas_click_x: canvasPayload.canvas_click_x ?? null,
+      canvas_click_y: canvasPayload.canvas_click_y ?? null,
+      canvas_start_x: canvasPayload.canvas_start_x ?? null,
+      canvas_start_y: canvasPayload.canvas_start_y ?? null,
+      canvas_target_x: canvasPayload.canvas_target_x ?? null,
+      canvas_target_y: canvasPayload.canvas_target_y ?? null,
+      canvas_hold_ms: Number(canvasPayload.canvas_hold_ms ?? 300) || 300,
+      canvas_steps: Number(canvasPayload.canvas_steps ?? 30) || 30
     }
   })(),
   id: step.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -2628,12 +2858,14 @@ const buildStepPayload = (step, index) => ({
   id: step.id,
   step_number: index + 1,
   action_type: step.action_type || 'click',
-  element_id: step.element_id || null,
-  input_value: step.action_type === 'drag'
-    ? buildDragTargetPayload(step.drag_target_element_id)
-    : step.action_type === 'scroll'
-      ? buildScrollPayload(step)
-      : (needsInputValue(step.action_type) ? (step.input_value || '') : ''),
+  element_id: needsElement(step.action_type) ? (step.element_id || null) : null,
+  input_value: isCanvasAction(step.action_type)
+    ? buildCanvasPayload(step)
+    : step.action_type === 'drag'
+      ? buildDragTargetPayload(step.drag_target_element_id)
+      : step.action_type === 'scroll'
+        ? buildScrollPayload(step)
+        : (needsInputValue(step.action_type) ? (step.input_value || '') : ''),
   wait_time: needsWaitTime(step.action_type) ? (Number(step.wait_time) || 1000) : 1000,
   assert_type: step.action_type === 'assert' ? (step.assert_type || 'textContains') : '',
   assert_value: step.action_type === 'assert' ? (step.assert_value || '') : '',
@@ -2663,6 +2895,13 @@ const getStepSummary = (step, index) => {
 }
 
 const getStepElementSummary = (step) => {
+  if (isCanvasAction(step.action_type)) {
+    if (step.action_type === 'canvasClick') {
+      return `点击 ${formatCanvasPoint(step.canvas_click_x, step.canvas_click_y)}`
+    }
+    return `拖拽 ${formatCanvasPoint(step.canvas_start_x, step.canvas_start_y)} -> ${formatCanvasPoint(step.canvas_target_x, step.canvas_target_y)}`
+  }
+
   if (!needsElement(step.action_type)) {
     return ''
   }
@@ -2697,6 +2936,27 @@ const validateCurrentSteps = () => {
       step.expanded = true
       ElMessage.warning(`步骤 ${index + 1} 请选择拖拽目标元素`)
       return false
+    }
+
+    if (step.action_type === 'canvasClick') {
+      if (!hasCoordinateValue(step.canvas_click_x) || !hasCoordinateValue(step.canvas_click_y)) {
+        step.expanded = true
+        ElMessage.warning(`步骤 ${index + 1} 请先采集画布点击位置`)
+        return false
+      }
+    }
+
+    if (step.action_type === 'canvasDrag') {
+      if (
+        !hasCoordinateValue(step.canvas_start_x) ||
+        !hasCoordinateValue(step.canvas_start_y) ||
+        !hasCoordinateValue(step.canvas_target_x) ||
+        !hasCoordinateValue(step.canvas_target_y)
+      ) {
+        step.expanded = true
+        ElMessage.warning(`步骤 ${index + 1} 请先采集画布拖拽起点和终点`)
+        return false
+      }
     }
 
     if (step.action_type === 'scroll' && hasScrollCoordinateConfig(step)) {
@@ -3036,6 +3296,102 @@ const captureScrollCoordinate = async (step, field) => {
   }
 }
 
+const getCanvasCaptureFieldLabel = (field) => {
+  const labelMap = {
+    click: '点击位置',
+    start: '拖拽起点',
+    target: '拖拽终点'
+  }
+  return labelMap[field] || '画布位置'
+}
+
+const openCanvasCoordinatePickerPage = async (step) => {
+  try {
+    step.element_id = ''
+    const session = await ensureScrollCoordinatePickerSession(step, { forceReopen: true })
+    await refreshScrollCoordinatePickerPages(false)
+    const isLocalMode = session?.mode === 'local'
+    const runnerName = selectedScrollCoordinatePickerRunner.value?.name
+    const executionTarget = isLocalMode
+      ? (runnerName ? `访客机本地执行器“${runnerName}”上的浏览器` : '访客机本地执行器上的浏览器')
+      : '服务器采集浏览器'
+    ElMessage.success(`已在${executionTarget}打开采集页面。请先登录并打开工作流设计页，如功能会弹出新页面，请切换到新页面后在 iframe 内右键采集图形坐标。`)
+  } catch (error) {
+    ElMessage.error(extractRequestErrorMessage(error, '打开画布坐标采集网页失败'))
+  }
+}
+
+const captureCanvasCoordinate = async (step, field) => {
+  const loadingRef = field === 'target'
+    ? scrollCoordinatePickerReadingTarget
+    : scrollCoordinatePickerReadingStart
+  const fieldLabel = getCanvasCaptureFieldLabel(field)
+
+  try {
+    step.element_id = ''
+    const session = await ensureScrollCoordinatePickerSession(step)
+    const sessionId = session?.sessionId
+    if (!sessionId) {
+      throw new Error('画布坐标采集浏览器启动失败')
+    }
+
+    const selectedPageIndex = Number(scrollCoordinatePickerActivePageIndex.value ?? 0)
+    await refreshScrollCoordinatePickerPages(false)
+    await switchScrollCoordinatePickerPage(selectedPageIndex, false)
+
+    const isLocalMode = session.mode === 'local'
+    const executionTarget = isLocalMode
+      ? (selectedScrollCoordinatePickerRunner.value
+          ? `访客机本地执行器“${selectedScrollCoordinatePickerRunner.value.name}”上的浏览器`
+          : '访客机本地执行器上的浏览器')
+      : '服务器采集浏览器'
+
+    if (session.created) {
+      ElMessage.info(`已在${executionTarget}打开采集页面，请进入工作流设计 iframe 所在页面后右键采集${fieldLabel}。`)
+    }
+
+    loadingRef.value = true
+    ElMessage.info(`请在${executionTarget}中对准${fieldLabel}右键一次，系统会回填 iframe 内坐标。`)
+    const captureResponse = await getScrollCoordinatePickerPosition({
+      session_id: sessionId,
+      field: `canvas_${field}`
+    })
+    const data = captureResponse.data || {}
+    const captureX = Number(data.x ?? 0)
+    const captureY = Number(data.y ?? 0)
+
+    step.canvas_page_index = data.active_page_index ?? scrollCoordinatePickerActivePageIndex.value ?? 0
+    step.canvas_frame_selector = data.frame_selector || step.canvas_frame_selector || '#plt-workflow-iframe'
+    step.canvas_frame_url = data.frame_url || data.url || step.canvas_frame_url || ''
+
+    if (field === 'click') {
+      step.canvas_click_x = captureX
+      step.canvas_click_y = captureY
+    } else if (field === 'start') {
+      step.canvas_start_x = captureX
+      step.canvas_start_y = captureY
+    } else {
+      step.canvas_target_x = captureX
+      step.canvas_target_y = captureY
+    }
+
+    await refreshScrollCoordinatePickerPages(false).catch(() => null)
+    ElMessage.success(`已采集${fieldLabel}: (${captureX}, ${captureY})`)
+  } catch (error) {
+    if (error === 'cancel') {
+      return
+    }
+
+    const message = extractRequestErrorMessage(error, `采集${fieldLabel}失败`)
+    if (message.includes('会话不存在') || message.includes('已过期')) {
+      resetScrollCoordinatePickerSession()
+    }
+    ElMessage.error(message)
+  } finally {
+    loadingRef.value = false
+  }
+}
+
 const getElementTooltipContent = (node) => {
   if (!node || node.type !== 'element') {
     return ''
@@ -3164,8 +3520,12 @@ const loadElementGroups = async () => {
     return
   }
 
+  const currentProjectId = String(projectId.value)
   try {
-    const response = await getElementGroupTree({ project: projectId.value })
+    const response = await getElementGroupTree({ project: currentProjectId })
+    if (String(projectId.value) !== currentProjectId) {
+      return
+    }
     elementGroups.value = response.data || []
   } catch (error) {
     console.error('获取元素分组树失败:', error)
@@ -3203,6 +3563,36 @@ const syncSelectedTestCase = () => {
     currentSteps.value.some(step => isSameStepId(step.id, id))
   )
   syncTransactionCollapseMap()
+}
+
+const applySavedTestCaseToState = (savedCase) => {
+  if (!savedCase?.id) {
+    return
+  }
+
+  const caseIndex = testCases.value.findIndex(item => item.id === savedCase.id)
+  if (caseIndex !== -1) {
+    testCases.value.splice(caseIndex, 1, savedCase)
+  } else {
+    testCases.value.unshift(savedCase)
+  }
+
+  if (selectedTestCase.value?.id === savedCase.id) {
+    selectedTestCase.value = savedCase
+    const previousSelectedStepId = selectedStepId.value
+    const previousCheckedStepIds = [...checkedStepIds.value]
+    currentSteps.value = (savedCase.steps || []).map(step =>
+      createStepDraft(step, currentSteps.value.find(item => item.id === step.id)?.expanded || false)
+    )
+    normalizeTransactionBlocks()
+    selectedStepId.value = currentSteps.value.some(step => isSameStepId(step.id, previousSelectedStepId))
+      ? previousSelectedStepId
+      : null
+    checkedStepIds.value = previousCheckedStepIds.filter(id =>
+      currentSteps.value.some(step => isSameStepId(step.id, id))
+    )
+    syncTransactionCollapseMap()
+  }
 }
 
 const loadLocalRunnerList = async () => {
@@ -3307,14 +3697,16 @@ const loadElements = async () => {
   }
 }
 
-const loadElementsForCurrentProject = async () => {
+const loadElementsForCurrentProject = async ({ clearBeforeLoad = true } = {}) => {
   if (!projectId.value) {
     availableElements.value = []
     return
   }
 
   const currentProjectId = String(projectId.value)
-  availableElements.value = []
+  if (clearBeforeLoad) {
+    availableElements.value = []
+  }
 
   try {
     const response = await getElementTree({ project: currentProjectId })
@@ -3330,7 +3722,32 @@ const loadElementsForCurrentProject = async () => {
     }))
   } catch (error) {
     console.error('加载当前项目元素树失败:', error)
+    if (clearBeforeLoad) {
+      availableElements.value = []
+    }
+  }
+}
+
+const refreshElementCatalogForCurrentProject = async ({ clearBeforeLoad = true } = {}) => {
+  if (!projectId.value) {
+    elementGroups.value = []
     availableElements.value = []
+    return
+  }
+
+  const currentProjectId = String(projectId.value)
+  if (clearBeforeLoad) {
+    elementGroups.value = []
+    availableElements.value = []
+  }
+
+  await Promise.all([
+    loadElementGroups(),
+    loadElementsForCurrentProject({ clearBeforeLoad: false })
+  ])
+
+  if (String(projectId.value) !== currentProjectId) {
+    return
   }
 }
 
@@ -3350,8 +3767,7 @@ const onProjectChange = async () => {
   await Promise.all([
     loadTestCaseFolders(),
     loadTestCases(),
-    loadElementGroups(),
-    loadElementsForCurrentProject()
+    refreshElementCatalogForCurrentProject()
   ])
 }
 
@@ -3513,7 +3929,7 @@ const submitImportCases = async () => {
     await Promise.all([
       loadTestCaseFolders(),
       loadTestCases(),
-      loadElementsForCurrentProject()
+      refreshElementCatalogForCurrentProject()
     ])
   } catch (error) {
     console.error('导入测试用例失败:', error)
@@ -3978,7 +4394,7 @@ const submitImportGeneratedCases = async () => {
     await Promise.all([
       loadTestCaseFolders(),
       loadTestCases(),
-      loadElementsForCurrentProject()
+      refreshElementCatalogForCurrentProject()
     ])
   } catch (error) {
     console.error('导入AI生成用例失败:', error)
@@ -4182,6 +4598,12 @@ const handleStepsReorder = (event) => {
 
 const onActionTypeChange = (step) => {
   // 根据操作类型重置相关参数
+  if (isCanvasAction(step.action_type)) {
+    step.element_id = ''
+    step.canvas_frame_selector = step.canvas_frame_selector || '#plt-workflow-iframe'
+    step.canvas_hold_ms = Number(step.canvas_hold_ms ?? 300) || 300
+    step.canvas_steps = Number(step.canvas_steps ?? 30) || 30
+  }
   if (!needsInputValue(step.action_type)) {
     step.input_value = ''
   }
@@ -4205,6 +4627,19 @@ const onActionTypeChange = (step) => {
     step.scroll_target_x = null
     step.scroll_target_y = null
   }
+  if (!isCanvasAction(step.action_type)) {
+    step.canvas_frame_selector = '#plt-workflow-iframe'
+    step.canvas_frame_url = ''
+    step.canvas_page_index = null
+    step.canvas_click_x = null
+    step.canvas_click_y = null
+    step.canvas_start_x = null
+    step.canvas_start_y = null
+    step.canvas_target_x = null
+    step.canvas_target_y = null
+    step.canvas_hold_ms = 300
+    step.canvas_steps = 30
+  }
 }
 
 const onElementChange = (step) => {
@@ -4224,11 +4659,22 @@ const getSelectedElementLabel = (elementId) => {
   return `${element.name} (${element.locator_value})`
 }
 
-const openElementSelector = (step, field = 'element_id') => {
+const openElementSelector = async (step, field = 'element_id') => {
   currentSelectingStep.value = step
   currentSelectingField.value = field
   elementSelectorKeyword.value = ''
   showElementSelectorDialog.value = true
+
+  if (!projectId.value) {
+    return
+  }
+
+  elementSelectorLoading.value = true
+  try {
+    await refreshElementCatalogForCurrentProject({ clearBeforeLoad: false })
+  } finally {
+    elementSelectorLoading.value = false
+  }
 }
 
 const handleElementTreeNodeClick = (node) => {
@@ -4251,8 +4697,12 @@ const needsWaitTime = (actionType) => {
   return ['wait', 'waitFor'].includes(actionType)
 }
 
+const isCanvasAction = (actionType) => {
+  return ['canvasClick', 'canvasDrag'].includes(actionType)
+}
+
 const needsElement = (actionType) => {
-  return !['wait', 'switchTab', 'screenshot', 'refreshCurrentPage', 'closeCurrentPage'].includes(actionType)
+  return !['wait', 'switchTab', 'screenshot', 'refreshCurrentPage', 'closeCurrentPage', 'canvasClick', 'canvasDrag'].includes(actionType)
 }
 
 const submitImportCaseSteps = () => {
@@ -4307,15 +4757,12 @@ const saveTestCase = async () => {
       steps: currentSteps.value.map(buildStepPayload)
     }
 
-    await updateTestCase(selectedTestCase.value.id, updateData)
+    const updateResponse = await updateTestCase(selectedTestCase.value.id, updateData)
+    const detailResponse = await getTestCaseDetail(selectedTestCase.value.id).catch(() => null)
+    const savedCase = detailResponse?.data || updateResponse?.data || updateData
     ElMessage.success(t('uiAutomation.testCase.save.success'))
 
-    // 更新本地数据
-    const index = testCases.value.findIndex(tc => tc.id === selectedTestCase.value.id)
-    if (index !== -1) {
-      testCases.value[index] = { ...updateData }
-      selectedTestCase.value = { ...updateData }
-    }
+    applySavedTestCaseToState(savedCase)
   } catch (error) {
       console.error('保存测试用例失败:', error)
       ElMessage.error(extractRequestErrorMessage(error, t('uiAutomation.testCase.save.failed')))
@@ -4830,6 +5277,8 @@ const getActionTypeText = (actionType) => {
     'hover': t('uiAutomation.testCase.actionType.hover'),
     'scroll': t('uiAutomation.testCase.actionType.scroll'),
     'drag': '拖拽',
+    'canvasClick': '画布点击',
+    'canvasDrag': '画布拖拽',
     'screenshot': t('uiAutomation.testCase.actionType.screenshot'),
     'assert': t('uiAutomation.testCase.actionType.assert'),
     'wait': t('uiAutomation.testCase.actionType.wait'),
@@ -4880,6 +5329,8 @@ const getActionText = (actionType) => {
     'hover': t('uiAutomation.testCase.actionText.hover'),
     'scroll': t('uiAutomation.testCase.actionText.scroll'),
     'drag': '拖拽',
+    'canvasClick': '画布点击',
+    'canvasDrag': '画布拖拽',
     'screenshot': t('uiAutomation.testCase.actionText.screenshot'),
     'assert': t('uiAutomation.testCase.actionText.assert'),
     'wait': t('uiAutomation.testCase.actionText.wait'),
@@ -5645,6 +6096,24 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.canvas-config-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(110px, 140px) minmax(110px, 140px);
+  gap: 8px;
+}
+
+.canvas-coordinate-summary {
+  margin-top: 8px;
+  color: #606266;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.canvas-coordinate-arrow {
+  margin: 0 8px;
+  color: #909399;
+}
+
 .scroll-picker-actions {
   display: flex;
   gap: 8px;
@@ -6404,6 +6873,10 @@ onBeforeUnmount(() => {
 
 @media (max-width: 1180px) {
   .ai-generate-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .canvas-config-grid {
     grid-template-columns: 1fr;
   }
 }

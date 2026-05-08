@@ -211,6 +211,35 @@ class LocalScrollCoordinatePicker:
                     if (typeof reporter !== 'function') {{
                         return
                     }}
+                    const getFrameSelector = () => {{
+                        try {{
+                            if (window.self === window.top || !window.frameElement) {{
+                                return ''
+                            }}
+                            const frame = window.frameElement
+                            if (frame.id) {{
+                                return `#${{CSS.escape(frame.id)}}`
+                            }}
+                            if (frame.name) {{
+                                return `iframe[name="${{CSS.escape(frame.name)}}"]`
+                            }}
+                            const src = frame.getAttribute('src') || ''
+                            if (src) {{
+                                const stableSrc = src.split('?')[0]
+                                return `iframe[src*="${{stableSrc.replace(/"/g, '\\"')}}"]`
+                            }}
+                        }} catch (error) {{
+                            return ''
+                        }}
+                        return ''
+                    }}
+                    const getFrameUrl = () => {{
+                        try {{
+                            return window.self !== window.top ? window.location.href || '' : ''
+                        }} catch (error) {{
+                            return ''
+                        }}
+                    }}
                     const x = Math.round(event.clientX || 0)
                     const y = Math.round(event.clientY || 0)
                     const key = `${{Math.round(event.timeStamp || 0)}}:${{x}}:${{y}}:${{event.button}}`
@@ -226,6 +255,9 @@ class LocalScrollCoordinatePicker:
                         pageY: Math.round(event.pageY || 0),
                         url: window.location.href || '',
                         title: document.title || '',
+                        isFrame: window.self !== window.top,
+                        frameSelector: getFrameSelector(),
+                        frameUrl: getFrameUrl(),
                     }})
                 }}
 
@@ -270,6 +302,9 @@ class LocalScrollCoordinatePicker:
             'field': pending_click.get('field') or 'start',
             'url': str(payload.get('url') or ''),
             'title': str(payload.get('title') or ''),
+            'is_frame': bool(payload.get('isFrame')),
+            'frame_selector': str(payload.get('frameSelector') or ''),
+            'frame_url': str(payload.get('frameUrl') or ''),
         }
         active_index = 0
         for index, page in enumerate(self.pages):

@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Tuple
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext, TimeoutError as PlaywrightTimeout
 import logging
 from .variable_resolver import (
+    parse_canvas_action_payload,
     parse_scroll_action_payload,
     resolve_element_locator_payload,
     resolve_variables,
@@ -434,6 +435,137 @@ class PlaywrightTestEngine:
             'name': payload.get('target_element_name') or payload.get('name') or '目标元素',
         }
 
+    def _get_canvas_runtime_page(self, payload: Dict):
+        pages = []
+        if self.context is not None:
+            for page in self.context.pages:
+                try:
+                    if page is not None and not page.is_closed():
+                        pages.append(page)
+                except Exception:
+                    continue
+
+        page_index = payload.get('page_index')
+        if page_index is None:
+            page_index = payload.get('active_page_index')
+        try:
+            page_index = int(page_index) if page_index is not None else None
+        except (TypeError, ValueError):
+            page_index = None
+
+        if pages and page_index is not None and 0 <= page_index < len(pages):
+            self.page = pages[page_index]
+            return self.page
+
+        if self.page is not None:
+            try:
+                if not self.page.is_closed():
+                    return self.page
+            except Exception:
+                pass
+
+        if pages:
+            self.page = pages[-1]
+            return self.page
+
+        return self.page
+
+    async def _resolve_canvas_point(self, active_page: Page, payload: Dict, x: int, y: int):
+        frame_selector = str(payload.get('frame_selector') or '').strip()
+        candidate_selectors = []
+        if frame_selector:
+            candidate_selectors.append(frame_selector)
+        candidate_selectors.extend([
+            '#plt-workflow-iframe',
+            'iframe[src*="workflow-modeler"]',
+            'iframe:visible',
+        ])
+
+        seen_selectors = set()
+        for selector in candidate_selectors:
+            if not selector or selector in seen_selectors:
+                continue
+            seen_selectors.add(selector)
+            try:
+                frame_locator = active_page.locator(selector).first
+                await frame_locator.wait_for(state='attached', timeout=3000)
+                frame_box = await frame_locator.bounding_box()
+                if frame_box:
+                    return (
+                        int(round(frame_box['x'] + x)),
+                        int(round(frame_box['y'] + y)),
+                        selector,
+                    )
+            except Exception:
+                continue
+
+        return x, y, ''
+
+    async def _execute_canvas_click(self, payload: Dict, start_time: float):
+        active_page = self._get_canvas_runtime_page(payload)
+        if active_page is None or (hasattr(active_page, 'is_closed') and active_page.is_closed()):
+            return False, "✗ 画布点击失败: 当前没有可用页面", None
+
+        await active_page.bring_to_front()
+        page_x, page_y, frame_selector = await self._resolve_canvas_point(
+            active_page,
+            payload,
+            int(payload['x']),
+            int(payload['y']),
+        )
+        await active_page.mouse.click(page_x, page_y)
+        await active_page.wait_for_timeout(200)
+
+        execution_time = round(time.time() - start_time, 2)
+        log = "✓ 画布点击成功\n"
+        log += f"  - iframe: {frame_selector or '未使用 iframe 偏移'}\n"
+        log += f"  - 采集坐标: ({payload['x']}, {payload['y']})\n"
+        log += f"  - 页面坐标: ({page_x}, {page_y})\n"
+        log += f"  - 当前页面: {active_page.url}\n"
+        log += f"  - 执行时间: {execution_time}秒"
+        return True, log, None
+
+    async def _execute_canvas_drag(self, payload: Dict, start_time: float):
+        active_page = self._get_canvas_runtime_page(payload)
+        if active_page is None or (hasattr(active_page, 'is_closed') and active_page.is_closed()):
+            return False, "✗ 画布拖拽失败: 当前没有可用页面", None
+
+        await active_page.bring_to_front()
+        start = payload['start']
+        target = payload['target']
+        source_x, source_y, source_frame_selector = await self._resolve_canvas_point(
+            active_page,
+            payload,
+            int(start['x']),
+            int(start['y']),
+        )
+        target_x, target_y, target_frame_selector = await self._resolve_canvas_point(
+            active_page,
+            payload,
+            int(target['x']),
+            int(target['y']),
+        )
+
+        await active_page.mouse.move(source_x, source_y)
+        await active_page.mouse.down()
+        await active_page.wait_for_timeout(int(payload.get('hold_ms') or 300))
+        await active_page.mouse.move(target_x, target_y, steps=int(payload.get('steps') or 30))
+        await active_page.wait_for_timeout(100)
+        await active_page.mouse.up()
+
+        execution_time = round(time.time() - start_time, 2)
+        log = "✓ 画布拖拽成功\n"
+        log += f"  - iframe: {source_frame_selector or target_frame_selector or '未使用 iframe 偏移'}\n"
+        log += f"  - 起点采集坐标: ({start['x']}, {start['y']})\n"
+        log += f"  - 终点采集坐标: ({target['x']}, {target['y']})\n"
+        log += f"  - 起点页面坐标: ({source_x}, {source_y})\n"
+        log += f"  - 终点页面坐标: ({target_x}, {target_y})\n"
+        log += f"  - 按住时长: {int(payload.get('hold_ms') or 300)}ms\n"
+        log += f"  - 拖拽步数: {int(payload.get('steps') or 30)}\n"
+        log += f"  - 当前页面: {active_page.url}\n"
+        log += f"  - 执行时间: {execution_time}秒"
+        return True, log, None
+
     async def execute_step(self, step, element_data: Dict) -> Tuple[bool, str, Optional[str]]:
         """
         执行单个测试步骤
@@ -582,6 +714,17 @@ class PlaywrightTestEngine:
                 log += f"  - 当前页面: {self.page.url}\n"
                 log += f"  - 执行时间: {execution_time}秒"
                 return True, log, None
+
+            canvas_payload = parse_canvas_action_payload(resolved_input_value)
+            if action_type == 'canvasClick':
+                if not canvas_payload or canvas_payload.get('action') != 'click':
+                    return False, "✗ 画布点击失败: 缺少有效的点击坐标配置", None
+                return await self._execute_canvas_click(canvas_payload, start_time)
+
+            if action_type == 'canvasDrag':
+                if not canvas_payload or canvas_payload.get('action') != 'drag':
+                    return False, "✗ 画布拖拽失败: 缺少有效的起点/终点坐标配置", None
+                return await self._execute_canvas_drag(canvas_payload, start_time)
 
             # 其他操作需要元素定位器
             # 获取元素定位器

@@ -21,7 +21,7 @@ import time
 import traceback
 import uuid
 from queue import Empty, Queue
-from threading import Event, Thread
+from threading import Event, RLock, Thread
 from urllib.parse import quote
 from playwright.sync_api import sync_playwright
 
@@ -105,6 +105,7 @@ STEP_RUNTIME_VARIABLE_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
 IMPORT_EXPORT_FORMAT_VERSION = 1
 SCROLL_COORDINATE_PICKER_SESSION_TTL = 1800
 SCROLL_COORDINATE_PICKER_SESSIONS = {}
+SCROLL_COORDINATE_PICKER_PLAYWRIGHT_START_LOCK = RLock()
 
 
 def _describe_scroll_coordinate_picker_page(page):
@@ -248,6 +249,35 @@ def _get_scroll_coordinate_picker_click_setup_script(binding_name):
                 if (typeof reporter !== 'function') {{
                     return
                 }}
+                const getFrameSelector = () => {{
+                    try {{
+                        if (window.self === window.top || !window.frameElement) {{
+                            return ''
+                        }}
+                        const frame = window.frameElement
+                        if (frame.id) {{
+                            return `#${{CSS.escape(frame.id)}}`
+                        }}
+                        if (frame.name) {{
+                            return `iframe[name="${{CSS.escape(frame.name)}}"]`
+                        }}
+                        const src = frame.getAttribute('src') || ''
+                        if (src) {{
+                            const stableSrc = src.split('?')[0]
+                            return `iframe[src*="${{stableSrc.replace(/"/g, '\\"')}}"]`
+                        }}
+                    }} catch (error) {{
+                        return ''
+                    }}
+                    return ''
+                }}
+                const getFrameUrl = () => {{
+                    try {{
+                        return window.self !== window.top ? window.location.href || '' : ''
+                    }} catch (error) {{
+                        return ''
+                    }}
+                }}
                 const x = Math.round(event.clientX || 0)
                 const y = Math.round(event.clientY || 0)
                 const key = `${{Math.round(event.timeStamp || 0)}}:${{x}}:${{y}}:${{event.button}}`
@@ -263,6 +293,9 @@ def _get_scroll_coordinate_picker_click_setup_script(binding_name):
                     pageY: Math.round(event.pageY || 0),
                     url: window.location.href || '',
                     title: document.title || '',
+                    isFrame: window.self !== window.top,
+                    frameSelector: getFrameSelector(),
+                    frameUrl: getFrameUrl(),
                 }})
             }}
 
@@ -780,7 +813,7 @@ def _scroll_coordinate_picker_worker(session):
 
     try:
         browser_name = session['browser_name']
-        playwright = sync_playwright().start()
+        playwright = _start_sync_playwright_for_subprocesses()
         browser_launcher = getattr(playwright, browser_name, playwright.chromium)
 
         launch_args = []
@@ -867,6 +900,9 @@ def _scroll_coordinate_picker_worker(session):
                 'field': pending_click.get('field') or 'start',
                 'url': str(payload.get('url') or ''),
                 'title': str(payload.get('title') or ''),
+                'is_frame': bool(payload.get('isFrame')),
+                'frame_selector': str(payload.get('frameSelector') or ''),
+                'frame_url': str(payload.get('frameUrl') or ''),
             }
             active_index = 0
             for index, page in enumerate(runtime.get('pages', [])):
@@ -882,7 +918,14 @@ def _scroll_coordinate_picker_worker(session):
 
         page = context.new_page()
         _register_scroll_coordinate_picker_page(page, session, runtime)
-        page.goto(session['base_url'], wait_until='domcontentloaded', timeout=30000)
+        try:
+            page.goto(session['base_url'], wait_until='domcontentloaded', timeout=15000)
+        except Exception as exc:
+            session['navigation_error'] = str(exc)
+            logger.warning(
+                '坐标采集浏览器打开页面超时或失败，保留浏览器会话供用户手动刷新/登录: %s',
+                exc,
+            )
         try:
             page.bring_to_front()
         except Exception:
@@ -940,7 +983,7 @@ def _scroll_coordinate_picker_worker(session):
                 if response_queue is not None:
                     response_queue.put({'ok': False, 'error': str(exc)})
     except Exception as exc:
-        session['worker_error'] = str(exc)
+        session['worker_error'] = str(exc) or exc.__class__.__name__
         session['worker_state'] = 'error'
         session['stop_event'].set()
         if not session['ready_event'].is_set():
@@ -1032,10 +1075,13 @@ def _create_scroll_coordinate_picker_session(user_id, base_url, browser='chrome'
         )
         session['worker'] = worker
         worker.start()
-        session['ready_event'].wait(timeout=45)
+        session['ready_event'].wait(timeout=25)
 
         if session.get('worker_state') != 'ready':
-            raise RuntimeError(session.get('worker_error') or '服务端坐标采集浏览器启动超时')
+            error_message = session.get('worker_error') or '服务端坐标采集浏览器启动超时'
+            if 'NotImplementedError' in error_message or 'subprocess' in error_message:
+                error_message = f'{error_message}。请检查 Windows 后端 Playwright 子进程事件循环配置，或改用访客机本地执行器采集。'
+            raise RuntimeError(error_message)
 
         SCROLL_COORDINATE_PICKER_SESSIONS[session_id] = session
         return session
@@ -1381,6 +1427,32 @@ def _create_playwright_event_loop():
     if proactor_loop is not None:
         return proactor_loop()
     return asyncio.new_event_loop()
+
+
+def _start_sync_playwright_for_subprocesses():
+    """Start Playwright with an event loop that supports subprocesses on Windows.
+
+    Daphne/Twisted may leave worker threads with a selector-based asyncio loop
+    policy on Windows. Playwright's sync API creates its own loop internally, so
+    setting a current loop is not enough; the temporary patch makes that internal
+    loop a Proactor loop and restores the global function immediately after
+    Playwright has started.
+    """
+    proactor_loop = getattr(asyncio, 'ProactorEventLoop', None)
+    if proactor_loop is None:
+        return sync_playwright().start()
+
+    with SCROLL_COORDINATE_PICKER_PLAYWRIGHT_START_LOCK:
+        original_new_event_loop = asyncio.new_event_loop
+
+        def _new_playwright_event_loop():
+            return _create_playwright_event_loop()
+
+        asyncio.new_event_loop = _new_playwright_event_loop
+        try:
+            return sync_playwright().start()
+        finally:
+            asyncio.new_event_loop = original_new_event_loop
 
 
 def get_accessible_project_for_request(request, project_id):

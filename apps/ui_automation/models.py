@@ -672,6 +672,8 @@ class TestCaseStep(models.Model):
         ('switchTab', '切换标签页'),
         ('refreshCurrentPage', '刷新当前页'),
         ('closeCurrentPage', '关闭当前页面'),
+        ('canvasClick', '画布点击'),
+        ('canvasDrag', '画布拖拽'),
     ]
 
     ASSERT_TYPE_CHOICES = [
@@ -1296,6 +1298,52 @@ class AITestCaseGenerationSkillDependency(models.Model):
 
     def __str__(self):
         return f'{self.module.code} -> {self.depends_on.code}'
+
+
+class AITestCaseGenerationSkillExecutionLog(models.Model):
+    """Routing log for AI UI test case generation skill modules."""
+    project = models.ForeignKey(
+        UiProject,
+        on_delete=models.CASCADE,
+        related_name='ai_generation_skill_execution_logs',
+        verbose_name='Project'
+    )
+    root_skill = models.ForeignKey(
+        AITestCaseGenerationSkill,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='execution_logs',
+        verbose_name='Root Skill'
+    )
+    source_text = models.TextField(blank=True, verbose_name='Source Text')
+    detected_intents = models.JSONField(default=list, blank=True, verbose_name='Detected Intents')
+    detected_entities = models.JSONField(default=dict, blank=True, verbose_name='Detected Entities')
+    selected_modules = models.JSONField(default=list, blank=True, verbose_name='Selected Modules')
+    prompt_chars = models.IntegerField(default=0, verbose_name='Prompt Characters')
+    warnings = models.JSONField(default=list, blank=True, verbose_name='Warnings')
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='created_ui_ai_generation_skill_execution_logs',
+        verbose_name='Created By'
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created At')
+
+    class Meta:
+        db_table = 'ui_ai_test_case_generation_skill_execution_logs'
+        verbose_name = 'UI AI Test Case Generation Skill Execution Log'
+        verbose_name_plural = 'UI AI Test Case Generation Skill Execution Logs'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['project', '-created_at']),
+            models.Index(fields=['root_skill', '-created_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.project_id}:{self.root_skill_id or ""}:{self.created_at}'
 
 
 class AITestCaseGenerationRecord(models.Model):

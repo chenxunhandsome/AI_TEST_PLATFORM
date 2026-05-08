@@ -7,6 +7,7 @@ import json
 import re
 import time
 from .variable_resolver import (
+    parse_canvas_action_payload,
     parse_scroll_action_payload,
     resolve_element_locator_payload,
     resolve_variables,
@@ -447,6 +448,158 @@ class SeleniumTestEngine:
             'name': payload.get('target_element_name') or payload.get('name') or '目标元素',
         }
 
+    def _switch_to_canvas_window(self, payload: Dict):
+        if self.driver is None:
+            return None
+
+        handles = list(self.driver.window_handles)
+        page_index = payload.get('page_index')
+        if page_index is None:
+            page_index = payload.get('active_page_index')
+        try:
+            page_index = int(page_index) if page_index is not None else None
+        except (TypeError, ValueError):
+            page_index = None
+
+        if handles and page_index is not None and 0 <= page_index < len(handles):
+            self.driver.switch_to.window(handles[page_index])
+
+        return self.driver
+
+    def _resolve_canvas_point(self, payload: Dict, x: int, y: int):
+        candidate_selectors = []
+        frame_selector = str(payload.get('frame_selector') or '').strip()
+        if frame_selector:
+            candidate_selectors.append(frame_selector)
+        candidate_selectors.extend([
+            '#plt-workflow-iframe',
+            'iframe[src*="workflow-modeler"]',
+            'iframe',
+        ])
+
+        seen_selectors = set()
+        for selector in candidate_selectors:
+            if not selector or selector in seen_selectors:
+                continue
+            seen_selectors.add(selector)
+            try:
+                frame = self.driver.find_element(By.CSS_SELECTOR, selector)
+                box = self.driver.execute_script(
+                    """
+                    const rect = arguments[0].getBoundingClientRect();
+                    return {
+                        x: rect.left,
+                        y: rect.top,
+                        width: rect.width,
+                        height: rect.height,
+                    };
+                    """,
+                    frame,
+                )
+                if box and float(box.get('width') or 0) > 0 and float(box.get('height') or 0) > 0:
+                    return int(round(float(box['x']) + x)), int(round(float(box['y']) + y)), selector
+            except Exception:
+                continue
+
+        return x, y, ''
+
+    def _dispatch_canvas_mouse_event(self, event_type: str, x: int, y: int):
+        if hasattr(self.driver, 'execute_cdp_cmd'):
+            cdp_type = {
+                'move': 'mouseMoved',
+                'down': 'mousePressed',
+                'up': 'mouseReleased',
+            }.get(event_type, event_type)
+            params = {
+                'type': cdp_type,
+                'x': x,
+                'y': y,
+                'button': 'left',
+                'buttons': 1 if event_type in {'down', 'move'} else 0,
+                'clickCount': 1,
+            }
+            if event_type == 'move':
+                params.pop('button', None)
+                params.pop('clickCount', None)
+            self.driver.execute_cdp_cmd('Input.dispatchMouseEvent', params)
+            return
+
+        self.driver.execute_script(
+            """
+            const [type, x, y] = arguments;
+            const target = document.elementFromPoint(x, y) || document.body;
+            target.dispatchEvent(new MouseEvent(type, {
+                bubbles: true,
+                cancelable: true,
+                view: window,
+                clientX: x,
+                clientY: y,
+                button: 0,
+                buttons: type === 'mouseup' ? 0 : 1,
+            }));
+            """,
+            {'move': 'mousemove', 'down': 'mousedown', 'up': 'mouseup'}.get(event_type, event_type),
+            x,
+            y,
+        )
+
+    def _execute_canvas_click(self, payload: Dict, start_time: float):
+        self._switch_to_canvas_window(payload)
+        page_x, page_y, frame_selector = self._resolve_canvas_point(payload, int(payload['x']), int(payload['y']))
+        self._dispatch_canvas_mouse_event('move', page_x, page_y)
+        self._dispatch_canvas_mouse_event('down', page_x, page_y)
+        self._dispatch_canvas_mouse_event('up', page_x, page_y)
+        time.sleep(0.2)
+
+        execution_time = round(time.time() - start_time, 2)
+        log = "✓ 画布点击成功\n"
+        log += f"  - iframe: {frame_selector or '未使用 iframe 偏移'}\n"
+        log += f"  - 采集坐标: ({payload['x']}, {payload['y']})\n"
+        log += f"  - 页面坐标: ({page_x}, {page_y})\n"
+        log += f"  - 当前页面: {self.driver.current_url}\n"
+        log += f"  - 执行时间: {execution_time}秒"
+        return True, log, None
+
+    def _execute_canvas_drag(self, payload: Dict, start_time: float):
+        self._switch_to_canvas_window(payload)
+        start = payload['start']
+        target = payload['target']
+        source_x, source_y, source_frame_selector = self._resolve_canvas_point(
+            payload,
+            int(start['x']),
+            int(start['y']),
+        )
+        target_x, target_y, target_frame_selector = self._resolve_canvas_point(
+            payload,
+            int(target['x']),
+            int(target['y']),
+        )
+        steps = int(payload.get('steps') or 30)
+        hold_seconds = max(int(payload.get('hold_ms') or 300), 0) / 1000
+
+        self._dispatch_canvas_mouse_event('move', source_x, source_y)
+        self._dispatch_canvas_mouse_event('down', source_x, source_y)
+        time.sleep(hold_seconds)
+        for index in range(1, steps + 1):
+            next_x = int(round(source_x + (target_x - source_x) * index / steps))
+            next_y = int(round(source_y + (target_y - source_y) * index / steps))
+            self._dispatch_canvas_mouse_event('move', next_x, next_y)
+            time.sleep(0.01)
+        self._dispatch_canvas_mouse_event('up', target_x, target_y)
+
+        execution_time = round(time.time() - start_time, 2)
+        log = "✓ 画布拖拽成功\n"
+        log += f"  - iframe: {source_frame_selector or target_frame_selector or '未使用 iframe 偏移'}\n"
+        log += f"  - 起点采集坐标: ({start['x']}, {start['y']})\n"
+        log += f"  - 终点采集坐标: ({target['x']}, {target['y']})\n"
+        log += f"  - 起点页面坐标: ({source_x}, {source_y})\n"
+        log += f"  - 终点页面坐标: ({target_x}, {target_y})\n"
+        log += f"  - 按住时长: {int(payload.get('hold_ms') or 300)}ms\n"
+        log += f"  - 拖拽步数: {steps}\n"
+        log += f"  - 当前页面: {self.driver.current_url}\n"
+        log += f"  - 执行时间: {execution_time}秒"
+        return True, log, None
+
     def _get_locator(self, locator_strategy: str, locator_value: str) -> Tuple[str, str]:
         """
         转换定位策略为Selenium的By类型
@@ -624,6 +777,17 @@ class SeleniumTestEngine:
                 log += f"  - 当前页面: {self.driver.current_url}\n"
                 log += f"  - 执行时间: {execution_time}秒"
                 return True, log, None
+
+            canvas_payload = parse_canvas_action_payload(resolved_input_value)
+            if action_type == 'canvasClick':
+                if not canvas_payload or canvas_payload.get('action') != 'click':
+                    return False, "✗ 画布点击失败: 缺少有效的点击坐标配置", None
+                return self._execute_canvas_click(canvas_payload, start_time)
+
+            if action_type == 'canvasDrag':
+                if not canvas_payload or canvas_payload.get('action') != 'drag':
+                    return False, "✗ 画布拖拽失败: 缺少有效的起点/终点坐标配置", None
+                return self._execute_canvas_drag(canvas_payload, start_time)
 
             # 其他操作需要元素定位器
             scroll_payload = parse_scroll_action_payload(resolved_input_value)

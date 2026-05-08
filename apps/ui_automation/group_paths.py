@@ -1,3 +1,8 @@
+def has_group_path_separator(group_path):
+    value = str(group_path or '')
+    return '/' in value or '\\' in value
+
+
 def normalize_group_path(group_path):
     if not group_path:
         return []
