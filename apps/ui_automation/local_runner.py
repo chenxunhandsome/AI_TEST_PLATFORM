@@ -103,11 +103,35 @@ def ensure_django():
 
 
 def build_metadata():
+    from apps.ui_automation.local_execution_service import LOCAL_RUNNER_PROTOCOL_VERSION
+
     return {
+        'local_runner_protocol_version': LOCAL_RUNNER_PROTOCOL_VERSION,
+        'capabilities': {
+            'serialized_execution_plan': True,
+            'disabled_step_reporting': True,
+            'step_id_reporting': True,
+        },
         'python': sys.version.split()[0],
         'platform_version': platform.version(),
         'machine': platform.machine(),
     }
+
+
+def format_step_timeout_summary(payload):
+    lines = []
+    for index, step in enumerate((payload or {}).get('steps') or [], start=1):
+        element_data = step.get('element_data') or {}
+        element_wait_timeout = element_data.get('wait_timeout')
+        if element_wait_timeout is not None:
+            element_wait_timeout = f'{element_wait_timeout}s'
+        lines.append(
+            f"  step {index} {step.get('action_type')}: "
+            f"wait_time={step.get('wait_time')}ms, "
+            f"element_wait_timeout={element_wait_timeout}, "
+            f"element={element_data.get('name') or ''}"
+        )
+    return '\n'.join(lines)
 
 
 def _normalize_picker_browser(browser):
@@ -1096,6 +1120,9 @@ def main():
             execution_id = task['execution_id']
             payload = task['payload']
             print(f"Claimed execution #{execution_id}: {payload.get('test_case_name')}")
+            timeout_summary = format_step_timeout_summary(payload)
+            if timeout_summary:
+                print(f"Execution #{execution_id} timeout payload:\n{timeout_summary}")
             result = execute_serialized_test_case(
                 payload,
                 engine_type=task.get('engine', 'playwright'),

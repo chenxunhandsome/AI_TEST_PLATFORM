@@ -74,6 +74,28 @@ def resolve_element_action_timeout_seconds(step, element_data: Dict) -> float:
     return DEFAULT_ELEMENT_TIMEOUT_SECONDS
 
 
+def describe_element_action_timeout(step, element_data: Dict) -> Dict:
+    """Return timeout diagnostics for local runner logs and execution reports."""
+    timeout_seconds = resolve_element_action_timeout_seconds(step, element_data)
+    step_wait_time = _normalize_positive_number(getattr(step, 'wait_time', None))
+    element_wait_timeout = _normalize_positive_number((element_data or {}).get('wait_timeout'))
+    source = 'default'
+
+    if step_wait_time and int(step_wait_time) != DEFAULT_STEP_WAIT_TIME_MS:
+        source = 'step.wait_time'
+    elif element_wait_timeout:
+        source = 'element.wait_timeout'
+    elif step_wait_time:
+        source = 'step.wait_time'
+
+    return {
+        'timeout_seconds': timeout_seconds,
+        'source': source,
+        'step_wait_time_ms': int(step_wait_time) if step_wait_time else None,
+        'element_wait_timeout_seconds': element_wait_timeout,
+    }
+
+
 def append_runtime_variable_log(step, log, value):
     save_as = str(getattr(step, 'save_as', '') or '').strip()
     if not save_as:
@@ -680,6 +702,133 @@ class SeleniumTestEngine:
 
         return by_type, locator_value
 
+    def _dropdown_option_text_candidates(self, step, element_data: Dict, locator_strategy: str, locator_value: str, element_name: str) -> List[str]:
+        candidates = []
+
+        def add(value):
+            value = str(value or '').strip()
+            if not value:
+                return
+            value = re.sub(r'\s+', ' ', value)
+            if 1 <= len(value) <= 120 and value not in candidates:
+                candidates.append(value)
+
+        if str(locator_strategy or '').lower() == 'text':
+            add(locator_value)
+
+        for text in [
+            getattr(step, 'input_value', ''),
+            getattr(step, 'description', ''),
+            element_name,
+            locator_value,
+        ]:
+            text = str(text or '')
+            for quoted in re.findall(r'[「"“\']([^」"”\']{1,120})[」"”\']', text):
+                add(quoted)
+            for pattern in [
+                r'normalize-space\(\)\s*=\s*[\'"]([^\'"]{1,120})[\'"]',
+                r'contains\(\s*(?:text\(\)|\.)\s*,\s*[\'"]([^\'"]{1,120})[\'"]\s*\)',
+                r'text\(\)\s*=\s*[\'"]([^\'"]{1,120})[\'"]',
+            ]:
+                for match in re.findall(pattern, text):
+                    add(match)
+
+        clean_name = re.sub(r'(下拉框?选项|下拉选项|选项|按钮|输入框)$', '', str(element_name or '').strip())
+        if clean_name and clean_name != element_name:
+            add(clean_name)
+        if re.search(r'[A-Za-z0-9][A-Za-z0-9_-]*\s*-\s*\S+', str(element_name or '')):
+            add(clean_name or element_name)
+
+        return candidates
+
+    def _click_visible_dropdown_option_by_text(self, text_candidates: List[str], timeout_seconds: float) -> Optional[Dict]:
+        if not text_candidates:
+            return None
+
+        deadline = time.time() + max(timeout_seconds, 0.1)
+        script = """
+            const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+            const wanted = arguments[0].map(normalize).filter(Boolean);
+            const selector = [
+                '.el-select__popper [role="option"]',
+                '.el-select-dropdown__item',
+                '.vxe-select--panel [role="option"]',
+                '.vxe-select-option',
+                '.vxe-pulldown--panel [role="option"]',
+                '[role="listbox"] [role="option"]'
+            ].join(',');
+
+            const isVisible = element => {
+                if (!element || !element.isConnected) return false;
+                const rect = element.getBoundingClientRect();
+                if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+
+                let current = element;
+                while (current && current.nodeType === Node.ELEMENT_NODE) {
+                    const style = window.getComputedStyle(current);
+                    if (current.getAttribute('aria-hidden') === 'true') return false;
+                    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) {
+                        return false;
+                    }
+                    current = current.parentElement;
+                }
+                return true;
+            };
+
+            const options = Array.from(document.querySelectorAll(selector));
+            const visibleOptions = options
+                .filter(isVisible)
+                .map(element => ({ text: normalize(element.innerText || element.textContent), element }))
+                .filter(item => item.text);
+
+            let matched = visibleOptions.find(item => wanted.includes(item.text));
+            let matchType = 'exact';
+            if (!matched) {
+                matched = visibleOptions.find(item => wanted.some(text => item.text.includes(text)));
+                matchType = 'contains';
+            }
+            if (!matched) {
+                return {
+                    clicked: false,
+                    visibleOptions: visibleOptions.map(item => item.text).slice(0, 20),
+                };
+            }
+
+            const target = matched.element;
+            target.scrollIntoView({ block: 'center', inline: 'nearest' });
+            const rect = target.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            const eventInit = {
+                bubbles: true,
+                cancelable: true,
+                view: window,
+                clientX: x,
+                clientY: y,
+                button: 0,
+            };
+            target.dispatchEvent(new MouseEvent('mousedown', eventInit));
+            target.dispatchEvent(new MouseEvent('mouseup', eventInit));
+            target.dispatchEvent(new MouseEvent('click', eventInit));
+            return {
+                clicked: true,
+                text: matched.text,
+                matchType,
+                visibleOptions: visibleOptions.map(item => item.text).slice(0, 20),
+            };
+        """
+
+        while True:
+            result = self.driver.execute_script(script, text_candidates)
+            if isinstance(result, dict) and result.get('clicked'):
+                time.sleep(0.3)
+                return result
+            if isinstance(result, dict) and not result.get('visibleOptions'):
+                return None
+            if time.time() >= deadline:
+                return None
+            time.sleep(0.15)
+
     def execute_step(self, step, element_data: Dict) -> Tuple[bool, str, Optional[str]]:
         """
         执行单个测试步骤
@@ -856,6 +1005,26 @@ class SeleniumTestEngine:
             from selenium.common.exceptions import StaleElementReferenceException
             
             if action_type == 'click':
+                option_text_candidates = self._dropdown_option_text_candidates(
+                    step,
+                    element_data,
+                    locator_strategy,
+                    locator_value,
+                    element_name,
+                )
+                option_click_result = self._click_visible_dropdown_option_by_text(
+                    option_text_candidates,
+                    timeout_seconds,
+                )
+                if option_click_result:
+                    execution_time = round(time.time() - start_time, 2)
+                    log = f"✓ 选择下拉选项 '{option_click_result.get('text')}' 成功\n"
+                    log += f"  - 目标候选: {', '.join(option_text_candidates)}\n"
+                    log += f"  - 匹配方式: visible-dropdown-{option_click_result.get('matchType', 'exact')}\n"
+                    log += f"  - 可见选项: {', '.join(option_click_result.get('visibleOptions') or [])}\n"
+                    log += f"  - 执行时间: {execution_time}秒"
+                    return True, log, None
+
                 # 点击操作：等待元素可点击（解决 stale element 问题）
                 # 对于下拉框选项，需要等待可见性，且必须找到可见的那个（因为可能有多个同名元素，有的隐藏有的显示）
                 if 'dropdown' in by_value.lower() or 'el-select' in by_value.lower() or '下拉' in element_name or '选项' in element_name:

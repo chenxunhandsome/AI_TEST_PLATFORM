@@ -51,6 +51,28 @@ def resolve_element_action_timeout_ms(step, element_data: Dict) -> int:
     return DEFAULT_ELEMENT_TIMEOUT_MS
 
 
+def describe_element_action_timeout(step, element_data: Dict) -> Dict:
+    """Return timeout diagnostics for local runner logs and execution reports."""
+    timeout_ms = resolve_element_action_timeout_ms(step, element_data)
+    step_wait_time = _normalize_positive_number(getattr(step, 'wait_time', None))
+    element_wait_timeout = _normalize_positive_number((element_data or {}).get('wait_timeout'))
+    source = 'default'
+
+    if step_wait_time and int(step_wait_time) != DEFAULT_STEP_WAIT_TIME_MS:
+        source = 'step.wait_time'
+    elif element_wait_timeout:
+        source = 'element.wait_timeout'
+    elif step_wait_time:
+        source = 'step.wait_time'
+
+    return {
+        'timeout_ms': timeout_ms,
+        'source': source,
+        'step_wait_time_ms': int(step_wait_time) if step_wait_time else None,
+        'element_wait_timeout_seconds': element_wait_timeout,
+    }
+
+
 def append_runtime_variable_log(step, log, value):
     save_as = str(getattr(step, 'save_as', '') or '').strip()
     if not save_as:
@@ -424,6 +446,516 @@ class PlaywrightTestEngine:
         if locator_strategy == 'test-id':
             return self.page.get_by_test_id(locator_value)
         return self.page.locator(locator_value)
+
+    async def _wait_for_locator_uncovered(self, locator, timeout_ms: int) -> bool:
+        """Wait until the visible element is not covered by a loading mask at its center point."""
+        deadline = time.time() + max(timeout_ms, 1) / 1000
+        last_blocker = ''
+
+        while True:
+            try:
+                result = await locator.evaluate("""
+                    element => {
+                        const rect = element.getBoundingClientRect()
+                        if (!rect || rect.width <= 0 || rect.height <= 0) {
+                            return { ready: true, blocker: '' }
+                        }
+
+                        const style = window.getComputedStyle(element)
+                        if (style.pointerEvents === 'none') {
+                            return { ready: true, blocker: '' }
+                        }
+
+                        const x = Math.min(Math.max(rect.left + rect.width / 2, 0), window.innerWidth - 1)
+                        const y = Math.min(Math.max(rect.top + rect.height / 2, 0), window.innerHeight - 1)
+                        const top = document.elementFromPoint(x, y)
+                        if (!top || top === element || element.contains(top)) {
+                            return { ready: true, blocker: '' }
+                        }
+
+                        const tag = String(top.tagName || '').toLowerCase()
+                        const className = String(top.className || '').trim().split(/\\s+/).slice(0, 4).join('.')
+                        const id = top.id ? `#${top.id}` : ''
+                        return {
+                            ready: false,
+                            blocker: `${tag}${id}${className ? `.${className}` : ''}`
+                        }
+                    }
+                """)
+                if isinstance(result, dict):
+                    if result.get('ready'):
+                        return True
+                    last_blocker = result.get('blocker') or last_blocker
+            except Exception:
+                return True
+
+            if time.time() >= deadline:
+                if last_blocker:
+                    raise TimeoutError(f"元素已可见，但中心点仍被遮挡: {last_blocker}")
+                raise TimeoutError("元素已可见，但等待元素可交互超时")
+
+            await asyncio.sleep(0.1)
+
+    def _dropdown_option_text_candidates(self, step, element_data: Dict, locator_strategy: str, locator_value: str, element_name: str) -> List[str]:
+        candidates = []
+
+        def add(value):
+            value = str(value or '').strip()
+            if not value:
+                return
+            value = re.sub(r'\s+', ' ', value)
+            if 1 <= len(value) <= 120 and value not in candidates:
+                candidates.append(value)
+
+        if str(locator_strategy or '').lower() == 'text':
+            add(locator_value)
+
+        for text in [
+            getattr(step, 'input_value', ''),
+            getattr(step, 'description', ''),
+            element_name,
+            locator_value,
+        ]:
+            text = str(text or '')
+            for quoted in re.findall(r'[「"“\']([^」"”\']{1,120})[」"”\']', text):
+                add(quoted)
+            for pattern in [
+                r'normalize-space\(\)\s*=\s*[\'"]([^\'"]{1,120})[\'"]',
+                r'contains\(\s*(?:text\(\)|\.)\s*,\s*[\'"]([^\'"]{1,120})[\'"]\s*\)',
+                r'text\(\)\s*=\s*[\'"]([^\'"]{1,120})[\'"]',
+            ]:
+                for match in re.findall(pattern, text):
+                    add(match)
+
+        clean_name = re.sub(r'(下拉框?选项|下拉选项|选项|按钮|输入框)$', '', str(element_name or '').strip())
+        if clean_name and clean_name != element_name:
+            add(clean_name)
+        if re.search(r'[A-Za-z0-9][A-Za-z0-9_-]*\s*-\s*\S+', str(element_name or '')):
+            add(clean_name or element_name)
+
+        return candidates
+
+    async def _click_visible_dropdown_option_by_text(self, text_candidates: List[str], timeout_ms: int) -> Optional[Dict]:
+        if not text_candidates:
+            return None
+
+        deadline = time.time() + max(timeout_ms, 1) / 1000
+        while True:
+            result = await self.page.evaluate(
+                """
+                (texts) => {
+                    const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+                    const wanted = texts.map(normalize).filter(Boolean);
+                    const selector = [
+                        '.el-select__popper [role="option"]',
+                        '.el-select-dropdown__item',
+                        '.vxe-select--panel [role="option"]',
+                        '.vxe-select-option',
+                        '.vxe-pulldown--panel [role="option"]',
+                        '[role="listbox"] [role="option"]'
+                    ].join(',');
+
+                    const isVisible = element => {
+                        if (!element || !element.isConnected) return false;
+                        const rect = element.getBoundingClientRect();
+                        if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+
+                        let current = element;
+                        while (current && current.nodeType === Node.ELEMENT_NODE) {
+                            const style = window.getComputedStyle(current);
+                            if (current.getAttribute('aria-hidden') === 'true') return false;
+                            if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) {
+                                return false;
+                            }
+                            current = current.parentElement;
+                        }
+                        return true;
+                    };
+
+                    const options = Array.from(document.querySelectorAll(selector));
+                    const visibleOptions = options
+                        .filter(isVisible)
+                        .map(element => ({ text: normalize(element.innerText || element.textContent), element }))
+                        .filter(item => item.text);
+
+                    let matched = visibleOptions.find(item => wanted.includes(item.text));
+                    let matchType = 'exact';
+                    if (!matched) {
+                        matched = visibleOptions.find(item => wanted.some(text => item.text.includes(text)));
+                        matchType = 'contains';
+                    }
+                    if (!matched) {
+                        return {
+                            clicked: false,
+                            visibleOptions: visibleOptions.map(item => item.text).slice(0, 20),
+                        };
+                    }
+
+                    const target = matched.element;
+                    target.scrollIntoView({ block: 'center', inline: 'nearest' });
+                    const rect = target.getBoundingClientRect();
+                    const x = rect.left + rect.width / 2;
+                    const y = rect.top + rect.height / 2;
+                    const eventInit = {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                        clientX: x,
+                        clientY: y,
+                        button: 0,
+                    };
+                    target.dispatchEvent(new MouseEvent('mousedown', eventInit));
+                    target.dispatchEvent(new MouseEvent('mouseup', eventInit));
+                    target.dispatchEvent(new MouseEvent('click', eventInit));
+                    return {
+                        clicked: true,
+                        text: matched.text,
+                        matchType,
+                        visibleOptions: visibleOptions.map(item => item.text).slice(0, 20),
+                    };
+                }
+                """,
+                text_candidates,
+            )
+            if isinstance(result, dict) and result.get('clicked'):
+                await asyncio.sleep(0.3)
+                return result
+            if isinstance(result, dict) and not result.get('visibleOptions'):
+                return None
+            if time.time() >= deadline:
+                return None
+            await asyncio.sleep(0.15)
+
+    async def _click_visible_dropdown_option_by_locator(
+        self,
+        locator_strategy: str,
+        locator_value: str,
+        timeout_ms: int,
+        allow_loose_scrollbar_match: bool = False,
+    ) -> Optional[Dict]:
+        if not locator_value:
+            return None
+
+        deadline = time.time() + max(timeout_ms, 1) / 1000
+        while True:
+            result = await self.page.evaluate(
+                """
+                ({ strategy, value, allowLooseScrollbarMatch }) => {
+                    const normalize = text => String(text || '').replace(/\\s+/g, ' ').trim();
+                    const isVisible = element => {
+                        if (!element || !element.isConnected) return false;
+                        const rect = element.getBoundingClientRect();
+                        if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+
+                        let current = element;
+                        while (current && current.nodeType === Node.ELEMENT_NODE) {
+                            const style = window.getComputedStyle(current);
+                            if (current.getAttribute('aria-hidden') === 'true') return false;
+                            if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) {
+                                return false;
+                            }
+                            current = current.parentElement;
+                        }
+                        return true;
+                    };
+
+                    const isDropdownPanel = element => Boolean(element && element.closest([
+                        '.el-select__popper',
+                        '.el-select-dropdown',
+                        '.el-popper',
+                        '.vxe-select--panel',
+                        '.vxe-pulldown--panel',
+                        '[role="listbox"]'
+                    ].join(',')));
+
+                    const getOptionTarget = element => element && element.closest([
+                        '[role="option"]',
+                        '.el-select-dropdown__item',
+                        '.el-cascader-node',
+                        '.vxe-select-option',
+                        '.vxe-pulldown--panel [role="option"]',
+                        'li'
+                    ].join(','));
+
+                    let matches = [];
+                    try {
+                        if (String(strategy || '').toLowerCase() === 'xpath') {
+                            const xpath = String(value || '').replace(/^xpath=/i, '');
+                            const snapshot = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                            for (let i = 0; i < snapshot.snapshotLength; i += 1) {
+                                const node = snapshot.snapshotItem(i);
+                                if (node && node.nodeType === Node.ELEMENT_NODE) {
+                                    matches.push(node);
+                                }
+                            }
+                        } else {
+                            matches = Array.from(document.querySelectorAll(String(value || '')));
+                        }
+                    } catch (error) {
+                        return { clicked: false, error: String(error && error.message || error), visibleOptions: [] };
+                    }
+
+                    const visibleMatches = [];
+                    for (const element of matches) {
+                        if (!isVisible(element)) {
+                            continue;
+                        }
+                        if (!allowLooseScrollbarMatch && !isDropdownPanel(element)) {
+                            continue;
+                        }
+                        let optionTarget = getOptionTarget(element);
+                        if (!optionTarget && allowLooseScrollbarMatch) {
+                            optionTarget = element;
+                        }
+                        if (!optionTarget || !isVisible(optionTarget)) {
+                            continue;
+                        }
+                        if (optionTarget.closest('button,.el-button,[role="button"],.el-dialog__footer')) {
+                            continue;
+                        }
+                        visibleMatches.push({
+                            element,
+                            target: optionTarget,
+                            text: normalize(optionTarget.innerText || optionTarget.textContent || element.innerText || element.textContent),
+                        });
+                    }
+
+                    if (!visibleMatches.length) {
+                        if (allowLooseScrollbarMatch && matches.length === 1) {
+                            const element = matches[0];
+                            let optionTarget = getOptionTarget(element) || element;
+                            if (optionTarget && !optionTarget.closest('button,.el-button,[role="button"],.el-dialog__footer')) {
+                                const text = normalize(optionTarget.innerText || optionTarget.textContent || element.innerText || element.textContent);
+                                try {
+                                    optionTarget.scrollIntoView({ block: 'center', inline: 'nearest' });
+                                } catch (error) {
+                                    // Hidden dropdown nodes can still have valid component event handlers.
+                                }
+                                const rect = optionTarget.getBoundingClientRect ? optionTarget.getBoundingClientRect() : null;
+                                const x = rect ? rect.left + rect.width / 2 : 0;
+                                const y = rect ? rect.top + rect.height / 2 : 0;
+                                const eventInit = {
+                                    bubbles: true,
+                                    cancelable: true,
+                                    view: window,
+                                    clientX: x,
+                                    clientY: y,
+                                    button: 0,
+                                };
+                                optionTarget.dispatchEvent(new MouseEvent('mousedown', eventInit));
+                                optionTarget.dispatchEvent(new MouseEvent('mouseup', eventInit));
+                                optionTarget.dispatchEvent(new MouseEvent('click', eventInit));
+                                if (typeof optionTarget.click === 'function') {
+                                    try {
+                                        optionTarget.click();
+                                    } catch (error) {
+                                        // The dispatched mouse events above are the primary path.
+                                    }
+                                }
+                                return {
+                                    clicked: true,
+                                    text,
+                                    matchType: 'locator-scrollbar-dom-click-attached',
+                                    visibleOptions: text ? [text] : [],
+                                };
+                            }
+                        }
+                        const visibleTexts = matches
+                            .filter(isVisible)
+                            .map(element => normalize(element.innerText || element.textContent))
+                            .filter(Boolean)
+                            .slice(0, 20);
+                        return { clicked: false, visibleOptions: visibleTexts };
+                    }
+
+                    const matched = visibleMatches[0];
+                    const target = matched.target;
+                    target.scrollIntoView({ block: 'center', inline: 'nearest' });
+                    const rect = target.getBoundingClientRect();
+                    const x = rect.left + rect.width / 2;
+                    const y = rect.top + rect.height / 2;
+                    const eventInit = {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                        clientX: x,
+                        clientY: y,
+                        button: 0,
+                    };
+                    target.dispatchEvent(new MouseEvent('mousedown', eventInit));
+                    target.dispatchEvent(new MouseEvent('mouseup', eventInit));
+                    target.dispatchEvent(new MouseEvent('click', eventInit));
+                    return {
+                        clicked: true,
+                        text: matched.text,
+                        matchType: allowLooseScrollbarMatch ? 'locator-scrollbar-dom-click' : 'locator-dropdown-option',
+                        visibleOptions: visibleMatches.map(item => item.text).slice(0, 20),
+                    };
+                }
+                """,
+                {
+                    'strategy': locator_strategy,
+                    'value': locator_value,
+                    'allowLooseScrollbarMatch': allow_loose_scrollbar_match,
+                },
+            )
+            if isinstance(result, dict) and result.get('clicked'):
+                await asyncio.sleep(0.3)
+                return result
+            if isinstance(result, dict) and not result.get('visibleOptions'):
+                return None
+            if time.time() >= deadline:
+                return result if isinstance(result, dict) else None
+            await asyncio.sleep(0.15)
+
+    async def _click_xpath_element_by_dom(self, locator_value: str, timeout_ms: int) -> Optional[Dict]:
+        if not locator_value:
+            return None
+
+        deadline = time.time() + max(timeout_ms, 1) / 1000
+        while True:
+            result = await self.page.evaluate(
+                """
+                (value) => {
+                    const normalize = text => String(text || '').replace(/\\s+/g, ' ').trim();
+                    const xpath = String(value || '').replace(/^xpath=/i, '');
+                    const isVisible = element => {
+                        if (!element || !element.isConnected) return false;
+                        const rect = element.getBoundingClientRect();
+                        if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+                        let current = element;
+                        while (current && current.nodeType === Node.ELEMENT_NODE) {
+                            const style = window.getComputedStyle(current);
+                            if (current.getAttribute('aria-hidden') === 'true') return false;
+                            if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) {
+                                return false;
+                            }
+                            current = current.parentElement;
+                        }
+                        return true;
+                    };
+                    const clickableAncestorSelectors = [
+                        '.el-select__wrapper',
+                        '.el-input__wrapper',
+                        '.el-select',
+                        '.el-input',
+                        '.vxe-input',
+                        '.vxe-select',
+                        '.el-form-item__content',
+                        '.el-form-item'
+                    ];
+                    const getClickableTarget = element => {
+                        if (!element || !element.isConnected) return null;
+
+                        if (isVisible(element)) {
+                            return element;
+                        }
+
+                        for (const selector of clickableAncestorSelectors) {
+                            const ancestor = element.closest(selector);
+                            if (isVisible(ancestor)) {
+                                return ancestor;
+                            }
+                        }
+
+                        const formItem = element.closest('.el-form-item, .el-form-item__content');
+                        if (formItem) {
+                            const nested = formItem.querySelector([
+                                '.el-select__wrapper',
+                                '.el-input__wrapper',
+                                '.el-select',
+                                '.el-input',
+                                'input'
+                            ].join(','));
+                            if (isVisible(nested)) {
+                                return nested;
+                            }
+                        }
+
+                        return null;
+                    };
+
+                    let matches = [];
+                    try {
+                        const snapshot = document.evaluate(xpath, document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null);
+                        for (let i = 0; i < snapshot.snapshotLength; i += 1) {
+                            const node = snapshot.snapshotItem(i);
+                            if (node && node.nodeType === Node.ELEMENT_NODE) {
+                                matches.push(node);
+                            }
+                        }
+                    } catch (error) {
+                        return { clicked: false, error: String(error && error.message || error), count: 0 };
+                    }
+
+                    if (!matches.length) {
+                        return { clicked: false, count: 0 };
+                    }
+
+                    const clickableMatches = matches
+                        .map(element => ({ element, target: getClickableTarget(element) }))
+                        .filter(item => item.target);
+                    const visibleMatches = clickableMatches.filter(item => isVisible(item.target));
+                    const targetItem = visibleMatches[0] || clickableMatches[0] || (matches.length === 1 ? { element: matches[0], target: matches[0] } : null);
+                    const target = targetItem ? targetItem.target : null;
+                    if (!target) {
+                        return {
+                            clicked: false,
+                            count: matches.length,
+                            visibleCount: 0,
+                            matchedTexts: matches.map(element => normalize(element.innerText || element.textContent)).filter(Boolean).slice(0, 20),
+                        };
+                    }
+
+                    try {
+                        target.scrollIntoView({ block: 'center', inline: 'nearest' });
+                    } catch (error) {
+                        // Some attached nodes cannot be scrolled; direct events still avoid coordinate hit-testing.
+                    }
+                    if (typeof target.focus === 'function') {
+                        try {
+                            target.focus({ preventScroll: true });
+                        } catch (error) {
+                            try { target.focus(); } catch (_) {}
+                        }
+                    }
+
+                    const rect = target.getBoundingClientRect ? target.getBoundingClientRect() : null;
+                    const x = rect ? rect.left + rect.width / 2 : 0;
+                    const y = rect ? rect.top + rect.height / 2 : 0;
+                    const eventInit = {
+                        bubbles: true,
+                        cancelable: true,
+                        view: window,
+                        clientX: x,
+                        clientY: y,
+                        button: 0,
+                    };
+                    target.dispatchEvent(new MouseEvent('mouseover', eventInit));
+                    target.dispatchEvent(new MouseEvent('mousemove', eventInit));
+                    target.dispatchEvent(new MouseEvent('mousedown', eventInit));
+                    target.dispatchEvent(new MouseEvent('mouseup', eventInit));
+                    target.dispatchEvent(new MouseEvent('click', eventInit));
+
+                    return {
+                        clicked: true,
+                        count: matches.length,
+                        visibleCount: visibleMatches.length,
+                        text: normalize(target.innerText || target.textContent || target.value || ''),
+                        tagName: String(target.tagName || '').toLowerCase(),
+                        sourceTagName: String((targetItem && targetItem.element && targetItem.element.tagName) || '').toLowerCase(),
+                        method: visibleMatches.length ? 'xpath-dom-click-visible-or-ancestor' : 'xpath-dom-click-attached-unique',
+                    };
+                }
+                """,
+                locator_value,
+            )
+            if isinstance(result, dict) and result.get('clicked'):
+                await asyncio.sleep(0.3)
+                return result
+            if time.time() >= deadline:
+                return result if isinstance(result, dict) else None
+            await asyncio.sleep(0.15)
 
     def _resolve_drag_target_data(self, raw_input) -> Dict[str, str]:
         if not raw_input:
@@ -946,21 +1478,73 @@ class PlaywrightTestEngine:
 
                 # 对于下拉框选项，需要特殊处理
                 # 通过定位器特征自动识别下拉框选项
+                is_scrollbar_xpath_option = (
+                    locator_strategy.lower() == 'xpath'
+                    and 'el-scrollbar' in locator_value.lower()
+                    and '//span' in locator_value.lower()
+                )
+                locator_value_lower = locator_value.lower()
+                is_option_like_locator = (
+                    is_scrollbar_xpath_option
+                    or 'role="option"' in locator_value_lower
+                    or "role='option'" in locator_value_lower
+                    or '[role="option"]' in locator_value_lower
+                    or "[role='option']" in locator_value_lower
+                    or 'el-select-dropdown__item' in locator_value_lower
+                    or 'vxe-select-option' in locator_value_lower
+                    or 'el-cascader-node' in locator_value_lower
+                    or ('//li' in locator_value_lower and '//input' not in locator_value_lower)
+                )
+                is_xpath_dropdown_trigger = (
+                    locator_strategy.lower() == 'xpath'
+                    and (
+                        '下拉框' in element_name
+                        or '下拉框' in str(getattr(step, 'description', '') or '')
+                        or '//input' in locator_value_lower
+                    )
+                    and not is_scrollbar_xpath_option
+                    and not is_option_like_locator
+                )
+                is_name_only_dropdown_option = (
+                    '选项' in element_name
+                    and '//input' not in locator_value_lower
+                    and ' input' not in locator_value_lower
+                    and not locator_value_lower.endswith('input')
+                )
                 is_dropdown_option = (
-                    'dropdown' in locator_value.lower() or
-                    'el-select' in locator_value.lower() or
-                    '下拉' in element_name or
-                    '选项' in element_name or
-                    'role="option"' in locator_value.lower() or
-                    'el-select-dropdown__item' in locator_value.lower() or  # Element Plus 下拉框
-                    ('//li' in locator_value and 'span=' in locator_value)  # XPath 下拉框模式
+                    is_option_like_locator
+                    or is_name_only_dropdown_option
                 )
                 
                 # 检测是否是点击 el-select 容器（下拉框触发器）
                 is_select_trigger = ('el-select' in locator_value.lower() and 
                                     'ancestor::' in locator_value.lower() and
                                     'el-select-dropdown' not in locator_value.lower())
-                
+
+                if is_xpath_dropdown_trigger:
+                    dom_click_result = await self._click_xpath_element_by_dom(locator_value, timeout_ms)
+                    if dom_click_result and dom_click_result.get('clicked'):
+                        await asyncio.sleep(0.5)
+                        execution_time = round(time.time() - start_time, 2)
+                        log = f"✓ 点击下拉框触发器 '{element_name}' 成功\n"
+                        log += f"  - 定位器: {locator_strategy}={locator_value}\n"
+                        log += "  - 点击方式: XPath DOM事件派发（不使用坐标点击）\n"
+                        log += "  - 后续动作: 仅打开下拉框，不执行选项兜底点击，不点击空白处关闭\n"
+                        log += f"  - 匹配数量: {dom_click_result.get('count')}\n"
+                        log += f"  - 可见数量: {dom_click_result.get('visibleCount')}\n"
+                        log += f"  - 执行方法: {dom_click_result.get('method')}\n"
+                        log += f"  - 执行时间: {execution_time}秒"
+                        return True, log, None
+
+                    execution_time = round(time.time() - start_time, 2)
+                    error_log = f"✗ 点击下拉框触发器 '{element_name}' 失败\n"
+                    error_log += f"  - 定位器: {locator_strategy}={locator_value}\n"
+                    error_log += "  - 失败原因: XPath 未命中可安全点击的触发器元素，已阻止坐标点击避免误点其他按钮\n"
+                    if isinstance(dom_click_result, dict) and dom_click_result.get('matchedTexts'):
+                        error_log += f"  - 命中文本: {', '.join(dom_click_result.get('matchedTexts') or [])}\n"
+                    error_log += f"  - 执行时间: {execution_time}秒"
+                    return False, error_log, None
+
                 if is_select_trigger:
                     # el-select 容器：点击内部的真正触发器，触发完整事件链
                     logger.info(f"检测到 el-select 容器，使用 Playwright 原生点击...")
@@ -1012,6 +1596,54 @@ class PlaywrightTestEngine:
                     
                     # 等待下拉框完全展开并渲染
                     await asyncio.sleep(0.8)
+
+                    option_text_candidates = self._dropdown_option_text_candidates(
+                        step,
+                        element_data,
+                        locator_strategy,
+                        locator_value,
+                        element_name,
+                    )
+                    option_click_result = await self._click_visible_dropdown_option_by_text(
+                        option_text_candidates,
+                        timeout_ms,
+                    )
+                    if option_click_result:
+                        execution_time = round(time.time() - start_time, 2)
+                        log = f"✓ 选择下拉选项 '{option_click_result.get('text')}' 成功\n"
+                        log += f"  - 目标候选: {', '.join(option_text_candidates)}\n"
+                        log += f"  - 匹配方式: visible-dropdown-{option_click_result.get('matchType', 'exact')}\n"
+                        log += f"  - 可见选项: {', '.join(option_click_result.get('visibleOptions') or [])}\n"
+                        log += f"  - 执行时间: {execution_time}秒"
+                        return True, log, None
+
+                    locator_option_result = await self._click_visible_dropdown_option_by_locator(
+                        locator_strategy,
+                        locator_value,
+                        timeout_ms,
+                        allow_loose_scrollbar_match=is_scrollbar_xpath_option,
+                    )
+                    if locator_option_result and locator_option_result.get('clicked'):
+                        execution_time = round(time.time() - start_time, 2)
+                        log = f"✓ 点击下拉框选项 '{locator_option_result.get('text')}' 成功\n"
+                        log += f"  - 定位器: {locator_strategy}={locator_value}\n"
+                        log += f"  - 匹配方式: {locator_option_result.get('matchType', 'locator-dropdown-option')}\n"
+                        log += f"  - 可见选项: {', '.join(locator_option_result.get('visibleOptions') or [])}\n"
+                        log += f"  - 执行时间: {execution_time}秒"
+                        return True, log, None
+
+                    if is_scrollbar_xpath_option:
+                        execution_time = round(time.time() - start_time, 2)
+                        visible_options = []
+                        if isinstance(locator_option_result, dict):
+                            visible_options = locator_option_result.get('visibleOptions') or []
+                        error_log = f"✗ 点击下拉框选项 '{element_name}' 失败\n"
+                        error_log += f"  - 定位器: {locator_strategy}={locator_value}\n"
+                        error_log += "  - 失败原因: 未在可见下拉选项容器中找到匹配项，已阻止点击普通页面按钮\n"
+                        if visible_options:
+                            error_log += f"  - 可见匹配文本: {', '.join(visible_options)}\n"
+                        error_log += f"  - 执行时间: {execution_time}秒"
+                        return False, error_log, None
                     
                     try:
                         # 等待元素在 DOM 中（不要求可见）
@@ -1083,32 +1715,42 @@ class PlaywrightTestEngine:
                         for i in range(count):
                             candidate = candidates.nth(i)
                             if await candidate.is_visible():
-                                logger.info(f"找到第 {i+1} 个元素是可见的，执行点击...")
+                                logger.info(f"找到第 {i+1} 个元素是可见的，执行 DOM 点击...")
                                 try:
-                                    await candidate.click(timeout=timeout_ms)
+                                    await candidate.evaluate("""
+                                        element => {
+                                            element.scrollIntoView({ block: 'center', inline: 'nearest' });
+                                            const rect = element.getBoundingClientRect();
+                                            const eventInit = {
+                                                bubbles: true,
+                                                cancelable: true,
+                                                view: window,
+                                                clientX: rect.left + rect.width / 2,
+                                                clientY: rect.top + rect.height / 2,
+                                                button: 0,
+                                            };
+                                            element.dispatchEvent(new MouseEvent('mousedown', eventInit));
+                                            element.dispatchEvent(new MouseEvent('mouseup', eventInit));
+                                            element.dispatchEvent(new MouseEvent('click', eventInit));
+                                        }
+                                    """)
                                     found_visible = True
-                                    method_desc = f"iterative-click(index={i})"
+                                    method_desc = f"iterative-dom-click(index={i})"
                                     break
                                 except Exception as e:
                                     logger.warning(f"点击第 {i+1} 个元素失败: {e}")
                         
                         if not found_visible:
-                            logger.warning("未找到可见的下拉框选项元素，尝试点击第一个...")
-                            try:
-                                await candidates.first.click(force=True, timeout=timeout_ms)
-                                method_desc = "fallback-force-click"
-                            except Exception as e:
-                                logger.error(f"强制点击失败: {e}")
-                                raise e
+                            raise RuntimeError("未找到可见的下拉框选项元素，已阻止 force 坐标点击")
 
                         # 检查并关闭多选下拉框
                         try:
                             await asyncio.sleep(0.5)
                             dropdown = self.page.locator('.el-select-dropdown').first
                             if await dropdown.is_visible():
-                                logger.info(f"多选下拉框未自动关闭，点击空白处关闭...")
-                                await self.page.click('body', position={'x': 10, 'y': 10}, timeout=3000)
-                                auto_close_msg = " + 自动关闭"
+                                logger.info(f"多选下拉框未自动关闭，使用 Escape 关闭，避免坐标误点...")
+                                await self.page.keyboard.press('Escape')
+                                auto_close_msg = " + Escape关闭"
                             else:
                                 auto_close_msg = ""
                         except:
@@ -1131,10 +1773,10 @@ class PlaywrightTestEngine:
                         try:
                             dropdown = self.page.locator('.el-select-dropdown').first
                             if await dropdown.is_visible():
-                                logger.info(f"多选下拉框未自动关闭，点击空白处关闭...")
-                                await self.page.click('body', position={'x': 10, 'y': 10}, timeout=3000)
+                                logger.info(f"多选下拉框未自动关闭，使用 Escape 关闭，避免坐标误点...")
+                                await self.page.keyboard.press('Escape')
                                 await asyncio.sleep(0.5)
-                                auto_close_msg = " + 自动关闭"
+                                auto_close_msg = " + Escape关闭"
                             else:
                                 auto_close_msg = ""
                         except:
@@ -1246,10 +1888,14 @@ class PlaywrightTestEngine:
 
             elif action_type == 'waitFor':
                 await locator.wait_for(state='visible', timeout=timeout_ms)
+                elapsed_ms = int((time.time() - start_time) * 1000)
+                remaining_timeout_ms = max(timeout_ms - elapsed_ms, 1)
+                await self._wait_for_locator_uncovered(locator, remaining_timeout_ms)
                 execution_time = round(time.time() - start_time, 2)
                 log = f"✓ 等待元素 '{element_name}' 出现成功\n"
                 log += f"  - 定位器: {locator_strategy}={locator_value}\n"
                 log += f"  - 超时设置: {timeout_ms/1000}秒\n"
+                log += "  - 可交互检查: 中心点未被遮挡\n"
                 log += f"  - 等待时间: {execution_time}秒"
                 return True, log, None
 

@@ -74,10 +74,14 @@ from .variable_resolver import (
 from .project_runtime import (
     initialize_project_runtime_variables,
 )
+from .step_element_resolver import build_step_element_data
+from .local_execution_service import attach_execution_plan, build_test_case_payload
 from .execution_dispatcher import (
     initialize_local_task_result,
     queue_local_suite_execution,
     queue_local_test_case_executions,
+    refresh_scheduled_task_execution_progress,
+    refresh_suite_execution_progress,
 )
 from .scroll_coordinate_picker import (
     close_local_scroll_coordinate_picker_session,
@@ -1471,6 +1475,36 @@ def _append_skipped_step_result(step_results, step_number, action_type, descript
     })
 
 
+def _validate_server_execution_integrity(execution_result, detailed_errors, step_results, execution_logs, planned_step_count):
+    if execution_result.get('status') != 'passed' or planned_step_count <= 0:
+        return
+
+    reported_step_numbers = [
+        item.get('step_number')
+        for item in step_results
+        if isinstance(item, dict)
+    ]
+    expected_step_numbers = list(range(1, planned_step_count + 1))
+    if len(step_results) == planned_step_count and reported_step_numbers == expected_step_numbers:
+        return
+
+    error_message = (
+        f'服务器执行步骤不完整: 计划 {planned_step_count} 步，'
+        f'实际只产出 {len(step_results)} 步结果，已阻止错误标记为成功。'
+    )
+    execution_result['status'] = 'failed'
+    execution_result['error_message'] = error_message
+    detailed_errors.append({
+        'step_number': None,
+        'action_type': 'server_execution_integrity_check',
+        'element': '',
+        'message': '服务器执行步骤不完整',
+        'details': error_message,
+        'description': '服务器执行结果完整性校验'
+    })
+    execution_logs.append(error_message)
+
+
 def _record_execution_runtime_failure(
     execution_result,
     detailed_errors,
@@ -1776,6 +1810,8 @@ def build_test_case_manifest_item(test_case):
             'description': step.description or '',
             'is_enabled': step.is_enabled,
             'input_value': step.input_value or '',
+            'element_locator_strategy': step.element_locator_strategy or '',
+            'element_locator_value': step.element_locator_value or '',
             'wait_time': step.wait_time,
             'assert_type': step.assert_type or '',
             'assert_value': step.assert_value or '',
@@ -1847,6 +1883,8 @@ def resolve_imported_test_case_step(project, step_data, created_by=None, overwri
         'description': str(step_data.get('description', '') or '').strip(),
         'is_enabled': normalize_import_bool(step_data.get('is_enabled', True), True),
         'input_value': input_value,
+        'element_locator_strategy': str(step_data.get('element_locator_strategy', '') or '').strip(),
+        'element_locator_value': str(step_data.get('element_locator_value', '') or '').strip(),
         'wait_time': normalize_import_int(step_data.get('wait_time'), 1000),
         'assert_type': str(step_data.get('assert_type', '') or '').strip(),
         'assert_value': step_data.get('assert_value', '') or '',
@@ -1962,6 +2000,8 @@ def import_test_case_manifest_into_project(project, manifest, user, overwrite=Fa
                     action_type=resolved_step['action_type'],
                     element=resolved_step['element'],
                     input_value=resolved_step['input_value'],
+                    element_locator_strategy=resolved_step['element_locator_strategy'],
+                    element_locator_value=resolved_step['element_locator_value'],
                     wait_time=resolved_step['wait_time'],
                     assert_type=resolved_step['assert_type'],
                     assert_value=resolved_step['assert_value'],
@@ -2008,6 +2048,8 @@ def build_test_case_step_payload(step):
         'action_type': step.action_type,
         'element': step.element_id,
         'input_value': step.input_value or '',
+        'element_locator_strategy': step.element_locator_strategy or '',
+        'element_locator_value': step.element_locator_value or '',
         'wait_time': step.wait_time,
         'assert_type': step.assert_type or '',
         'assert_value': step.assert_value or '',
@@ -2038,6 +2080,8 @@ def create_test_case_steps(test_case, steps_data):
                 action_type=step_data.get('action_type', 'click'),
                 element_id=element_value if element_value else None,
                 input_value=step_data.get('input_value', ''),
+                element_locator_strategy=step_data.get('element_locator_strategy', ''),
+                element_locator_value=step_data.get('element_locator_value', ''),
                 wait_time=step_data.get('wait_time', 1000),
                 assert_type=step_data.get('assert_type', ''),
                 assert_value=step_data.get('assert_value', ''),
@@ -2052,16 +2096,55 @@ def create_test_case_steps(test_case, steps_data):
         except Exception as exc:
             logger.error(f"创建步骤 {index} 失败: {exc}")
             logger.error(f"步骤数据: {step_data}")
+            raise ValidationError(f'创建步骤 {index} 失败: {exc}') from exc
 
     return created_count
 
 
+def cancel_pending_local_executions_after_step_change(test_case):
+    pending_executions = list(
+        TestCaseExecution.objects
+        .select_related('test_suite', 'scheduled_task')
+        .filter(
+            test_case=test_case,
+            execution_mode='local',
+            status='pending',
+        )
+    )
+    if not pending_executions:
+        return 0
+
+    now = timezone.now()
+    message = '测试用例步骤已被修改，旧的本地执行计划已失效，请重新执行该用例。'
+    for execution in pending_executions:
+        execution.status = 'failed'
+        execution.error_message = message
+        execution.finished_at = now
+        execution.save(update_fields=['status', 'error_message', 'finished_at'])
+
+        if execution.test_suite_id and execution.run_identifier:
+            refresh_suite_execution_progress(execution.test_suite, execution.run_identifier)
+
+        if execution.scheduled_task_id and execution.run_identifier:
+            refresh_scheduled_task_execution_progress(execution.scheduled_task, execution.run_identifier)
+
+    logger.info(
+        "Cancelled %s pending local execution(s) for test case %s after step changes",
+        len(pending_executions),
+        test_case.id,
+    )
+    return len(pending_executions)
+
+
 def replace_test_case_steps(test_case, steps_data):
     validated_steps = validate_test_case_steps_payload(steps_data)
-    existing_steps_count = test_case.steps.count()
-    test_case.steps.all().delete()
-    logger.info(f"删除了 {existing_steps_count} 个现有步骤")
-    created_count = create_test_case_steps(test_case, validated_steps)
+    with transaction.atomic():
+        existing_steps_count = test_case.steps.count()
+        test_case.steps.all().delete()
+        logger.info(f"删除了 {existing_steps_count} 个现有步骤")
+        created_count = create_test_case_steps(test_case, validated_steps)
+        test_case.save(update_fields=['updated_at'])
+        cancel_pending_local_executions_after_step_change(test_case)
     logger.info(f"成功创建了 {created_count} 个新步骤")
     return created_count
 
@@ -3217,15 +3300,16 @@ class TestCaseViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         # 创建测试用例
         steps_data = validate_test_case_steps_payload(self.request.data.get('steps', []))
-        instance = serializer.save(created_by=self.request.user)
+        with transaction.atomic():
+            instance = serializer.save(created_by=self.request.user)
 
-        # 记录操作
-        log_operation('create', 'test_case', instance.id, instance.name, self.request.user)
+            # 记录操作
+            log_operation('create', 'test_case', instance.id, instance.name, self.request.user)
 
-        # 处理步骤数据
-        logger.info(f"创建测试用例 {instance.id} 的步骤数据: {len(steps_data)} 个步骤")
+            # 处理步骤数据
+            logger.info(f"创建测试用例 {instance.id} 的步骤数据: {len(steps_data)} 个步骤")
 
-        create_test_case_steps(instance, steps_data)
+            create_test_case_steps(instance, steps_data)
 
     @action(detail=False, methods=['post'])
     def move(self, request):
@@ -3372,6 +3456,8 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                     action_type=step.action_type,
                     element=step.element,
                     input_value=step.input_value,
+                    element_locator_strategy=step.element_locator_strategy,
+                    element_locator_value=step.element_locator_value,
                     wait_time=step.wait_time,
                     assert_type=step.assert_type,
                     assert_value=step.assert_value,
@@ -3401,15 +3487,16 @@ class TestCaseViewSet(viewsets.ModelViewSet):
         steps_data = None
         if 'steps' in self.request.data:
             steps_data = validate_test_case_steps_payload(self.request.data.get('steps', []))
-        instance = serializer.save()
+        with transaction.atomic():
+            instance = serializer.save()
 
-        # 记录操作
-        log_operation('edit', 'test_case', instance.id, instance.name, self.request.user)
+            # 记录操作
+            log_operation('edit', 'test_case', instance.id, instance.name, self.request.user)
 
-        # 处理步骤数据
-        if steps_data is not None:
-            logger.info(f"更新测试用例 {instance.id} 的步骤数据: {len(steps_data)} 个步骤")
-            replace_test_case_steps(instance, steps_data)
+            # 处理步骤数据
+            if steps_data is not None:
+                logger.info(f"更新测试用例 {instance.id} 的步骤数据: {len(steps_data)} 个步骤")
+                replace_test_case_steps(instance, steps_data)
 
     def _generate_step_log(self, step, step_result='success'):
         """根据测试步骤生成执行日志"""
@@ -3422,9 +3509,10 @@ class TestCaseViewSet(viewsets.ModelViewSet):
         log_parts = []
 
         # 步骤信息
-        if step.element:
-            element_name = step.element.name
-            locator_info = f"{step.element.locator_strategy.name}={step.element.locator_value}"
+        element_data = build_step_element_data(step)
+        if element_data:
+            element_name = element_data.get('name') or "页面"
+            locator_info = f"{element_data.get('locator_strategy')}={element_data.get('locator_value')}"
         else:
             element_name = "页面"
             locator_info = "无"
@@ -3674,6 +3762,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                     created_by=request.user,
                     assigned_runner=assigned_runner,
                 )
+                attach_execution_plan(execution, build_test_case_payload(test_case))
 
                 log_operation('run', 'test_case', test_case.id, test_case.name, request.user)
 
@@ -3753,17 +3842,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                     'assert_value': step.assert_value,
                 }
 
-                # 获取元素数据
-                if step.element:
-                    step_data['element_data'] = resolve_element_locator_payload({
-                        'locator_strategy': step.element.locator_strategy.name if step.element.locator_strategy else 'css',
-                        'locator_value': step.element.locator_value,
-                        'name': step.element.name,
-                        'wait_timeout': step.element.wait_timeout,  # 添加元素的等待超时设置（秒）
-                        'force_action': step.element.force_action  # 添加强制操作选项
-                    })
-                else:
-                    step_data['element_data'] = None
+                step_data['element_data'] = resolve_element_locator_payload(build_step_element_data(step))
 
                 steps_data.append(step_data)
 
@@ -4249,17 +4328,13 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                 test_thread.start()
                 test_thread.join()  # 等待测试完成
 
-            if execution_result['status'] == 'passed' and steps_data and not step_results:
-                _record_execution_runtime_failure(
-                    execution_result,
-                    detailed_errors,
-                    step_results,
-                    execution_logs,
-                    action_type='execution_validation',
-                    description='服务器执行完成后未生成任何步骤结果',
-                    message='执行未产出任何步骤结果，测试可能未真正启动',
-                    details='检测到测试用例包含步骤，但执行完成后没有任何步骤结果输出。'
-                )
+            _validate_server_execution_integrity(
+                execution_result,
+                detailed_errors,
+                step_results,
+                execution_logs,
+                len(steps_data),
+            )
 
             # 计算总执行时间
             total_time = round(time.time() - start_time, 2)
@@ -4752,16 +4827,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                         'assert_value': step.assert_value,
                                     }
 
-                                    if step.element:
-                                        step_data['element_data'] = resolve_element_locator_payload({
-                                            'locator_strategy': step.element.locator_strategy.name if step.element.locator_strategy else 'css',
-                                            'locator_value': step.element.locator_value,
-                                            'name': step.element.name,
-                                            'wait_timeout': step.element.wait_timeout,
-                                            'force_action': step.element.force_action
-                                        })
-                                    else:
-                                        step_data['element_data'] = None
+                                    step_data['element_data'] = resolve_element_locator_payload(build_step_element_data(step))
 
                                     steps_data.append(step_data)
 
@@ -4997,6 +5063,13 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
 
                                 # 计算执行时间
                                 total_time = round(time.time() - start_time, 2)
+                                _validate_server_execution_integrity(
+                                    execution_result,
+                                    detailed_errors,
+                                    step_results,
+                                    execution_logs,
+                                    len(steps_data),
+                                )
 
                                 # 保存执行结果
                                 execution.status = execution_result['status']

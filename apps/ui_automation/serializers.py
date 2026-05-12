@@ -604,6 +604,7 @@ class TestCaseStepSerializer(serializers.ModelSerializer):
         model = TestCaseStep
         fields = [
             'id', 'step_number', 'action_type', 'element', 'element_name', 'element_locator',
+            'element_locator_strategy', 'element_locator_value',
             'input_value', 'wait_time', 'assert_type', 'assert_value', 'description', 'is_enabled',
             'save_as', 'transaction_id', 'transaction_name', 'transaction_disabled', 'created_at'
         ]

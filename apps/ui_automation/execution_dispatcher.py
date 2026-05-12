@@ -3,6 +3,7 @@ import uuid
 from django.db import transaction
 
 from .models import TestCaseExecution
+from .local_execution_service import attach_execution_plan, build_test_case_payload
 
 
 def generate_run_identifier():
@@ -28,23 +29,23 @@ def queue_local_test_case_executions(
 
     with transaction.atomic():
         for test_case in test_cases:
-            executions.append(
-                TestCaseExecution.objects.create(
-                    test_case=test_case,
-                    project=project,
-                    test_suite=test_suite,
-                    execution_source=execution_source,
-                    execution_mode='local',
-                    status='pending',
-                    engine=engine,
-                    browser=browser,
-                    headless=headless,
-                    created_by=created_by,
-                    scheduled_task=scheduled_task,
-                    assigned_runner=assigned_runner,
-                    run_identifier=run_identifier,
-                )
+            execution = TestCaseExecution.objects.create(
+                test_case=test_case,
+                project=project,
+                test_suite=test_suite,
+                execution_source=execution_source,
+                execution_mode='local',
+                status='pending',
+                engine=engine,
+                browser=browser,
+                headless=headless,
+                created_by=created_by,
+                scheduled_task=scheduled_task,
+                assigned_runner=assigned_runner,
+                run_identifier=run_identifier,
             )
+            attach_execution_plan(execution, build_test_case_payload(test_case))
+            executions.append(execution)
 
     return executions, run_identifier
 

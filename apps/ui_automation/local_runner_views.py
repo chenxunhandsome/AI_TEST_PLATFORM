@@ -7,7 +7,12 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
-from .local_execution_service import build_test_case_payload
+from .local_execution_service import (
+    LOCAL_RUNNER_REQUIRED_PROTOCOL_VERSION,
+    attach_execution_plan,
+    build_execution_plan_from_payload,
+    build_test_case_payload,
+)
 from .execution_dispatcher import (
     refresh_scheduled_task_execution_progress,
     refresh_suite_execution_progress,
@@ -20,6 +25,56 @@ from .scroll_coordinate_picker import (
 from .serializers import LocalRunnerSerializer, TestCaseExecutionSerializer
 
 
+def _normalize_protocol_version(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _get_runner_incompatibility_message(runner):
+    metadata = runner.metadata if isinstance(runner.metadata, dict) else {}
+    protocol_version = _normalize_protocol_version(metadata.get('local_runner_protocol_version'))
+    if protocol_version >= LOCAL_RUNNER_REQUIRED_PROTOCOL_VERSION:
+        return ''
+
+    return (
+        f'本地执行器版本过旧或未同步，当前协议版本 {protocol_version or "未知"}，'
+        f'服务端要求协议版本 {LOCAL_RUNNER_REQUIRED_PROTOCOL_VERSION}。'
+        f'请在本地执行器机器同步最新 SVN 代码并重启本地执行器后重新执行。'
+    )
+
+
+def _fail_pending_executions_for_incompatible_runner(user, runner, message):
+    pending_executions = list(
+        TestCaseExecution.objects
+        .select_for_update()
+        .filter(
+            created_by=user,
+            execution_mode='local',
+            status='pending',
+            assigned_runner=runner,
+        )
+    )
+    if not pending_executions:
+        return 0
+
+    now = timezone.now()
+    for execution in pending_executions:
+        execution.status = 'failed'
+        execution.error_message = message
+        execution.finished_at = now
+        execution.save(update_fields=['status', 'error_message', 'finished_at'])
+
+        if execution.test_suite_id and execution.run_identifier:
+            refresh_suite_execution_progress(execution.test_suite, execution.run_identifier)
+
+        if execution.scheduled_task_id and execution.run_identifier:
+            refresh_scheduled_task_execution_progress(execution.scheduled_task, execution.run_identifier)
+
+    return len(pending_executions)
+
+
 def _parse_reported_step_results(logs):
     try:
         parsed = json.loads(logs or '[]')
@@ -28,20 +83,37 @@ def _parse_reported_step_results(logs):
     return parsed if isinstance(parsed, list) else []
 
 
+def _get_execution_plan(execution):
+    execution_plan = getattr(execution, 'execution_plan', {})
+    plan = execution_plan if isinstance(execution_plan, dict) else {}
+    if plan.get('planned_step_count') is not None:
+        return plan
+
+    payload = build_test_case_payload(execution.test_case)
+    return build_execution_plan_from_payload(payload)
+
+
 def _validate_local_execution_integrity(execution, reported_status, logs, error_message):
     if reported_status != 'passed':
         return reported_status, error_message
 
-    planned_step_count = execution.test_case.steps.count()
+    plan = _get_execution_plan(execution)
+    planned_step_count = int(plan.get('planned_step_count') or 0)
     if planned_step_count <= 0:
         return reported_status, error_message
 
-    reported_step_count = len(_parse_reported_step_results(logs))
-    if reported_step_count >= planned_step_count:
+    reported_steps = _parse_reported_step_results(logs)
+    reported_step_count = len(reported_steps)
+    reported_step_numbers = [
+        step.get('step_number')
+        for step in reported_steps
+        if isinstance(step, dict)
+    ]
+    if reported_step_count == planned_step_count and reported_step_numbers == list(range(1, planned_step_count + 1)):
         return reported_status, error_message
 
     integrity_error = (
-        f'本地执行器执行步骤不完整: 当前用例计划 {planned_step_count} 步，'
+        f'本地执行器执行步骤不完整: 当前执行计划 {planned_step_count} 步，'
         f'本地执行器只上报 {reported_step_count} 步，已阻止错误标记为成功。'
         f'请同步并重启本地执行器后重新执行。'
     )
@@ -123,6 +195,21 @@ class LocalRunnerViewSet(viewsets.ReadOnlyModelViewSet):
         if error_response:
             return error_response
 
+        incompatibility_message = _get_runner_incompatibility_message(runner)
+        if incompatibility_message:
+            with transaction.atomic():
+                failed_count = _fail_pending_executions_for_incompatible_runner(
+                    request.user,
+                    runner,
+                    incompatibility_message,
+                )
+            return Response({
+                'task': None,
+                'runner_incompatible': True,
+                'failed_pending_executions': failed_count,
+                'message': incompatibility_message,
+            })
+
         picker_task = claim_local_scroll_coordinate_picker_task(request.user.id, runner.id)
         if picker_task:
             return Response({'task': picker_task})
@@ -149,7 +236,11 @@ class LocalRunnerViewSet(viewsets.ReadOnlyModelViewSet):
             execution.started_at = timezone.now()
             execution.save(update_fields=['status', 'started_at'])
 
-        payload = build_test_case_payload(execution.test_case)
+        plan = execution.execution_plan if isinstance(execution.execution_plan, dict) else {}
+        payload = plan.get('payload') if isinstance(plan.get('payload'), dict) else None
+        if not payload:
+            payload = build_test_case_payload(execution.test_case)
+            attach_execution_plan(execution, payload)
         return Response({
             'task': {
                 'task_type': 'test_case',

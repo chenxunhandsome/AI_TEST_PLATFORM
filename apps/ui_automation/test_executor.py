@@ -32,6 +32,7 @@ from .variable_resolver import (
     set_runtime_variable,
 )
 from .project_runtime import initialize_project_runtime_variables
+from .step_element_resolver import build_step_element_data
 
 
 RUNTIME_VARIABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
@@ -516,13 +517,11 @@ class TestExecutor:
                 }
 
                 # 如果有元素，预先获取元素数据
-                if step.element:
-                    step_data['element'] = resolve_element_locator_payload({
-                        'id': step.element.id,
-                        'name': step.element.name,
-                        'locator_value': step.element.locator_value,
-                        'locator_strategy': step.element.locator_strategy.name if step.element.locator_strategy else 'css'
-                    })
+                element_data = build_step_element_data(step)
+                if element_data:
+                    if step.element:
+                        element_data['id'] = step.element.id
+                    step_data['element'] = resolve_element_locator_payload(element_data)
 
                 case_data['steps'].append(step_data)
 
@@ -1769,13 +1768,11 @@ class TestExecutor:
                 }
 
                 # 如果有元素，预先获取元素数据
-                if step.element:
-                    step_data['element'] = resolve_element_locator_payload({
-                        'id': step.element.id,
-                        'name': step.element.name,
-                        'locator_value': step.element.locator_value,
-                        'locator_strategy': step.element.locator_strategy.name if step.element.locator_strategy else 'css'
-                    })
+                element_data = build_step_element_data(step)
+                if element_data:
+                    if step.element:
+                        element_data['id'] = step.element.id
+                    step_data['element'] = resolve_element_locator_payload(element_data)
 
                 case_data['steps'].append(step_data)
 

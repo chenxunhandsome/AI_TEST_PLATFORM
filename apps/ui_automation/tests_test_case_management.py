@@ -2,7 +2,7 @@ from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.test import APITestCase
 
-from apps.ui_automation.models import TestCase, TestCaseFolder, TestCaseStep, UiProject
+from apps.ui_automation.models import Element, LocatorStrategy, TestCase, TestCaseFolder, TestCaseStep, UiProject
 
 
 User = get_user_model()
@@ -42,6 +42,21 @@ class TestCaseManagementApiTests(APITestCase):
             action_type='click',
             description=description,
             wait_time=1000
+        )
+
+    def create_element(self):
+        locator_strategy = LocatorStrategy.objects.create(name='css')
+        return Element.objects.create(
+            project=self.project,
+            name='submit',
+            description='',
+            element_type='BUTTON',
+            page='',
+            component_name='',
+            locator_strategy=locator_strategy,
+            locator_value='.old-submit',
+            wait_timeout=5,
+            created_by=self.user,
         )
 
     def create_folder(self, name='folder-alpha'):
@@ -89,6 +104,29 @@ class TestCaseManagementApiTests(APITestCase):
         test_case.refresh_from_db()
         self.assertEqual(test_case.description, 'updated-description')
         self.assertEqual(test_case.steps.count(), 1)
+
+    def test_update_steps_preserves_step_locator_override(self):
+        test_case = self.create_case('case-with-override')
+        element = self.create_element()
+
+        response = self.client.patch(f'{self.list_url}{test_case.id}/', {
+            'name': test_case.name,
+            'steps': [{
+                'step_number': 1,
+                'action_type': 'click',
+                'element_id': element.id,
+                'element_locator_strategy': 'xpath',
+                'element_locator_value': "//button[@data-test='submit']",
+                'description': 'click submit',
+                'wait_time': 1000,
+            }]
+        }, format='json')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        step = test_case.steps.get()
+        self.assertEqual(step.element, element)
+        self.assertEqual(step.element_locator_strategy, 'xpath')
+        self.assertEqual(step.element_locator_value, "//button[@data-test='submit']")
 
     def test_copy_case_uses_next_available_suffix(self):
         source_case = self.create_case('case-alpha')

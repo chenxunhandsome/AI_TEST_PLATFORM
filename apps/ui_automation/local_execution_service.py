@@ -1,5 +1,6 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
 import json
 import logging
 import time
@@ -9,8 +10,15 @@ from types import SimpleNamespace
 from django.utils import timezone
 
 from .models import TestCaseStep
-from .playwright_engine import PlaywrightTestEngine
-from .selenium_engine import SeleniumTestEngine
+from .playwright_engine import (
+    PlaywrightTestEngine,
+    describe_element_action_timeout as describe_playwright_timeout,
+)
+from .selenium_engine import (
+    SeleniumTestEngine,
+    describe_element_action_timeout as describe_selenium_timeout,
+)
+from .step_element_resolver import build_step_element_data
 from .variable_resolver import (
     clear_runtime_variables,
     get_runtime_variables,
@@ -23,9 +31,45 @@ from .project_runtime import initialize_project_runtime_variables
 
 logger = logging.getLogger(__name__)
 
+LOCAL_RUNNER_PROTOCOL_VERSION = 2
+LOCAL_RUNNER_REQUIRED_PROTOCOL_VERSION = 2
+
 
 def _normalize_runtime_variable_name(value):
     return str(value or '').strip()
+
+
+def _build_step_plan_signature(step_items):
+    raw = json.dumps(step_items, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode('utf-8')).hexdigest()
+
+
+def build_execution_plan_from_payload(payload):
+    steps = list(payload.get('steps') or [])
+    plan_items = [
+        {
+            'sequence': index,
+            'step_id': step.get('step_id'),
+            'source_step_number': step.get('step_number'),
+            'action_type': step.get('action_type', ''),
+            'description': step.get('description', ''),
+        }
+        for index, step in enumerate(steps, start=1)
+    ]
+    return {
+        'planned_step_count': len(steps),
+        'planned_step_numbers': [item['sequence'] for item in plan_items],
+        'planned_step_ids': [item['step_id'] for item in plan_items],
+        'plan_signature': _build_step_plan_signature(plan_items),
+        'plan_items': plan_items,
+        'payload': payload,
+    }
+
+
+def attach_execution_plan(execution, payload):
+    execution.execution_plan = build_execution_plan_from_payload(payload)
+    execution.save(update_fields=['execution_plan'])
+    return execution.execution_plan
 
 
 def _resolve_serialized_step_payload(step):
@@ -47,6 +91,7 @@ def _resolve_serialized_step_payload(step):
             set_runtime_variable(save_as, resolved_assert_value)
 
     return {
+        'step_id': getattr(step, 'id', None),
         'step_number': step.step_number,
         'action_type': step.action_type,
         'description': step.description or '',
@@ -68,16 +113,8 @@ def build_test_case_payload(test_case):
     try:
         initialize_project_runtime_variables(project=test_case.project)
 
-        for step in test_case.steps.all().order_by('step_number'):
-            element_data = None
-            if step.element:
-                element_data = resolve_element_locator_payload({
-                    'locator_strategy': step.element.locator_strategy.name if step.element.locator_strategy else 'css',
-                    'locator_value': step.element.locator_value,
-                    'name': step.element.name,
-                    'wait_timeout': step.element.wait_timeout,
-                    'force_action': step.element.force_action,
-                })
+        for step in test_case.steps.all().order_by('step_number', 'id'):
+            element_data = resolve_element_locator_payload(build_step_element_data(step))
 
             step_payload = _resolve_serialized_step_payload(step)
             step_payload['element_data'] = element_data
@@ -87,7 +124,7 @@ def build_test_case_payload(test_case):
         if previous_runtime_variables:
             set_runtime_variables(previous_runtime_variables)
 
-    return {
+    payload = {
         'test_case_id': test_case.id,
         'test_case_name': test_case.name,
         'project_id': test_case.project_id,
@@ -96,6 +133,12 @@ def build_test_case_payload(test_case):
         'project_global_variables': test_case.project.global_variables or [],
         'steps': steps,
     }
+    payload.update({
+        key: value
+        for key, value in build_execution_plan_from_payload(payload).items()
+        if key != 'payload'
+    })
+    return payload
 
 
 def execute_serialized_test_case(payload, engine_type='playwright', browser='chrome', headless=False):
@@ -131,6 +174,8 @@ def execute_serialized_test_case(payload, engine_type='playwright', browser='chr
 
 def _make_step(step_data):
     return SimpleNamespace(
+        step_id=step_data.get('step_id'),
+        step_number=step_data.get('step_number'),
         action_type=step_data.get('action_type', ''),
         description=step_data.get('description', ''),
         is_enabled=step_data.get('is_enabled', True),
@@ -174,9 +219,19 @@ def _finalize_local_execution_result(
     error_message,
     status_value,
 ):
-    planned_step_count = len(payload.get('steps') or [])
+    planned_step_count = int(payload.get('planned_step_count') or len(payload.get('steps') or []))
     actual_step_count = len(step_results)
-    if status_value == 'passed' and actual_step_count < planned_step_count:
+    expected_step_numbers = list(range(1, planned_step_count + 1))
+    reported_step_numbers = [
+        item.get('step_number')
+        for item in step_results
+        if isinstance(item, dict)
+    ]
+    has_complete_report = (
+        actual_step_count == planned_step_count
+        and reported_step_numbers == expected_step_numbers
+    )
+    if status_value == 'passed' and not has_complete_report:
         status_value = 'failed'
         error_message = (
             f'本地执行器执行步骤不完整: 计划 {planned_step_count} 步，'
@@ -201,19 +256,49 @@ def _finalize_local_execution_result(
     )
     result['planned_step_count'] = planned_step_count
     result['reported_step_count'] = actual_step_count
+    result['reported_step_numbers'] = reported_step_numbers
+    result['plan_signature'] = payload.get('plan_signature', '')
     return result
 
 
-def _append_step_result(step_results, step_number, action_type, description, success, error=None, status=None, message=''):
-    step_results.append({
+def _append_step_result(
+    step_results,
+    step_number,
+    action_type,
+    description,
+    success,
+    error=None,
+    status=None,
+    message='',
+    timeout_debug=None,
+    step_id=None,
+):
+    result = {
         'step_number': step_number,
+        'step_id': step_id,
         'action_type': action_type,
         'description': description or '',
         'success': success,
         'error': error,
         'status': status or ('passed' if success else 'failed'),
         'message': message or '',
-    })
+    }
+    if timeout_debug:
+        result['timeout_debug'] = timeout_debug
+    step_results.append(result)
+
+
+def _build_timeout_debug(engine_type, step, element_data):
+    if not element_data:
+        return None
+
+    try:
+        if engine_type == 'selenium':
+            return describe_selenium_timeout(step, element_data)
+        return describe_playwright_timeout(step, element_data)
+    except Exception:
+        logger.exception("Failed to build local execution timeout diagnostics")
+        return None
 
 
 def _append_error(detailed_errors, step_number, action_type, element_name, message, details, description):
@@ -329,11 +414,13 @@ def _run_selenium(payload, browser, headless, start_time, step_results, screensh
                     None,
                     status='skipped',
                     message=skip_message,
+                    step_id=getattr(step, 'step_id', None),
                 )
                 continue
 
             resolved_input_value, resolved_assert_value = _resolve_step_runtime_values(step)
             element_data = getattr(step, 'element_data', None) or {}
+            timeout_debug = _build_timeout_debug('selenium', step, element_data)
 
             try:
                 success, step_log, screenshot_base64 = engine.execute_step(step, element_data)
@@ -345,7 +432,16 @@ def _run_selenium(payload, browser, headless, start_time, step_results, screensh
             if success:
                 _store_step_runtime_variable(step, resolved_input_value, resolved_assert_value)
 
-            _append_step_result(step_results, index, step.action_type, step.description, success, None if success else step_log)
+            _append_step_result(
+                step_results,
+                index,
+                step.action_type,
+                step.description,
+                success,
+                None if success else step_log,
+                timeout_debug=timeout_debug,
+                step_id=getattr(step, 'step_id', None),
+            )
 
             if step.action_type == 'screenshot' and screenshot_base64:
                 _append_screenshot(screenshots, screenshot_base64, f'步骤 {index}: {step.description or "手动截图"}', index)
@@ -443,11 +539,13 @@ async def _run_playwright_async(payload, browser, headless, start_time, step_res
                     None,
                     status='skipped',
                     message=skip_message,
+                    step_id=getattr(step, 'step_id', None),
                 )
                 continue
 
             resolved_input_value, resolved_assert_value = _resolve_step_runtime_values(step)
             element_data = getattr(step, 'element_data', None) or {}
+            timeout_debug = _build_timeout_debug('playwright', step, element_data)
 
             try:
                 success, step_log, screenshot_base64 = await engine.execute_step(step, element_data)
@@ -459,7 +557,16 @@ async def _run_playwright_async(payload, browser, headless, start_time, step_res
             if success:
                 _store_step_runtime_variable(step, resolved_input_value, resolved_assert_value)
 
-            _append_step_result(step_results, index, step.action_type, step.description, success, None if success else step_log)
+            _append_step_result(
+                step_results,
+                index,
+                step.action_type,
+                step.description,
+                success,
+                None if success else step_log,
+                timeout_debug=timeout_debug,
+                step_id=getattr(step, 'step_id', None),
+            )
 
             if step.action_type == 'screenshot' and screenshot_base64:
                 _append_screenshot(screenshots, screenshot_base64, f'步骤 {index}: {step.description or "手动截图"}', index)

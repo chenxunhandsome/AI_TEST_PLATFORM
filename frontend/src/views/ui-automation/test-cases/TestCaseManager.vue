@@ -396,6 +396,37 @@
                           </div>
                         </div>
                         <!-- 输入参数 -->
+                        <div v-if="needsElement(element.action_type)" class="step-param step-param--stacked step-locator-override">
+                          <label>定位表达式</label>
+                          <div class="step-param-main">
+                            <div class="locator-override-row">
+                              <el-select
+                                v-model="element.element_locator_strategy"
+                                size="small"
+                                style="width: 120px"
+                                placeholder="策略"
+                              >
+                                <el-option label="CSS" value="css" />
+                                <el-option label="XPath" value="xpath" />
+                                <el-option label="ID" value="id" />
+                                <el-option label="Text" value="text" />
+                                <el-option label="Name" value="name" />
+                                <el-option label="Placeholder" value="placeholder" />
+                                <el-option label="Role" value="role" />
+                                <el-option label="Label" value="label" />
+                                <el-option label="Title" value="title" />
+                                <el-option label="Test ID" value="test-id" />
+                              </el-select>
+                              <el-input
+                                v-model="element.element_locator_value"
+                                size="small"
+                                clearable
+                                :placeholder="getSelectedElementLocatorPlaceholder(element)"
+                              />
+                            </div>
+                          </div>
+                        </div>
+
                         <div v-if="element.action_type === 'scroll'" class="step-param step-param--stacked">
                           <label>滚动配置</label>
                           <div class="step-param-main">
@@ -2408,6 +2439,8 @@ const createStepDraft = (step = {}, expanded = false) => ({
   id: step.id ?? `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
   action_type: step.action_type || 'click',
   element_id: step.element_id ?? step.element ?? '',
+  element_locator_strategy: step.element_locator_strategy || '',
+  element_locator_value: step.element_locator_value || '',
   input_value: step.input_value || '',
   wait_time: Number(step.wait_time ?? 1000) || 1000,
   assert_type: step.assert_type || 'textContains',
@@ -2526,6 +2559,16 @@ const syncTransactionCollapseMap = () => {
 
   transactionCollapseState.value = Object.fromEntries(
     Object.entries(transactionCollapseState.value).filter(([transactionId]) => validTransactionIds.has(transactionId))
+  )
+}
+
+const collapseAllTransactionBlocks = () => {
+  const transactionIds = [
+    ...new Set(currentSteps.value.map(step => getTransactionId(step)).filter(Boolean))
+  ]
+
+  transactionCollapseState.value = Object.fromEntries(
+    transactionIds.map(transactionId => [transactionId, true])
   )
 }
 
@@ -2940,6 +2983,8 @@ const buildStepPayload = (step, index) => ({
   step_number: index + 1,
   action_type: step.action_type || 'click',
   element_id: needsElement(step.action_type) ? (step.element_id || null) : null,
+  element_locator_strategy: needsElement(step.action_type) ? (step.element_locator_strategy || '') : '',
+  element_locator_value: needsElement(step.action_type) ? String(step.element_locator_value || '').trim() : '',
   input_value: isCanvasAction(step.action_type)
     ? buildCanvasPayload(step)
     : step.action_type === 'drag'
@@ -4676,7 +4721,7 @@ const selectTestCase = (testCase) => {
   normalizeTransactionBlocks()
   selectedStepId.value = null
   checkedStepIds.value = []
-  transactionCollapseState.value = {}
+  collapseAllTransactionBlocks()
   allStepsExpanded.value = false
   // 只有在切换到不同用例时才清空执行结果
   executionResult.value = null
@@ -4689,11 +4734,7 @@ const addStep = () => {
 
   if (selectedIndex >= 0) {
     const selectedStep = currentSteps.value[selectedIndex]
-    const nextStep = currentSteps.value[selectedIndex + 1]
-    if (
-      hasTransaction(selectedStep) &&
-      (!nextStep || getTransactionId(nextStep) === getTransactionId(selectedStep))
-    ) {
+    if (hasTransaction(selectedStep)) {
       newStep.transaction_id = selectedStep.transaction_id
       newStep.transaction_name = selectedStep.transaction_name
       newStep.transaction_disabled = selectedStep.transaction_disabled === true
@@ -4754,6 +4795,8 @@ const onActionTypeChange = (step) => {
   // 根据操作类型重置相关参数
   if (isCanvasAction(step.action_type)) {
     step.element_id = ''
+    step.element_locator_strategy = ''
+    step.element_locator_value = ''
     step.canvas_frame_selector = step.canvas_frame_selector || '#plt-workflow-iframe'
     step.canvas_hold_ms = Number(step.canvas_hold_ms ?? 300) || 300
     step.canvas_steps = Number(step.canvas_steps ?? 30) || 30
@@ -4763,6 +4806,11 @@ const onActionTypeChange = (step) => {
   }
   if (step.action_type !== 'drag') {
     step.drag_target_element_id = ''
+  }
+  if (!needsElement(step.action_type)) {
+    step.element_id = ''
+    step.element_locator_strategy = ''
+    step.element_locator_value = ''
   }
   if (!needsWaitTime(step.action_type)) {
     step.wait_time = 1000
@@ -4799,9 +4847,22 @@ const onActionTypeChange = (step) => {
 const onElementChange = (step) => {
   // 元素变化时的处理
   const element = availableElements.value.find(e => e.id === step.element_id)
+  if (element) {
+    step.element_locator_strategy = getElementLocatorStrategy(element)
+    step.element_locator_value = element.locator_value || ''
+  }
   if (element && !step.description) {
     step.description = `${getActionTypeText(step.action_type)}${element.name}`
   }
+}
+
+const getElementLocatorStrategy = (element) => {
+  return element?.locator_strategy?.name || element?.locator_strategy || 'css'
+}
+
+const getSelectedElementLocatorPlaceholder = (step) => {
+  const element = availableElements.value.find(item => item.id === step?.element_id)
+  return element?.locator_value || '选择元素后可手动修改定位表达式'
 }
 
 const getSelectedElementLabel = (elementId) => {
@@ -4900,7 +4961,7 @@ const expandAllSteps = () => {
   })
 }
 
-const saveTestCase = async () => {
+const persistSelectedTestCase = async ({ showSuccess = true } = {}) => {
   if (!selectedTestCase.value) return
   normalizeTransactionBlocks()
   if (!validateCurrentSteps()) return
@@ -4914,18 +4975,33 @@ const saveTestCase = async () => {
     const updateResponse = await updateTestCase(selectedTestCase.value.id, updateData)
     const detailResponse = await getTestCaseDetail(selectedTestCase.value.id).catch(() => null)
     const savedCase = detailResponse?.data || updateResponse?.data || updateData
-    ElMessage.success(t('uiAutomation.testCase.save.success'))
+    if (showSuccess) {
+      ElMessage.success(t('uiAutomation.testCase.save.success'))
+    }
 
     applySavedTestCaseToState(savedCase)
+    return savedCase
   } catch (error) {
       console.error('保存测试用例失败:', error)
       ElMessage.error(extractRequestErrorMessage(error, t('uiAutomation.testCase.save.failed')))
     }
 }
 
+const saveTestCase = async () => {
+  await persistSelectedTestCase()
+}
+
 const runTestCase = async (testCase) => {
   isRunning.value = true
   try {
+    let executableCase = testCase
+    if (selectedTestCase.value?.id === testCase?.id) {
+      executableCase = await persistSelectedTestCase({ showSuccess: false })
+      if (!executableCase) {
+        return
+      }
+    }
+
     if (executionMode.value === 'local' && !selectedRunnerId.value) {
       ElMessage.warning('请先选择本地执行器')
       return
@@ -4934,7 +5010,7 @@ const runTestCase = async (testCase) => {
     const modeText = headlessMode.value ? t('uiAutomation.testCase.runMode.headless') : t('uiAutomation.testCase.runMode.headed')
     ElMessage.info(t('uiAutomation.testCase.run.start', { engine: selectedEngine.value.toUpperCase(), browser: selectedBrowser.value.toUpperCase(), mode: modeText }))
 
-    const response = await runTestCaseApi(testCase.id, {
+    const response = await runTestCaseApi(executableCase.id, {
       project_id: projectId.value,
       engine: selectedEngine.value,
       browser: selectedBrowser.value,
@@ -6262,6 +6338,16 @@ onBeforeUnmount(() => {
 .step-param-main {
   flex: 1;
   min-width: 0;
+}
+
+.step-locator-override {
+  flex-basis: 100%;
+}
+
+.locator-override-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
 }
 
 .scroll-config-grid {

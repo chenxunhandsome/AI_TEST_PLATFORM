@@ -120,6 +120,38 @@ class BuildTestCasePayloadTests(TestCase):
         self.assertEqual(payload['steps'][0]['input_value'], 'hello world')
         self.assertEqual(payload['steps'][1]['input_value'], 'search=hello world')
 
+    def test_build_test_case_payload_uses_step_locator_override(self):
+        project = SimpleNamespace(
+            id=40,
+            name='demo-project',
+            base_url='http://example.com',
+            global_variables=[],
+        )
+        element = SimpleNamespace(
+            name='submit',
+            locator_strategy=SimpleNamespace(name='css'),
+            locator_value='.old-submit',
+            wait_timeout=5,
+            force_action=False,
+        )
+        step = make_step(1, 'click')
+        step.element = element
+        step.element_locator_strategy = 'xpath'
+        step.element_locator_value = "//button[@data-test='submit']"
+        test_case = SimpleNamespace(
+            id=41,
+            name='override-case',
+            project_id=project.id,
+            project=project,
+            steps=FakeStepQuerySet([step]),
+        )
+
+        payload = build_test_case_payload(test_case)
+
+        self.assertEqual(payload['steps'][0]['element_data']['locator_strategy'], 'xpath')
+        self.assertEqual(payload['steps'][0]['element_data']['locator_value'], "//button[@data-test='submit']")
+        self.assertEqual(payload['steps'][0]['element_data']['name'], 'submit')
+
     def test_build_test_case_payload_does_not_publish_runtime_variables_from_disabled_steps(self):
         project = SimpleNamespace(
             id=5,
