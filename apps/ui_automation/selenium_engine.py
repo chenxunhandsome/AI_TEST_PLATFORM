@@ -13,6 +13,12 @@ from .variable_resolver import (
     resolve_variables,
     set_runtime_variable,
 )
+from .element_attribute_resolver import (
+    build_attribute_log_lines,
+    format_attribute_results,
+    normalize_attribute_name,
+    parse_attribute_requests,
+)
 import os
 import shutil
 from datetime import datetime
@@ -106,6 +112,70 @@ def append_runtime_variable_log(step, log, value):
 
     set_runtime_variable(save_as, value)
     return f"{log}\n  - 已存储变量: ${{{save_as}}} = '{value}'"
+
+
+def resolve_selenium_element_attribute(driver, element, by_type, by_value, requested_attribute):
+    """Resolve one user-requested element attribute from a Selenium element."""
+    attribute = normalize_attribute_name(requested_attribute)
+
+    if attribute == 'exists':
+        return len(driver.find_elements(by_type, by_value)) > 0
+    if attribute == 'count':
+        return len(driver.find_elements(by_type, by_value))
+    if attribute == 'visible':
+        return element.is_displayed()
+    if attribute == 'enabled':
+        return element.is_enabled()
+    if attribute == 'disabled':
+        return not element.is_enabled()
+    if attribute == 'clickable':
+        if not element.is_displayed() or not element.is_enabled():
+            return False
+        pointer_events = element.value_of_css_property('pointer-events')
+        if pointer_events == 'none':
+            return False
+        return bool(driver.execute_script(
+            """
+            const element = arguments[0];
+            const rect = element.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) {
+                return false;
+            }
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            const topElement = document.elementFromPoint(x, y);
+            return topElement === element || element.contains(topElement);
+            """,
+            element,
+        ))
+    if attribute == 'checked':
+        return element.is_selected()
+    if attribute == 'selected':
+        return element.is_selected()
+    if attribute == 'readonly':
+        return bool(driver.execute_script(
+            "return Boolean(arguments[0].readOnly || arguments[0].hasAttribute('readonly'));",
+            element,
+        ))
+    if attribute == 'text':
+        return element.text
+    if attribute == 'textContent':
+        return element.get_attribute('textContent')
+    if attribute == 'value':
+        return element.get_attribute('value')
+    if attribute == 'tagName':
+        return element.tag_name
+    if attribute == 'innerHTML':
+        return element.get_attribute('innerHTML')
+    if attribute == 'outerHTML':
+        return element.get_attribute('outerHTML')
+    if attribute == 'rect':
+        return element.rect
+    if attribute.startswith('css:'):
+        css_name = attribute.split(':', 1)[1].strip()
+        return element.value_of_css_property(css_name)
+
+    return element.get_attribute(attribute)
 
 
 def get_chromium_browser_prefs():
@@ -1003,7 +1073,47 @@ class SeleniumTestEngine:
             # 根据操作类型选择合适的等待条件
             wait = WebDriverWait(self.driver, timeout_seconds)
             from selenium.common.exceptions import StaleElementReferenceException
-            
+
+            if action_type == 'getAttribute':
+                requested_attributes = parse_attribute_requests(resolved_input_value)
+                if not requested_attributes:
+                    return False, "✗ 获取元素属性失败: 请输入要获取的属性名", None
+
+                count_only_attributes = {'exists', 'count'}
+                normalized_attributes = {
+                    normalize_attribute_name(requested_attribute)
+                    for requested_attribute in requested_attributes
+                }
+                element = None
+                if not normalized_attributes.issubset(count_only_attributes):
+                    element = wait.until(EC.presence_of_element_located((by_type, by_value)))
+
+                results = {}
+                for requested_attribute in requested_attributes:
+                    normalized_attribute = normalize_attribute_name(requested_attribute)
+                    if normalized_attribute == 'exists':
+                        results[requested_attribute] = len(self.driver.find_elements(by_type, by_value)) > 0
+                    elif normalized_attribute == 'count':
+                        results[requested_attribute] = len(self.driver.find_elements(by_type, by_value))
+                    else:
+                        results[requested_attribute] = resolve_selenium_element_attribute(
+                            self.driver,
+                            element,
+                            by_type,
+                            by_value,
+                            requested_attribute,
+                        )
+
+                result_value = format_attribute_results(results)
+                execution_time = round(time.time() - start_time, 2)
+                log = f"✓ 获取元素 '{element_name}' 的属性成功\n"
+                log += f"  - 定位器: {locator_strategy}={locator_value}\n"
+                log += "\n".join(build_attribute_log_lines(results)) + "\n"
+                log += f"  - 超时设置: {timeout_seconds}秒\n"
+                log += f"  - 执行时间: {execution_time}秒"
+                log = append_runtime_variable_log(step, log, result_value)
+                return True, log, None
+             
             if action_type == 'click':
                 option_text_candidates = self._dropdown_option_text_candidates(
                     step,

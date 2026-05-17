@@ -31,8 +31,14 @@ from .variable_resolver import (
     resolve_variables,
     set_runtime_variable,
 )
+from .element_attribute_resolver import (
+    format_attribute_results,
+    normalize_attribute_name,
+    parse_attribute_requests,
+)
 from .project_runtime import initialize_project_runtime_variables
 from .step_element_resolver import build_step_element_data
+from .execution_records import set_execution_step_details
 
 
 RUNTIME_VARIABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
@@ -66,7 +72,7 @@ def _store_runtime_variable_for_step(
         value_to_store = resolved_input_value
     elif step_data.get('action_type') == 'assert':
         value_to_store = resolved_assert_value
-    elif step_data.get('action_type') == 'getText':
+    elif step_data.get('action_type') in {'getText', 'getAttribute'}:
         value_to_store = resolved_result_value
 
     if value_to_store is None:
@@ -81,6 +87,132 @@ def _normalize_step_result(step_result):
     step_result['status'] = step_result.get('status') or ('passed' if step_result.get('success') else 'failed')
     step_result['message'] = step_result.get('message') or ''
     return step_result
+
+
+def _resolve_sync_playwright_element_attribute(page, selector, requested_attribute, timeout_ms):
+    attribute = normalize_attribute_name(requested_attribute)
+    locator = page.locator(selector)
+    target = locator.first
+
+    if attribute == 'exists':
+        return locator.count() > 0
+    if attribute == 'count':
+        return locator.count()
+    if attribute == 'visible':
+        return target.is_visible()
+    if attribute == 'enabled':
+        return target.is_enabled(timeout=timeout_ms)
+    if attribute == 'disabled':
+        return not target.is_enabled(timeout=timeout_ms)
+    if attribute == 'clickable':
+        if not target.is_visible() or not target.is_enabled(timeout=timeout_ms):
+            return False
+        return target.evaluate(
+            """element => {
+                const style = window.getComputedStyle(element);
+                if (style.visibility === 'hidden' || style.display === 'none' || style.pointerEvents === 'none') {
+                    return false;
+                }
+                const rect = element.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) {
+                    return false;
+                }
+                const x = rect.left + rect.width / 2;
+                const y = rect.top + rect.height / 2;
+                const topElement = document.elementFromPoint(x, y);
+                return topElement === element || element.contains(topElement);
+            }"""
+        )
+    if attribute == 'checked':
+        return target.is_checked(timeout=timeout_ms)
+    if attribute == 'selected':
+        return target.evaluate("element => Boolean(element.selected)")
+    if attribute == 'readonly':
+        return target.evaluate("element => Boolean(element.readOnly || element.hasAttribute('readonly'))")
+    if attribute == 'text':
+        return target.inner_text(timeout=timeout_ms)
+    if attribute == 'textContent':
+        return target.text_content(timeout=timeout_ms)
+    if attribute == 'value':
+        try:
+            return target.input_value(timeout=timeout_ms)
+        except Exception:
+            return target.get_attribute('value', timeout=timeout_ms)
+    if attribute == 'tagName':
+        return target.evaluate("element => element.tagName.toLowerCase()")
+    if attribute == 'innerHTML':
+        return target.evaluate("element => element.innerHTML")
+    if attribute == 'outerHTML':
+        return target.evaluate("element => element.outerHTML")
+    if attribute == 'rect':
+        return target.bounding_box()
+    if attribute.startswith('css:'):
+        css_name = attribute.split(':', 1)[1].strip()
+        return target.evaluate(
+            "(element, cssName) => window.getComputedStyle(element).getPropertyValue(cssName)",
+            css_name,
+        )
+
+    return target.get_attribute(attribute, timeout=timeout_ms)
+
+
+def _resolve_legacy_selenium_element_attribute(driver, element, by, locator_value, requested_attribute):
+    attribute = normalize_attribute_name(requested_attribute)
+
+    if attribute == 'exists':
+        return len(driver.find_elements(by, locator_value)) > 0
+    if attribute == 'count':
+        return len(driver.find_elements(by, locator_value))
+    if attribute == 'visible':
+        return element.is_displayed()
+    if attribute == 'enabled':
+        return element.is_enabled()
+    if attribute == 'disabled':
+        return not element.is_enabled()
+    if attribute == 'clickable':
+        if not element.is_displayed() or not element.is_enabled():
+            return False
+        if element.value_of_css_property('pointer-events') == 'none':
+            return False
+        return bool(driver.execute_script(
+            """
+            const element = arguments[0];
+            const rect = element.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) {
+                return false;
+            }
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            const topElement = document.elementFromPoint(x, y);
+            return topElement === element || element.contains(topElement);
+            """,
+            element,
+        ))
+    if attribute in {'checked', 'selected'}:
+        return element.is_selected()
+    if attribute == 'readonly':
+        return bool(driver.execute_script(
+            "return Boolean(arguments[0].readOnly || arguments[0].hasAttribute('readonly'));",
+            element,
+        ))
+    if attribute == 'text':
+        return element.text
+    if attribute == 'textContent':
+        return element.get_attribute('textContent')
+    if attribute == 'value':
+        return element.get_attribute('value')
+    if attribute == 'tagName':
+        return element.tag_name
+    if attribute == 'innerHTML':
+        return element.get_attribute('innerHTML')
+    if attribute == 'outerHTML':
+        return element.get_attribute('outerHTML')
+    if attribute == 'rect':
+        return element.rect
+    if attribute.startswith('css:'):
+        return element.value_of_css_property(attribute.split(':', 1)[1].strip())
+
+    return element.get_attribute(attribute)
 
 
 def _build_skipped_step_result(step_data):
@@ -665,9 +797,10 @@ class TestExecutor:
                     case_execution.execution_logs = json.dumps(case_result['steps'], ensure_ascii=False)
                     if case_result['error']:
                         case_execution.error_message = case_result['error']
-                    if case_result.get('screenshots'):
-                        case_execution.screenshots = case_result['screenshots']
-                    case_execution.save()
+                if case_result.get('screenshots'):
+                    case_execution.screenshots = case_result['screenshots']
+                set_execution_step_details(case_execution, case_result.get('steps', []), case_data.get('steps', []))
+                case_execution.save()
 
                     print(f"⏱️  执行时长: {case_execution.execution_time:.2f}秒")
 
@@ -700,6 +833,7 @@ class TestExecutor:
                     case_execution.execution_time = (
                                 case_execution.finished_at - case_execution.started_at).total_seconds()
                     case_execution.error_message = f"用例执行异常: {str(e)}"
+                    set_execution_step_details(case_execution, [], case_data.get('steps', []))
                     case_execution.save()
 
                 finally:
@@ -929,6 +1063,7 @@ class TestExecutor:
             case_execution.execution_logs = json.dumps(result['steps'], ensure_ascii=False)
             if result['error']:
                 case_execution.error_message = result['error']
+            set_execution_step_details(case_execution, result.get('steps', []), case_data.get('steps', []))
             case_execution.save()
 
         except Exception as e:
@@ -938,6 +1073,7 @@ class TestExecutor:
             case_execution.status = 'error'
             case_execution.error_message = str(e)
             case_execution.finished_at = timezone.now()
+            set_execution_step_details(case_execution, result.get('steps', []), case_data.get('steps', []))
             case_execution.save()
 
         result['end_time'] = datetime.now().isoformat()
@@ -1280,6 +1416,23 @@ class TestExecutor:
                     text = self.current_page.text_content(selector, timeout=step_data['wait_time'])
                     step_result['result'] = text
                     step_result['success'] = True
+
+                elif step_data['action_type'] == 'getAttribute':
+                    requested_attributes = parse_attribute_requests(resolve_variables(step_data.get('input_value') or ''))
+                    if not requested_attributes:
+                        step_result['error'] = '请输入要获取的属性名'
+                    else:
+                        results = {}
+                        for requested_attribute in requested_attributes:
+                            results[requested_attribute] = _resolve_sync_playwright_element_attribute(
+                                self.current_page,
+                                selector,
+                                requested_attribute,
+                                step_data['wait_time'],
+                            )
+                        step_result['result'] = format_attribute_results(results)
+                        step_result['message'] = step_result['result']
+                        step_result['success'] = True
 
                 elif step_data['action_type'] == 'waitFor':
                     # 检测是否是下拉框选项（下拉框选项可能是隐藏的）
@@ -1830,6 +1983,7 @@ class TestExecutor:
                     case_execution.finished_at = timezone.now()
                     case_execution.execution_time = 0
                     case_execution.error_message = case_result['error']
+                    set_execution_step_details(case_execution, case_result.get('steps', []), case_data.get('steps', []))
                     case_execution.save()
                 duration = time.time() - start_time
                 self.update_execution_result('FAILED', 0, len(test_cases_data), 0, duration)
@@ -1875,6 +2029,7 @@ class TestExecutor:
                     case_execution.execution_time = (
                                 case_execution.finished_at - case_execution.started_at).total_seconds()
                     case_execution.error_message = f"浏览器启动失败: {str(e)}"
+                    set_execution_step_details(case_execution, [], case_data.get('steps', []))
                     case_execution.save()
                     continue
 
@@ -1952,6 +2107,7 @@ class TestExecutor:
                     case_execution.error_message = case_result['error']
                 if case_result.get('screenshots'):
                     case_execution.screenshots = case_result['screenshots']
+                set_execution_step_details(case_execution, case_result.get('steps', []), case_data.get('steps', []))
                 case_execution.save()
 
                 print(f"⏱️  执行时长: {case_execution.execution_time:.2f}秒")
@@ -1984,6 +2140,7 @@ class TestExecutor:
                 case_execution.finished_at = timezone.now()
                 case_execution.execution_time = (case_execution.finished_at - case_execution.started_at).total_seconds()
                 case_execution.error_message = f"用例执行异常: {str(e)}"
+                set_execution_step_details(case_execution, [], case_data.get('steps', []))
                 case_execution.save()
 
             finally:
@@ -2356,6 +2513,7 @@ class TestExecutor:
             case_execution.execution_logs = json.dumps(result['steps'], ensure_ascii=False)
             if result['error']:
                 case_execution.error_message = result['error']
+            set_execution_step_details(case_execution, result.get('steps', []), case_data.get('steps', []))
             case_execution.save()
 
         except Exception as e:
@@ -2365,6 +2523,7 @@ class TestExecutor:
             case_execution.status = 'error'
             case_execution.error_message = str(e)
             case_execution.finished_at = timezone.now()
+            set_execution_step_details(case_execution, result.get('steps', []), case_data.get('steps', []))
             case_execution.save()
 
         result['end_time'] = datetime.now().isoformat()
@@ -2762,6 +2921,25 @@ class TestExecutor:
                                 print(f"✓ 元素重新定位成功")
                             else:
                                 raise
+
+                elif step_data['action_type'] == 'getAttribute':
+                    element_obj = wait.until(EC.presence_of_element_located((by, locator_value)))
+                    requested_attributes = parse_attribute_requests(resolve_variables(step_data.get('input_value') or ''))
+                    if not requested_attributes:
+                        step_result['error'] = '请输入要获取的属性名'
+                    else:
+                        results = {}
+                        for requested_attribute in requested_attributes:
+                            results[requested_attribute] = _resolve_legacy_selenium_element_attribute(
+                                driver,
+                                element_obj,
+                                by,
+                                locator_value,
+                                requested_attribute,
+                            )
+                        step_result['result'] = format_attribute_results(results)
+                        step_result['message'] = step_result['result']
+                        step_result['success'] = True
 
                 elif step_data['action_type'] == 'hover':
                     # 先定位元素

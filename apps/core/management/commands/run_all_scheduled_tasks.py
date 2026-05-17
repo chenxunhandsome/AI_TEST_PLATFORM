@@ -133,7 +133,14 @@ class Command(BaseCommand):
                 queue_local_suite_execution,
                 queue_local_test_case_executions,
             )
+            from apps.ui_automation.execution_records import cleanup_due_execution_records
             from apps.ui_automation.models import UiScheduledTask
+
+            cleanup_results = cleanup_due_execution_records()
+            for result in cleanup_results:
+                self.stdout.write(
+                    f"  [UI]  自动清理执行记录: {result['project_name']} 删除 {result['deleted_count']} 条"
+                )
 
             # 获取所有活跃的定时任务
             active_tasks = UiScheduledTask.objects.filter(status='ACTIVE')

@@ -32,6 +32,7 @@ from .models import (
     TestSuiteScript, TestExecution, Screenshot,
     ElementGroup, PageObject, PageObjectElement, ScriptStep, ScriptElementUsage,
     TestCase, TestCaseFolder, TestCaseStep, TestCaseExecution, OperationRecord,
+    UiExecutionCleanupSetting,
     TestCase, TestCaseStep, TestCaseExecution, OperationRecord,
     UiScheduledTask, UiNotificationLog, UiTaskNotificationSetting,
     AITestCaseGenerationSkill, AITestCaseGenerationSkillCategory,
@@ -54,6 +55,7 @@ from .serializers import (
     ScriptStepSerializer, ScriptElementUsageSerializer,
     ScriptAnalysisSerializer, ElementValidationSerializer, CodeGenerationSerializer,
     TestCaseSerializer, TestCaseFolderSerializer, TestCaseStepSerializer, TestCaseExecutionSerializer, TestCaseRunSerializer,
+    UiExecutionCleanupSettingSerializer,
     OperationRecordSerializer,
     UiScheduledTaskSerializer, UiNotificationLogSerializer, UiTaskNotificationSettingSerializer,
     AITestCaseGenerationSkillSerializer, AITestCaseGenerationSkillCategorySerializer,
@@ -82,6 +84,10 @@ from .execution_dispatcher import (
     queue_local_test_case_executions,
     refresh_scheduled_task_execution_progress,
     refresh_suite_execution_progress,
+)
+from .execution_records import (
+    cleanup_execution_records_for_setting,
+    set_execution_step_details,
 )
 from .scroll_coordinate_picker import (
     close_local_scroll_coordinate_picker_session,
@@ -1634,6 +1640,48 @@ def parse_uploaded_manifest(request):
     raise ValidationError('请上传 JSON 文件')
 
 
+def parse_positive_int_list(raw_value, label):
+    if raw_value in [None, '']:
+        return []
+
+    if isinstance(raw_value, (list, tuple)):
+        raw_items = raw_value
+    else:
+        raw_items = str(raw_value or '').split(',')
+
+    values = []
+    for raw_item in raw_items:
+        raw_item = str(raw_item or '').strip()
+        if not raw_item:
+            continue
+        try:
+            value = int(raw_item)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError(f'{label}格式不正确: {raw_item}') from exc
+        if value <= 0:
+            raise ValidationError(f'{label}必须为正整数: {raw_item}')
+        values.append(value)
+
+    return list(dict.fromkeys(values))
+
+
+def parse_string_list(raw_value):
+    if raw_value in [None, '']:
+        return []
+
+    if isinstance(raw_value, (list, tuple)):
+        raw_items = raw_value
+    else:
+        raw_items = str(raw_value or '').split(',')
+
+    values = []
+    for raw_item in raw_items:
+        value = str(raw_item or '').strip()
+        if value:
+            values.append(value)
+    return list(dict.fromkeys(values))
+
+
 def get_element_group_path(group):
     if not group:
         return []
@@ -1734,6 +1782,31 @@ def match_existing_element(project, locator_strategy, locator_value, page):
     ).first()
 
 
+def clear_auto_copied_step_locator_overrides(element, old_locator_strategy, old_locator_value):
+    old_locator_value = str(old_locator_value or '').strip()
+    if not old_locator_value:
+        return 0
+
+    old_strategy_name = ''
+    if hasattr(old_locator_strategy, 'name'):
+        old_strategy_name = str(old_locator_strategy.name or '').strip()
+    else:
+        old_strategy_name = str(old_locator_strategy or '').strip()
+
+    strategy_filter = models.Q(element_locator_strategy='')
+    if old_strategy_name:
+        strategy_filter |= models.Q(element_locator_strategy__iexact=old_strategy_name)
+
+    return TestCaseStep.objects.filter(
+        element=element,
+        element_locator_override_enabled=False,
+        element_locator_value=old_locator_value,
+    ).filter(strategy_filter).update(
+        element_locator_strategy='',
+        element_locator_value='',
+    )
+
+
 def resolve_imported_element(project, element_data, created_by=None, overwrite=False):
     locator_strategy = get_locator_strategy_by_name(element_data.get('locator_strategy'))
     locator_value = str(element_data.get('locator_value', '') or '').strip()
@@ -1788,9 +1861,9 @@ def build_drag_input_payload(target_element):
     }, ensure_ascii=False)
 
 
-def build_test_case_manifest_item(test_case):
-    steps = []
-    for step in test_case.steps.select_related('element', 'element__locator_strategy').order_by('step_number'):
+def build_test_case_step_manifest_items(test_case, steps):
+    manifest_steps = []
+    for step in steps:
         drag_target_element = None
         if step.action_type == 'drag' and step.input_value:
             try:
@@ -1804,7 +1877,7 @@ def build_test_case_manifest_item(test_case):
                     project=test_case.project
                 ).select_related('locator_strategy', 'group').filter(id=target_element_id).first()
 
-        steps.append({
+        manifest_steps.append({
             'step_number': step.step_number,
             'action_type': step.action_type,
             'description': step.description or '',
@@ -1812,6 +1885,7 @@ def build_test_case_manifest_item(test_case):
             'input_value': step.input_value or '',
             'element_locator_strategy': step.element_locator_strategy or '',
             'element_locator_value': step.element_locator_value or '',
+            'element_locator_override_enabled': step.element_locator_override_enabled,
             'wait_time': step.wait_time,
             'assert_type': step.assert_type or '',
             'assert_value': step.assert_value or '',
@@ -1823,13 +1897,40 @@ def build_test_case_manifest_item(test_case):
             'drag_target_element': build_element_manifest_item(drag_target_element) if drag_target_element else None,
         })
 
+    return manifest_steps
+
+
+def build_test_case_manifest_item(test_case):
+    steps = test_case.steps.select_related(
+        'element',
+        'element__locator_strategy',
+        'element__group',
+    ).order_by('step_number')
+
     return {
         'name': test_case.name,
         'description': test_case.description or '',
         'status': test_case.status,
         'priority': test_case.priority,
         'folder_name': test_case.folder.name if getattr(test_case, 'folder', None) else '',
-        'steps': steps,
+        'steps': build_test_case_step_manifest_items(test_case, steps),
+    }
+
+
+def build_test_case_steps_manifest(test_case, steps):
+    return {
+        'format': 'ui_automation_test_case_steps',
+        'version': IMPORT_EXPORT_FORMAT_VERSION,
+        'source_case': {
+            'id': test_case.id,
+            'name': test_case.name,
+        },
+        'source_project': {
+            'id': test_case.project_id,
+            'name': test_case.project.name,
+        },
+        'exported_at': timezone.now().isoformat(),
+        'steps': build_test_case_step_manifest_items(test_case, steps),
     }
 
 
@@ -1885,6 +1986,10 @@ def resolve_imported_test_case_step(project, step_data, created_by=None, overwri
         'input_value': input_value,
         'element_locator_strategy': str(step_data.get('element_locator_strategy', '') or '').strip(),
         'element_locator_value': str(step_data.get('element_locator_value', '') or '').strip(),
+        'element_locator_override_enabled': normalize_import_bool(
+            step_data.get('element_locator_override_enabled'),
+            bool(str(step_data.get('element_locator_value', '') or '').strip())
+        ),
         'wait_time': normalize_import_int(step_data.get('wait_time'), 1000),
         'assert_type': str(step_data.get('assert_type', '') or '').strip(),
         'assert_value': step_data.get('assert_value', '') or '',
@@ -1894,6 +1999,50 @@ def resolve_imported_test_case_step(project, step_data, created_by=None, overwri
         'transaction_disabled': normalize_import_bool(step_data.get('transaction_disabled', False), False),
         'element': element,
     }
+
+
+def extract_test_case_steps_from_manifest(manifest):
+    manifest_format = manifest.get('format')
+    if manifest_format == 'ui_automation_test_case_steps':
+        steps_data = manifest.get('steps') or []
+    elif manifest_format == 'ui_automation_test_cases':
+        steps_data = []
+        for case_data in manifest.get('test_cases') or []:
+            steps_data.extend(case_data.get('steps') or [])
+    else:
+        raise ValidationError('导入文件格式不正确')
+
+    if not isinstance(steps_data, list) or not steps_data:
+        raise ValidationError('导入文件中没有可用的步骤数据')
+
+    return steps_data
+
+
+def resolve_imported_test_case_steps(project, steps_data, user, overwrite=False, target_transaction=None):
+    resolved_steps = []
+    transaction_id_map = {}
+
+    for step_data in steps_data:
+        resolved_step = resolve_imported_test_case_step(
+            project,
+            step_data,
+            created_by=user,
+            overwrite=overwrite
+        )
+
+        if target_transaction:
+            resolved_step['transaction_id'] = target_transaction['id']
+            resolved_step['transaction_name'] = target_transaction['name']
+            resolved_step['transaction_disabled'] = target_transaction.get('disabled', False)
+        elif resolved_step.get('transaction_id'):
+            original_transaction_id = resolved_step['transaction_id']
+            if original_transaction_id not in transaction_id_map:
+                transaction_id_map[original_transaction_id] = str(uuid.uuid4())
+            resolved_step['transaction_id'] = transaction_id_map[original_transaction_id]
+
+        resolved_steps.append(resolved_step)
+
+    return resolved_steps
 
 
 def validate_test_case_steps_payload(steps_data):
@@ -2002,6 +2151,7 @@ def import_test_case_manifest_into_project(project, manifest, user, overwrite=Fa
                     input_value=resolved_step['input_value'],
                     element_locator_strategy=resolved_step['element_locator_strategy'],
                     element_locator_value=resolved_step['element_locator_value'],
+                    element_locator_override_enabled=resolved_step['element_locator_override_enabled'],
                     wait_time=resolved_step['wait_time'],
                     assert_type=resolved_step['assert_type'],
                     assert_value=resolved_step['assert_value'],
@@ -2050,6 +2200,7 @@ def build_test_case_step_payload(step):
         'input_value': step.input_value or '',
         'element_locator_strategy': step.element_locator_strategy or '',
         'element_locator_value': step.element_locator_value or '',
+        'element_locator_override_enabled': step.element_locator_override_enabled,
         'wait_time': step.wait_time,
         'assert_type': step.assert_type or '',
         'assert_value': step.assert_value or '',
@@ -2082,6 +2233,10 @@ def create_test_case_steps(test_case, steps_data):
                 input_value=step_data.get('input_value', ''),
                 element_locator_strategy=step_data.get('element_locator_strategy', ''),
                 element_locator_value=step_data.get('element_locator_value', ''),
+                element_locator_override_enabled=step_data.get(
+                    'element_locator_override_enabled',
+                    bool(str(step_data.get('element_locator_value', '') or '').strip())
+                ),
                 wait_time=step_data.get('wait_time', 1000),
                 assert_type=step_data.get('assert_type', ''),
                 assert_value=step_data.get('assert_value', ''),
@@ -2147,6 +2302,101 @@ def replace_test_case_steps(test_case, steps_data):
         cancel_pending_local_executions_after_step_change(test_case)
     logger.info(f"成功创建了 {created_count} 个新步骤")
     return created_count
+
+
+def get_test_case_step_insert_index(test_case, insert_mode, target_step_id=None, target_transaction_id=None):
+    steps = list(test_case.steps.order_by('step_number'))
+    insert_mode = str(insert_mode or 'end').strip()
+
+    if insert_mode in {'start', 'prepend'}:
+        return 0
+    if insert_mode in {'end', 'append'}:
+        return len(steps)
+
+    if insert_mode in {'before', 'after', 'before_step', 'after_step'}:
+        if not target_step_id:
+            raise ValidationError('请选择目标步骤')
+        try:
+            normalized_target_step_id = int(target_step_id)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError('目标步骤格式不正确') from exc
+
+        for index, step in enumerate(steps):
+            if step.id == normalized_target_step_id:
+                return index if insert_mode in {'before', 'before_step'} else index + 1
+        raise ValidationError('目标步骤不存在或不属于当前用例')
+
+    if insert_mode in {'before_transaction', 'after_transaction', 'transaction_start', 'transaction_end'}:
+        target_transaction_id = str(target_transaction_id or '').strip()
+        if not target_transaction_id:
+            raise ValidationError('请选择目标事务块')
+
+        transaction_indices = [
+            index for index, step in enumerate(steps)
+            if str(step.transaction_id or '').strip() == target_transaction_id
+        ]
+        if not transaction_indices:
+            raise ValidationError('目标事务块不存在或不属于当前用例')
+
+        if insert_mode in {'before_transaction', 'transaction_start'}:
+            return min(transaction_indices)
+        return max(transaction_indices) + 1
+
+    raise ValidationError('插入位置不正确')
+
+
+def get_target_transaction_payload(test_case, insert_mode, target_transaction_id=None):
+    if insert_mode not in {'transaction_start', 'transaction_end'}:
+        return None
+
+    target_transaction_id = str(target_transaction_id or '').strip()
+    if not target_transaction_id:
+        raise ValidationError('请选择目标事务块')
+
+    target_step = test_case.steps.filter(transaction_id=target_transaction_id).order_by('step_number').first()
+    if not target_step:
+        raise ValidationError('目标事务块不存在或不属于当前用例')
+
+    return {
+        'id': target_step.transaction_id,
+        'name': target_step.transaction_name,
+        'disabled': target_step.transaction_disabled,
+    }
+
+
+def import_test_case_steps_into_case(test_case, manifest, user, insert_mode='end', target_step_id=None,
+                                     target_transaction_id=None, overwrite=False):
+    insert_mode = str(insert_mode or 'end').strip()
+    steps_data = extract_test_case_steps_from_manifest(manifest)
+    insert_index = get_test_case_step_insert_index(
+        test_case,
+        insert_mode,
+        target_step_id=target_step_id,
+        target_transaction_id=target_transaction_id
+    )
+    target_transaction = get_target_transaction_payload(
+        test_case,
+        insert_mode,
+        target_transaction_id=target_transaction_id
+    )
+    imported_steps = resolve_imported_test_case_steps(
+        test_case.project,
+        steps_data,
+        user,
+        overwrite=overwrite,
+        target_transaction=target_transaction
+    )
+
+    existing_steps = [
+        build_test_case_step_payload(step)
+        for step in test_case.steps.select_related('element').order_by('step_number')
+    ]
+    merged_steps = existing_steps[:insert_index] + imported_steps + existing_steps[insert_index:]
+    created_count = replace_test_case_steps(test_case, merged_steps)
+    return {
+        'imported_count': len(imported_steps),
+        'total_steps': created_count,
+    }
 
 
 def resolve_step_runtime_payload(step):
@@ -2343,7 +2593,26 @@ class ElementViewSet(viewsets.ModelViewSet):
         log_operation('create', 'element', instance.id, instance.name, self.request.user)
 
     def perform_update(self, serializer):
+        old_instance = Element.objects.select_related('locator_strategy').get(pk=serializer.instance.pk)
+        old_locator_strategy = old_instance.locator_strategy
+        old_locator_value = old_instance.locator_value
         instance = serializer.save()
+        locator_changed = (
+            old_locator_value != instance.locator_value
+            or getattr(old_locator_strategy, 'id', None) != instance.locator_strategy_id
+        )
+        if locator_changed:
+            cleared_count = clear_auto_copied_step_locator_overrides(
+                instance,
+                old_locator_strategy,
+                old_locator_value,
+            )
+            if cleared_count:
+                logger.info(
+                    'Cleared %s auto-copied locator overrides for element %s',
+                    cleared_count,
+                    instance.id,
+                )
         # 记录操作
         log_operation('edit', 'element', instance.id, instance.name, self.request.user)
 
@@ -2627,11 +2896,11 @@ class ElementGroupViewSet(viewsets.ModelViewSet):
             return Response([])
 
         children_map = {}
-        groups_by_name = {}
+        groups_by_sibling_key = {}
 
         for group in groups:
             children_map.setdefault(group.parent_group_id, []).append(group)
-            groups_by_name.setdefault(group.name, []).append(group)
+            groups_by_sibling_key.setdefault((group.parent_group_id, group.name), []).append(group)
 
         def build_group_node(group):
             child_nodes = []
@@ -2641,17 +2910,27 @@ class ElementGroupViewSet(viewsets.ModelViewSet):
                     child_nodes.append(child_node)
 
             is_empty_leaf = group.elements_count == 0 and not child_nodes
+            sibling_groups = groups_by_sibling_key.get((group.parent_group_id, group.name), [])
             has_duplicate_peer = any(
                 peer.id != group.id and (
-                    peer.parent_group_id is not None
-                    or peer.elements_count > 0
+                    peer.elements_count > 0
                     or bool(children_map.get(peer.id))
                 )
-                for peer in groups_by_name.get(group.name, [])
+                for peer in sibling_groups
+            )
+            empty_duplicate_ids = [
+                peer.id
+                for peer in sibling_groups
+                if peer.elements_count == 0 and not children_map.get(peer.id)
+            ]
+            is_extra_empty_duplicate = (
+                is_empty_leaf
+                and len(empty_duplicate_ids) > 1
+                and group.id != min(empty_duplicate_ids)
             )
 
             is_placeholder_group = is_empty_leaf and (
-                has_group_path_separator(group.name) or has_duplicate_peer
+                has_group_path_separator(group.name) or has_duplicate_peer or is_extra_empty_duplicate
             )
             if is_placeholder_group:
                 return None
@@ -3429,6 +3708,79 @@ class TestCaseViewSet(viewsets.ModelViewSet):
             'project': {'id': project.id, 'name': project.name},
         })
 
+    @action(detail=True, methods=['get'], url_path='export-steps')
+    def export_steps(self, request, pk=None):
+        test_case = self.get_object()
+        step_ids = parse_positive_int_list(request.query_params.get('step_ids', ''), '步骤ID')
+        transaction_ids = parse_string_list(request.query_params.get('transaction_ids', ''))
+
+        if not step_ids and not transaction_ids:
+            raise ValidationError('请选择要导出的步骤或事务块')
+
+        queryset = test_case.steps.select_related(
+            'element',
+            'element__locator_strategy',
+            'element__group',
+        ).order_by('step_number')
+
+        if step_ids:
+            matched_step_ids = set(queryset.filter(id__in=step_ids).values_list('id', flat=True))
+            missing_step_ids = [step_id for step_id in step_ids if step_id not in matched_step_ids]
+            if missing_step_ids:
+                raise ValidationError(f'部分步骤不存在或不属于当前用例: {",".join(map(str, missing_step_ids))}')
+
+        if transaction_ids:
+            matched_transaction_ids = set(
+                queryset.filter(transaction_id__in=transaction_ids)
+                .exclude(transaction_id='')
+                .values_list('transaction_id', flat=True)
+            )
+            missing_transaction_ids = [
+                transaction_id for transaction_id in transaction_ids
+                if transaction_id not in matched_transaction_ids
+            ]
+            if missing_transaction_ids:
+                raise ValidationError(f'部分事务块不存在或不属于当前用例: {",".join(missing_transaction_ids)}')
+
+        filter_condition = models.Q()
+        if step_ids:
+            filter_condition |= models.Q(id__in=step_ids)
+        if transaction_ids:
+            filter_condition |= models.Q(transaction_id__in=transaction_ids)
+
+        steps = list(queryset.filter(filter_condition).order_by('step_number'))
+        if not steps:
+            raise ValidationError('没有可导出的步骤')
+
+        payload = build_test_case_steps_manifest(test_case, steps)
+        filename = f'ui-test-case-{test_case.id}-steps-{timezone.now().strftime("%Y%m%d%H%M%S")}.json'
+        return make_json_download_response(payload, filename)
+
+    @action(detail=True, methods=['post'], url_path='import-steps')
+    def import_steps(self, request, pk=None):
+        test_case = self.get_object()
+        overwrite = normalize_import_overwrite_flag(request.data.get('overwrite'))
+        manifest = parse_uploaded_manifest(request)
+        summary = import_test_case_steps_into_case(
+            test_case,
+            manifest,
+            request.user,
+            insert_mode=request.data.get('insert_mode') or 'end',
+            target_step_id=request.data.get('target_step_id'),
+            target_transaction_id=request.data.get('target_transaction_id'),
+            overwrite=overwrite
+        )
+
+        log_operation('edit', 'test_case', test_case.id, test_case.name, request.user)
+        test_case.refresh_from_db()
+        serializer = self.get_serializer(test_case)
+        return Response({
+            'success': True,
+            'message': '用例步骤导入成功',
+            'summary': summary,
+            'test_case': serializer.data,
+        })
+
     @action(detail=True, methods=['post'])
     def copy_case(self, request, pk=None):
         """复制测试用例"""
@@ -3458,6 +3810,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                     input_value=step.input_value,
                     element_locator_strategy=step.element_locator_strategy,
                     element_locator_value=step.element_locator_value,
+                    element_locator_override_enabled=step.element_locator_override_enabled,
                     wait_time=step.wait_time,
                     assert_type=step.assert_type,
                     assert_value=step.assert_value,
@@ -4360,6 +4713,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
             execution.execution_time = total_time
             execution.finished_at = timezone.now()
             execution.screenshots = screenshots
+            set_execution_step_details(execution, step_results, steps_data)
             execution.save()
             logger.info(f"[调试] 执行结果已保存: execution.status = {execution.status}")
 
@@ -4526,6 +4880,65 @@ class TestCaseExecutionViewSet(viewsets.ModelViewSet):
         except Exception as e:
             logger.error(f"批量删除测试用例执行记录失败: {str(e)}", exc_info=True)
             return Response({'error': f'批量删除失败: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['get', 'patch'], url_path='cleanup-setting')
+    def cleanup_setting(self, request):
+        """获取或更新执行记录自动清理配置"""
+        project_id = request.query_params.get('project') or request.data.get('project')
+        project = get_accessible_project_for_request(request, project_id)
+        setting, _ = UiExecutionCleanupSetting.objects.get_or_create(
+            project=project,
+            defaults={
+                'created_by': request.user,
+                'retention_days': 30,
+            },
+        )
+
+        if request.method.lower() == 'patch':
+            serializer = UiExecutionCleanupSettingSerializer(
+                setting,
+                data=request.data,
+                partial=True,
+                context={'request': request},
+            )
+            serializer.is_valid(raise_exception=True)
+            serializer.save(project=project)
+            log_operation('edit', 'execution', project.id, project.name, request.user)
+            return Response(serializer.data)
+
+        return Response(UiExecutionCleanupSettingSerializer(setting).data)
+
+    @action(detail=False, methods=['post'], url_path='cleanup-now')
+    def cleanup_now(self, request):
+        """立即按配置清理到期执行记录"""
+        project = get_accessible_project_for_request(request, request.data.get('project'))
+        setting, _ = UiExecutionCleanupSetting.objects.get_or_create(
+            project=project,
+            defaults={
+                'created_by': request.user,
+                'retention_days': int(request.data.get('retention_days') or 30),
+            },
+        )
+
+        if 'retention_days' in request.data:
+            serializer = UiExecutionCleanupSettingSerializer(
+                setting,
+                data={'retention_days': request.data.get('retention_days')},
+                partial=True,
+                context={'request': request},
+            )
+            serializer.is_valid(raise_exception=True)
+            setting = serializer.save(project=project)
+
+        result = cleanup_execution_records_for_setting(setting)
+        log_operation('delete', 'execution', project.id, project.name, request.user)
+        return Response({
+            'message': f"已清理 {result['deleted_count']} 条执行记录",
+            'deleted_count': result['deleted_count'],
+            'retention_days': result['retention_days'],
+            'cutoff': result['cutoff'],
+            'last_cleaned_at': setting.last_cleaned_at,
+        })
 
 
 class OperationRecordViewSet(viewsets.ReadOnlyModelViewSet):
@@ -4854,6 +5267,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                             'error': error_msg
                                         }], ensure_ascii=False)
                                         execution.finished_at = timezone.now()
+                                        set_execution_step_details(execution)
                                         execution.save()
                                         failed_count += 1
                                         continue
@@ -5078,6 +5492,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                 execution.execution_time = total_time
                                 execution.screenshots = screenshots
                                 execution.finished_at = timezone.now()
+                                set_execution_step_details(execution, step_results, steps_data)
                                 execution.save()
 
                                 if execution.status == 'passed':
@@ -5092,6 +5507,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                 execution.status = 'failed'
                                 execution.error_message = str(e)
                                 execution.finished_at = timezone.now()
+                                set_execution_step_details(execution)
                                 execution.save()
                                 failed_count += 1
 

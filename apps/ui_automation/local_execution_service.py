@@ -272,6 +272,11 @@ def _append_step_result(
     message='',
     timeout_debug=None,
     step_id=None,
+    step_log='',
+    element_data=None,
+    input_value='',
+    assert_value='',
+    wait_time=None,
 ):
     result = {
         'step_number': step_number,
@@ -282,7 +287,20 @@ def _append_step_result(
         'error': error,
         'status': status or ('passed' if success else 'failed'),
         'message': message or '',
+        'log': step_log or error or '',
+        'input_value': input_value or '',
+        'assert_value': assert_value or '',
+        'wait_time': wait_time,
     }
+    if isinstance(element_data, dict) and element_data:
+        result['element'] = {
+            'id': element_data.get('id'),
+            'name': element_data.get('name') or element_data.get('locator_value') or '',
+            'locator_strategy': element_data.get('locator_strategy') or '',
+            'locator_value': element_data.get('locator_value') or '',
+            'element_type': element_data.get('element_type') or '',
+            'page': element_data.get('page') or '',
+        }
     if timeout_debug:
         result['timeout_debug'] = timeout_debug
     step_results.append(result)
@@ -415,6 +433,10 @@ def _run_selenium(payload, browser, headless, start_time, step_results, screensh
                     status='skipped',
                     message=skip_message,
                     step_id=getattr(step, 'step_id', None),
+                    element_data=getattr(step, 'element_data', None),
+                    input_value=getattr(step, 'input_value', ''),
+                    assert_value=getattr(step, 'assert_value', ''),
+                    wait_time=getattr(step, 'wait_time', None),
                 )
                 continue
 
@@ -441,6 +463,11 @@ def _run_selenium(payload, browser, headless, start_time, step_results, screensh
                 None if success else step_log,
                 timeout_debug=timeout_debug,
                 step_id=getattr(step, 'step_id', None),
+                step_log=step_log,
+                element_data=element_data,
+                input_value=resolved_input_value,
+                assert_value=resolved_assert_value,
+                wait_time=getattr(step, 'wait_time', None),
             )
 
             if step.action_type == 'screenshot' and screenshot_base64:
@@ -540,6 +567,10 @@ async def _run_playwright_async(payload, browser, headless, start_time, step_res
                     status='skipped',
                     message=skip_message,
                     step_id=getattr(step, 'step_id', None),
+                    element_data=getattr(step, 'element_data', None),
+                    input_value=getattr(step, 'input_value', ''),
+                    assert_value=getattr(step, 'assert_value', ''),
+                    wait_time=getattr(step, 'wait_time', None),
                 )
                 continue
 
@@ -566,6 +597,11 @@ async def _run_playwright_async(payload, browser, headless, start_time, step_res
                 None if success else step_log,
                 timeout_debug=timeout_debug,
                 step_id=getattr(step, 'step_id', None),
+                step_log=step_log,
+                element_data=element_data,
+                input_value=resolved_input_value,
+                assert_value=resolved_assert_value,
+                wait_time=getattr(step, 'wait_time', None),
             )
 
             if step.action_type == 'screenshot' and screenshot_base64:

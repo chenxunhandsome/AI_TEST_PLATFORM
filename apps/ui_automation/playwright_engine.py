@@ -18,6 +18,12 @@ from .variable_resolver import (
     resolve_variables,
     set_runtime_variable,
 )
+from .element_attribute_resolver import (
+    build_attribute_log_lines,
+    format_attribute_results,
+    normalize_attribute_name,
+    parse_attribute_requests,
+)
 
 logger = logging.getLogger(__name__)
 RUNTIME_VARIABLE_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
@@ -83,6 +89,75 @@ def append_runtime_variable_log(step, log, value):
 
     set_runtime_variable(save_as, value)
     return f"{log}\n  - 已存储变量: ${{{save_as}}} = '{value}'"
+
+
+async def resolve_playwright_element_attribute(locator, requested_attribute, timeout_ms):
+    """Resolve one user-requested element attribute from a Playwright locator."""
+    attribute = normalize_attribute_name(requested_attribute)
+    target = locator.first
+
+    if attribute == 'exists':
+        return await locator.count() > 0
+    if attribute == 'count':
+        return await locator.count()
+    if attribute == 'visible':
+        return await target.is_visible()
+    if attribute == 'enabled':
+        return await target.is_enabled(timeout=timeout_ms)
+    if attribute == 'disabled':
+        return not await target.is_enabled(timeout=timeout_ms)
+    if attribute == 'clickable':
+        if not await target.is_visible():
+            return False
+        if not await target.is_enabled(timeout=timeout_ms):
+            return False
+        return await target.evaluate(
+            """element => {
+                const style = window.getComputedStyle(element);
+                if (style.visibility === 'hidden' || style.display === 'none' || style.pointerEvents === 'none') {
+                    return false;
+                }
+                const rect = element.getBoundingClientRect();
+                if (rect.width <= 0 || rect.height <= 0) {
+                    return false;
+                }
+                const x = rect.left + rect.width / 2;
+                const y = rect.top + rect.height / 2;
+                const topElement = document.elementFromPoint(x, y);
+                return topElement === element || element.contains(topElement);
+            }"""
+        )
+    if attribute == 'checked':
+        return await target.is_checked(timeout=timeout_ms)
+    if attribute == 'selected':
+        return await target.evaluate("element => Boolean(element.selected)")
+    if attribute == 'readonly':
+        return await target.evaluate("element => Boolean(element.readOnly || element.hasAttribute('readonly'))")
+    if attribute == 'text':
+        return await target.inner_text(timeout=timeout_ms)
+    if attribute == 'textContent':
+        return await target.text_content(timeout=timeout_ms)
+    if attribute == 'value':
+        try:
+            return await target.input_value(timeout=timeout_ms)
+        except Exception:
+            return await target.get_attribute('value', timeout=timeout_ms)
+    if attribute == 'tagName':
+        return await target.evaluate("element => element.tagName.toLowerCase()")
+    if attribute == 'innerHTML':
+        return await target.evaluate("element => element.innerHTML")
+    if attribute == 'outerHTML':
+        return await target.evaluate("element => element.outerHTML")
+    if attribute == 'rect':
+        return await target.bounding_box()
+    if attribute.startswith('css:'):
+        css_name = attribute.split(':', 1)[1].strip()
+        return await target.evaluate(
+            "(element, cssName) => window.getComputedStyle(element).getPropertyValue(cssName)",
+            css_name,
+        )
+
+    return await target.get_attribute(attribute, timeout=timeout_ms)
 
 def _get_scroll_direction_label(direction: str) -> str:
     return {
@@ -1495,15 +1570,25 @@ class PlaywrightTestEngine:
                     or 'el-cascader-node' in locator_value_lower
                     or ('//li' in locator_value_lower and '//input' not in locator_value_lower)
                 )
-                is_xpath_dropdown_trigger = (
+                is_xpath_input_dropdown_trigger = (
                     locator_strategy.lower() == 'xpath'
                     and (
-                        '下拉框' in element_name
-                        or '下拉框' in str(getattr(step, 'description', '') or '')
-                        or '//input' in locator_value_lower
+                        '//input' in locator_value_lower
+                        or 'el-select' in locator_value_lower
+                        or 'el-input' in locator_value_lower
                     )
                     and not is_scrollbar_xpath_option
                     and not is_option_like_locator
+                )
+                is_xpath_dropdown_trigger = (
+                    is_xpath_input_dropdown_trigger
+                    and (
+                        '下拉框' in element_name
+                        or '下拉框' in str(getattr(step, 'description', '') or '')
+                        or '选择框' in element_name
+                        or '选择框' in str(getattr(step, 'description', '') or '')
+                        or '//input' in locator_value_lower
+                    )
                 )
                 is_name_only_dropdown_option = (
                     '选项' in element_name
@@ -1884,6 +1969,29 @@ class PlaywrightTestEngine:
                 log += f"  - 超时设置: {timeout_ms/1000}秒\n"
                 log += f"  - 执行时间: {execution_time}秒"
                 log = append_runtime_variable_log(step, log, text)
+                return True, log, None
+
+            elif action_type == 'getAttribute':
+                requested_attributes = parse_attribute_requests(resolved_input_value)
+                if not requested_attributes:
+                    return False, "✗ 获取元素属性失败: 请输入要获取的属性名", None
+
+                results = {}
+                for requested_attribute in requested_attributes:
+                    results[requested_attribute] = await resolve_playwright_element_attribute(
+                        locator,
+                        requested_attribute,
+                        timeout_ms,
+                    )
+
+                result_value = format_attribute_results(results)
+                execution_time = round(time.time() - start_time, 2)
+                log = f"✓ 获取元素 '{element_name}' 的属性成功\n"
+                log += f"  - 定位器: {locator_strategy}={locator_value}\n"
+                log += "\n".join(build_attribute_log_lines(results)) + "\n"
+                log += f"  - 超时设置: {timeout_ms/1000}秒\n"
+                log += f"  - 执行时间: {execution_time}秒"
+                log = append_runtime_variable_log(step, log, result_value)
                 return True, log, None
 
             elif action_type == 'waitFor':

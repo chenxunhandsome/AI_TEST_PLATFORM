@@ -13,7 +13,7 @@
             />
           </el-select>
           <div class="header-actions">
-            <el-button type="primary" size="small" @click="showCreatePageDialog = true" :title="$t('uiAutomation.element.createPage')">
+            <el-button type="primary" size="small" @click="openCreatePageDialog()" :title="$t('uiAutomation.element.createPage')">
               <el-icon><Folder /></el-icon>
             </el-button>
             <el-button type="success" size="small" @click="createEmptyElement" :title="$t('uiAutomation.element.addElement')">
@@ -228,7 +228,7 @@
     </div>
 
     <!-- 鍒涘缓椤甸潰瀵硅瘽妗?-->
-    <el-dialog v-model="showCreatePageDialog" :title="$t('uiAutomation.element.createPageTitle')" width="500px" :close-on-click-modal="false">
+    <el-dialog v-model="showCreatePageDialog" :title="$t('uiAutomation.element.createPageTitle')" width="500px" :close-on-click-modal="false" @closed="resetCreatePageForm()">
       <el-form ref="pageFormRef" :model="pageForm" :rules="pageRules" label-width="100px">
         <el-form-item :label="$t('uiAutomation.element.pageName')" prop="name">
           <el-input v-model="pageForm.name" :placeholder="$t('uiAutomation.element.pageNamePlaceholder')" />
@@ -254,7 +254,7 @@
       </el-form>
 
       <template #footer>
-        <el-button @click="showCreatePageDialog = false">{{ $t('uiAutomation.common.cancel') }}</el-button>
+        <el-button @click="closeCreatePageDialog">{{ $t('uiAutomation.common.cancel') }}</el-button>
         <el-button type="primary" @click="createPage">{{ $t('uiAutomation.common.confirm') }}</el-button>
       </template>
     </el-dialog>
@@ -476,12 +476,70 @@ const pageSelectProps = {
   disabled: 'disabled'
 }
 
+const validatePageNameNoPathSeparator = (rule, value, callback) => {
+  const name = String(value || '').trim()
+  if (/[\/\\>]/.test(name) || name.includes('->')) {
+    callback(new Error(t('uiAutomation.element.rules.pageNameNoPathSeparator')))
+    return
+  }
+  callback()
+}
+
 // 琛ㄥ崟楠岃瘉瑙勫垯
 const pageRules = computed(() => ({
   name: [
-    { required: true, message: t('uiAutomation.element.rules.pageNameRequired'), trigger: 'blur' }
+    { required: true, message: t('uiAutomation.element.rules.pageNameRequired'), trigger: 'blur' },
+    { validator: validatePageNameNoPathSeparator, trigger: 'blur' }
   ]
 }))
+
+const resetCreatePageForm = (parentPage = null) => {
+  Object.assign(pageForm, {
+    name: '',
+    description: '',
+    parent_page: parentPage
+  })
+  nextTick(() => {
+    pageFormRef.value?.clearValidate()
+  })
+}
+
+const openCreatePageDialog = (parentPage = null) => {
+  resetCreatePageForm(parentPage)
+  showCreatePageDialog.value = true
+}
+
+const closeCreatePageDialog = () => {
+  showCreatePageDialog.value = false
+}
+
+const getRequestErrorMessage = (error, fallback) => {
+  const data = error?.response?.data
+  if (!data) {
+    return error?.message || fallback
+  }
+
+  if (typeof data === 'string') {
+    return data
+  }
+
+  for (const key of ['error', 'detail', 'message']) {
+    if (data[key]) {
+      return Array.isArray(data[key]) ? data[key].join('；') : String(data[key])
+    }
+  }
+
+  for (const value of Object.values(data)) {
+    if (Array.isArray(value) && value.length) {
+      return value.join('；')
+    }
+    if (value && typeof value === 'string') {
+      return value
+    }
+  }
+
+  return fallback
+}
 
 // 鍏冪礌琛ㄥ崟澶撮儴楠岃瘉瑙勫垯锛堝厓绱犲悕绉帮級
 const elementHeaderRules = computed(() => ({
@@ -1048,6 +1106,7 @@ const onProjectChange = async () => {
   selectedElement.value = null
   checkedElementIds.value = []
   suggestions.value = []
+  resetCreatePageForm()
 
   console.log('=== 椤圭洰鍒囨崲璋冭瘯 ===')
   console.log('褰撳墠椤圭洰ID:', selectedProject.value)
@@ -1389,14 +1448,7 @@ const createPage = async () => {
     await createElementGroup(pageData)
 
     ElMessage.success(t('uiAutomation.element.messages.pageCreateSuccess'))
-    showCreatePageDialog.value = false
-
-    // 閲嶇疆琛ㄥ崟
-    Object.assign(pageForm, {
-      name: '',
-      description: '',
-      parent_page: null
-    })
+    closeCreatePageDialog()
 
     // 閲嶆柊鍔犺浇椤甸潰鍜屾爲
     await Promise.all([
@@ -1408,7 +1460,7 @@ const createPage = async () => {
     treeKey.value += 1
   } catch (error) {
     console.error('鍒涘缓椤甸潰澶辫触:', error)
-    ElMessage.error(t('uiAutomation.element.messages.pageCreateFailed'))
+    ElMessage.error(getRequestErrorMessage(error, t('uiAutomation.element.messages.pageCreateFailed')))
   }
 }
 
@@ -1657,12 +1709,11 @@ const addSubPage = () => {
     return
   }
 
-  showCreatePageDialog.value = true
-
-  // 濡傛灉鍙抽敭鐐瑰嚮鐨勬槸椤甸潰鑺傜偣锛岃缃埗椤甸潰
   if (rightClickedNode.value && rightClickedNode.value.type === 'page') {
-    pageForm.parent_page = rightClickedNode.value.id
+    openCreatePageDialog(rightClickedNode.value.id)
+    return
   }
+  openCreatePageDialog()
 }
 
 // 缂栬緫鑺傜偣
@@ -1823,7 +1874,7 @@ const updatePage = async () => {
     treeKey.value += 1
   } catch (error) {
     console.error('鏇存柊椤甸潰澶辫触:', error)
-    ElMessage.error(t('uiAutomation.element.messages.pageUpdateFailed'))
+    ElMessage.error(getRequestErrorMessage(error, t('uiAutomation.element.messages.pageUpdateFailed')))
   }
 }
 </script>

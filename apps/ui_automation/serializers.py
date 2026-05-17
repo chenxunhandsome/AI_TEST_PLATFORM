@@ -5,6 +5,7 @@ from .models import (
     TestSuiteScript, TestSuiteTestCase, TestExecution, TestEnvironment, Screenshot,
     ElementGroup, PageObject, PageObjectElement, ScriptStep, ScriptElementUsage,
     TestCase, TestCaseFolder, TestCaseStep, TestCaseExecution, OperationRecord, LocalRunner,
+    UiExecutionCleanupSetting,
     UiScheduledTask, UiNotificationLog, UiTaskNotificationSetting,
     AITestCaseGenerationSkill, AITestCaseGenerationSkillCategory,
     AITestCaseGenerationSkillDependency, AITestCaseGenerationSkillExecutionLog,
@@ -14,6 +15,7 @@ from .models import (
 )
 from django.contrib.auth import get_user_model
 from .project_runtime import normalize_project_global_variables
+from .group_paths import has_group_path_separator
 
 User = get_user_model()
 
@@ -342,7 +344,64 @@ class ScreenshotSerializer(serializers.ModelSerializer):
 
 
 # 新增的serializers
-class ElementGroupSerializer(serializers.ModelSerializer):
+class ElementGroupSiblingNameValidationMixin:
+    def _resolve_group_project(self, attrs):
+        project = attrs.get('project')
+        if project is not None:
+            return project
+        if self.instance is not None:
+            return self.instance.project
+        return None
+
+    def _resolve_parent_group(self, attrs):
+        if 'parent_group' in attrs:
+            return attrs.get('parent_group')
+        if self.instance is not None:
+            return self.instance.parent_group
+        return None
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        name = str(attrs.get('name', getattr(self.instance, 'name', '')) or '').strip()
+        if not name:
+            raise serializers.ValidationError({'name': ['请输入文件夹名称']})
+        if has_group_path_separator(name):
+            raise serializers.ValidationError({
+                'name': ['文件夹名称不能包含 /、\\、>、-> 等层级分隔符，请使用普通文字命名']
+            })
+        attrs['name'] = name
+
+        project = self._resolve_group_project(attrs)
+        parent_group = self._resolve_parent_group(attrs)
+        if project is None:
+            raise serializers.ValidationError({'project': ['请选择有效的项目']})
+
+        if parent_group is not None:
+            if parent_group.project_id != project.id:
+                raise serializers.ValidationError({'parent_group': ['父文件夹必须属于同一项目']})
+
+            current = parent_group
+            while current is not None:
+                if self.instance is not None and current.id == self.instance.id:
+                    raise serializers.ValidationError({'parent_group': ['不能将文件夹移动到自身或其子文件夹下']})
+                current = current.parent_group
+
+        sibling_query = ElementGroup.objects.filter(project=project, name=name)
+        if parent_group is None:
+            sibling_query = sibling_query.filter(parent_group__isnull=True)
+        else:
+            sibling_query = sibling_query.filter(parent_group=parent_group)
+
+        if self.instance is not None:
+            sibling_query = sibling_query.exclude(id=self.instance.id)
+
+        if sibling_query.exists():
+            raise serializers.ValidationError({'name': ['同一层级下已存在同名文件夹']})
+
+        return attrs
+
+
+class ElementGroupSerializer(ElementGroupSiblingNameValidationMixin, serializers.ModelSerializer):
     project = UiProjectSerializer(read_only=True)
     project_id = serializers.IntegerField(write_only=True)
     elements_count = serializers.SerializerMethodField()
@@ -363,7 +422,7 @@ class ElementGroupSerializer(serializers.ModelSerializer):
         return ElementGroupSerializer(children, many=True, context=self.context).data
 
 
-class ElementGroupCreateSerializer(serializers.ModelSerializer):
+class ElementGroupCreateSerializer(ElementGroupSiblingNameValidationMixin, serializers.ModelSerializer):
     class Meta:
         model = ElementGroup
         fields = ('project', 'name', 'description', 'parent_group', 'order')
@@ -605,9 +664,25 @@ class TestCaseStepSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'step_number', 'action_type', 'element', 'element_name', 'element_locator',
             'element_locator_strategy', 'element_locator_value',
+            'element_locator_override_enabled',
             'input_value', 'wait_time', 'assert_type', 'assert_value', 'description', 'is_enabled',
             'save_as', 'transaction_id', 'transaction_name', 'transaction_disabled', 'created_at'
         ]
+
+    def validate(self, attrs):
+        locator_value = attrs.get('element_locator_value')
+        if locator_value is None and self.instance:
+            locator_value = self.instance.element_locator_value
+        locator_value = str(locator_value or '').strip()
+
+        if not locator_value:
+            attrs['element_locator_value'] = ''
+            attrs['element_locator_strategy'] = ''
+            attrs['element_locator_override_enabled'] = False
+        elif 'element_locator_override_enabled' not in attrs:
+            attrs['element_locator_override_enabled'] = True
+
+        return attrs
 
 
 class TestCaseFolderSerializer(serializers.ModelSerializer):
@@ -698,7 +773,7 @@ class TestCaseExecutionSerializer(serializers.ModelSerializer):
             'id', 'test_case', 'test_case_name', 'project', 'project_name',
             'test_suite', 'test_suite_name', 'execution_source', 'execution_mode', 'status',
             'engine', 'browser', 'headless', 'execution_logs', 'error_message',
-            'screenshots', 'execution_time', 'started_at', 'finished_at',
+            'screenshots', 'step_details', 'execution_time', 'started_at', 'finished_at',
             'created_by', 'created_by_name', 'assigned_runner', 'assigned_runner_name', 'created_at'
         ]
         read_only_fields = ['created_by']
@@ -711,9 +786,43 @@ class TestCaseExecutionSerializer(serializers.ModelSerializer):
         """获取创建人姓名"""
         return obj.created_by.username if obj.created_by else '-'
 
+    def to_representation(self, instance):
+        data = super().to_representation(instance)
+        if not data.get('step_details'):
+            try:
+                from .execution_records import build_execution_step_details
+                data['step_details'] = build_execution_step_details(
+                    instance.execution_logs,
+                    execution_plan=instance.execution_plan,
+                )
+            except Exception:
+                data['step_details'] = []
+        return data
+
     def create(self, validated_data):
         validated_data['created_by'] = self.context['request'].user
         return super().create(validated_data)
+
+
+class UiExecutionCleanupSettingSerializer(serializers.ModelSerializer):
+    """UI执行记录清理配置序列化器"""
+    project_name = serializers.CharField(source='project.name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+
+    class Meta:
+        model = UiExecutionCleanupSetting
+        fields = [
+            'id', 'project', 'project_name', 'enabled', 'retention_days',
+            'last_cleaned_at', 'created_by', 'created_by_name', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_by', 'last_cleaned_at', 'created_at', 'updated_at']
+
+    def validate_retention_days(self, value):
+        if value < 1:
+            raise serializers.ValidationError('保留天数不能小于1天')
+        if value > 3650:
+            raise serializers.ValidationError('保留天数不能超过3650天')
+        return value
 
 
 class AITestCaseGenerationSkillSerializer(serializers.ModelSerializer):

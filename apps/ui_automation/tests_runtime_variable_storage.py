@@ -3,6 +3,11 @@ from unittest import TestCase
 
 from apps.ui_automation.playwright_engine import append_runtime_variable_log as append_playwright_runtime_variable_log
 from apps.ui_automation.selenium_engine import append_runtime_variable_log as append_selenium_runtime_variable_log
+from apps.ui_automation.element_attribute_resolver import (
+    format_attribute_results,
+    normalize_attribute_name,
+    parse_attribute_requests,
+)
 from apps.ui_automation.test_executor import _store_runtime_variable_for_step
 from apps.ui_automation.variable_resolver import clear_runtime_variables, get_runtime_variable
 
@@ -40,3 +45,23 @@ class RuntimeVariableStorageTests(TestCase):
         )
 
         self.assertEqual(get_runtime_variable('captured_text'), 'runtime-value')
+
+    def test_attribute_request_aliases_and_multi_value_format(self):
+        self.assertEqual(parse_attribute_requests('visible, clickable，value'), ['visible', 'clickable', 'value'])
+        self.assertEqual(normalize_attribute_name('是否可见'), 'visible')
+        self.assertEqual(normalize_attribute_name('is_clickable'), 'clickable')
+        self.assertEqual(
+            format_attribute_results({'visible': True, 'value': 'abc'}),
+            '{"visible": "true", "value": "abc"}',
+        )
+
+    def test_legacy_executor_get_attribute_stores_runtime_variable(self):
+        _store_runtime_variable_for_step(
+            {
+                'action_type': 'getAttribute',
+                'save_as': 'visible_state',
+            },
+            resolved_result_value='true',
+        )
+
+        self.assertEqual(get_runtime_variable('visible_state'), 'true')

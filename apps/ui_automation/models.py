@@ -662,6 +662,7 @@ class TestCaseStep(models.Model):
         ('fill', '输入文本'),
         ('fillAndEnter', '输入并回车'),
         ('getText', '获取文本'),
+        ('getAttribute', '获取元素属性'),
         ('waitFor', '等待元素'),
         ('hover', '悬停'),
         ('scroll', '滚动'),
@@ -690,6 +691,7 @@ class TestCaseStep(models.Model):
     element = models.ForeignKey(Element, on_delete=models.CASCADE, null=True, blank=True, verbose_name='目标元素')
     element_locator_strategy = models.CharField(max_length=50, blank=True, verbose_name='步骤级定位策略')
     element_locator_value = models.TextField(blank=True, verbose_name='步骤级定位表达式')
+    element_locator_override_enabled = models.BooleanField(default=False, verbose_name='是否启用步骤级定位覆盖')
     input_value = models.TextField(blank=True, verbose_name='输入值')
     wait_time = models.IntegerField(default=1000, verbose_name='等待时间(毫秒)')
     assert_type = models.CharField(max_length=20, choices=ASSERT_TYPE_CHOICES, blank=True, verbose_name='断言类型')
@@ -752,6 +754,7 @@ class TestCaseExecution(models.Model):
     error_message = models.TextField(null=True, blank=True, verbose_name='错误信息')
     screenshots = models.JSONField(default=list, blank=True, verbose_name='截图列表')
     execution_plan = models.JSONField(default=dict, blank=True, verbose_name='执行步骤计划')
+    step_details = models.JSONField(default=list, blank=True, verbose_name='步骤详情')
     execution_time = models.FloatField(null=True, blank=True, verbose_name='执行时长(秒)')
     started_at = models.DateTimeField(null=True, blank=True, verbose_name='开始时间')
     finished_at = models.DateTimeField(null=True, blank=True, verbose_name='完成时间')
@@ -783,6 +786,39 @@ class TestCaseExecution(models.Model):
 
     def __str__(self):
         return f"{self.test_case.name} - {self.created_at.strftime('%Y-%m-%d %H:%M:%S')}"
+
+
+class UiExecutionCleanupSetting(models.Model):
+    """UI执行记录自动清理配置"""
+
+    project = models.OneToOneField(
+        UiProject,
+        on_delete=models.CASCADE,
+        related_name='execution_cleanup_setting',
+        verbose_name='所属项目',
+    )
+    enabled = models.BooleanField(default=False, verbose_name='是否启用')
+    retention_days = models.PositiveIntegerField(default=30, verbose_name='保留天数')
+    last_cleaned_at = models.DateTimeField(null=True, blank=True, verbose_name='最后清理时间')
+    created_by = models.ForeignKey(
+        User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ui_execution_cleanup_settings',
+        verbose_name='创建人',
+    )
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='更新时间')
+
+    class Meta:
+        db_table = 'ui_execution_cleanup_settings'
+        verbose_name = 'UI执行记录清理配置'
+        verbose_name_plural = 'UI执行记录清理配置'
+        ordering = ['project_id']
+
+    def __str__(self):
+        return f"{self.project.name} - {'启用' if self.enabled else '停用'} - {self.retention_days}天"
 
 
 class LocalRunner(models.Model):

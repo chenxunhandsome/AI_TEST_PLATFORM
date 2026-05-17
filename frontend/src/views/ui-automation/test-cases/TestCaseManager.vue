@@ -127,7 +127,6 @@
               </el-button>
               <el-button
                 size="small"
-                :disabled="!importableSourceTestCases.length"
                 @click="openImportCaseStepsDialog"
               >
                 导入用例步骤
@@ -205,6 +204,9 @@
                   <el-icon><FolderOpened /></el-icon>
                   移出事务块
                 </el-button>
+                <el-button size="small" :disabled="!checkedStepCount" @click="handleExportCheckedSteps">
+                  导出选中步骤
+                </el-button>
                 <el-button size="small" text @click="expandAllSteps">
                   {{ allStepsExpanded ? t('uiAutomation.testCase.foldAll') : t('uiAutomation.testCase.expandAll') }}
                 </el-button>
@@ -262,6 +264,12 @@
                           />
                           <el-button size="small" text @click="copyTransactionBlock(element.transaction_id)">
                             复制
+                          </el-button>
+                          <el-button size="small" text @click="exportTransactionBlock(element.transaction_id)">
+                            导出
+                          </el-button>
+                          <el-button size="small" text @click="openImportCaseStepsDialog({ insertMode: 'transaction_end', transactionId: element.transaction_id })">
+                            导入
                           </el-button>
                           <el-button size="small" text @click="renameTransactionBlock(element.transaction_id)">
                             重命名
@@ -366,6 +374,7 @@
                             <el-option :label="t('uiAutomation.testCase.actionFill')" value="fill" />
                             <el-option :label="t('uiAutomation.testCase.actionFillAndEnter')" value="fillAndEnter" />
                             <el-option :label="t('uiAutomation.testCase.actionGetText')" value="getText" />
+                            <el-option :label="t('uiAutomation.testCase.actionGetAttribute')" value="getAttribute" />
                             <el-option :label="t('uiAutomation.testCase.actionWaitFor')" value="waitFor" />
                             <el-option :label="t('uiAutomation.testCase.actionHover')" value="hover" />
                             <el-option :label="t('uiAutomation.testCase.actionScroll')" value="scroll" />
@@ -404,6 +413,7 @@
                                 v-model="element.element_locator_strategy"
                                 size="small"
                                 style="width: 120px"
+                                @change="markStepLocatorOverride(element)"
                                 placeholder="策略"
                               >
                                 <el-option label="CSS" value="css" />
@@ -421,6 +431,8 @@
                                 v-model="element.element_locator_value"
                                 size="small"
                                 clearable
+                                @input="markStepLocatorOverride(element)"
+                                @clear="markStepLocatorOverride(element)"
                                 :placeholder="getSelectedElementLocatorPlaceholder(element)"
                               />
                             </div>
@@ -650,11 +662,11 @@
                         </div>
 
                         <div v-if="needsInputValue(element.action_type)" class="step-param">
-                          <label>{{ t('uiAutomation.testCase.inputValue') }}</label>
+                          <label>{{ getInputValueLabel(element.action_type) }}</label>
                           <div style="display: flex; gap: 5px; flex: 1">
                             <el-input
                               v-model="element.input_value"
-                              :placeholder="element.action_type === 'switchTab' ? t('uiAutomation.testCase.switchTabPlaceholder') : t('uiAutomation.testCase.inputPlaceholder')"
+                              :placeholder="getInputValuePlaceholder(element.action_type)"
                               size="small"
                             >
                               <template #append>
@@ -1410,10 +1422,16 @@
       v-model="showImportCaseStepsDialog"
       title="导入用例步骤"
       :close-on-click-modal="false"
-      width="480px"
+      width="560px"
     >
       <el-form :model="importCaseStepsForm" label-width="100px">
-        <el-form-item label="源用例" required>
+        <el-form-item label="导入来源" required>
+          <el-radio-group v-model="importCaseStepsForm.source_type">
+            <el-radio-button label="case">已有用例</el-radio-button>
+            <el-radio-button label="file">JSON文件</el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item v-if="importCaseStepsForm.source_type === 'case'" label="源用例" required>
           <el-select
             v-model="importCaseStepsForm.source_case_id"
             placeholder="请选择要导入的用例"
@@ -1427,6 +1445,18 @@
             />
           </el-select>
         </el-form-item>
+        <el-form-item v-else label="步骤文件" required>
+          <el-upload
+            ref="importStepsUploadRef"
+            :auto-upload="false"
+            :limit="1"
+            accept=".json,application/json"
+            :on-change="handleImportStepsFileChange"
+            :on-remove="handleImportStepsFileRemove"
+          >
+            <el-button>选择文件</el-button>
+          </el-upload>
+        </el-form-item>
         <el-form-item label="插入位置" required>
           <el-select
             v-model="importCaseStepsForm.insert_mode"
@@ -1439,6 +1469,20 @@
               :label="item.label"
               :value="item.value"
               :disabled="item.disabled"
+            />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="needsImportTargetTransaction" label="目标事务块" required>
+          <el-select
+            v-model="importCaseStepsForm.target_transaction_id"
+            placeholder="请选择目标事务块"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="item in importTargetTransactionOptions"
+              :key="item.value"
+              :label="item.label"
+              :value="item.value"
             />
           </el-select>
         </el-form-item>
@@ -1456,11 +1500,14 @@
             />
           </el-select>
         </el-form-item>
+        <el-form-item v-if="importCaseStepsForm.source_type === 'file'" label="覆盖元素">
+          <el-switch v-model="importCaseStepsForm.overwrite" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <span class="dialog-footer">
           <el-button @click="showImportCaseStepsDialog = false">{{ t('uiAutomation.common.cancel') }}</el-button>
-          <el-button type="primary" @click="submitImportCaseSteps">导入</el-button>
+          <el-button type="primary" :loading="importingCaseSteps" @click="submitImportCaseSteps">导入</el-button>
         </span>
       </template>
     </el-dialog>
@@ -1628,6 +1675,8 @@ import {
   copyTestCase as copyTestCaseApi,
   exportTestCases,
   importTestCases,
+  exportTestCaseSteps,
+  importTestCaseSteps,
   getAITestCaseGenerationSkills,
   ensureDefaultAITestCaseGenerationSkill,
   updateAITestCaseGenerationSkill,
@@ -1772,6 +1821,9 @@ const showFolderDialog = ref(false)
 const showMoveDialog = ref(false)
 const showImportDialog = ref(false)
 const showImportCaseStepsDialog = ref(false)
+const importingCaseSteps = ref(false)
+const importStepsFile = ref(null)
+const importStepsUploadRef = ref(null)
 const showElementSelectorDialog = ref(false)
 const editingTestCase = ref(null)
 const executionResult = ref(null)
@@ -1873,9 +1925,12 @@ const aiSkillModuleForm = reactive({
   is_active: true
 })
 const importCaseStepsForm = reactive({
+  source_type: 'case',
   source_case_id: null,
   insert_mode: 'end',
-  target_step_id: null
+  target_step_id: null,
+  target_transaction_id: null,
+  overwrite: false
 })
 
 
@@ -1924,11 +1979,15 @@ const importableSourceTestCases = computed(() => {
 
 const importInsertModeOptions = computed(() => {
   const hasTargetSteps = currentSteps.value.length > 0
+  const hasTransactionBlocks = importTargetTransactionOptions.value.length > 0
   return [
     { value: 'start', label: '\u63d2\u5165\u5230\u5f00\u5934', disabled: false },
     { value: 'end', label: '\u63d2\u5165\u5230\u672b\u5c3e', disabled: false },
     { value: 'before', label: '\u63d2\u5165\u5230\u6307\u5b9a\u6b65\u9aa4\u524d', disabled: !hasTargetSteps },
-    { value: 'after', label: '\u63d2\u5165\u5230\u6307\u5b9a\u6b65\u9aa4\u540e', disabled: !hasTargetSteps }
+    { value: 'after', label: '\u63d2\u5165\u5230\u6307\u5b9a\u6b65\u9aa4\u540e', disabled: !hasTargetSteps },
+    { value: 'transaction_end', label: '\u5bfc\u5165\u5230\u6307\u5b9a\u4e8b\u52a1\u5757\u5185', disabled: !hasTransactionBlocks },
+    { value: 'before_transaction', label: '\u63d2\u5165\u5230\u6307\u5b9a\u4e8b\u52a1\u5757\u524d', disabled: !hasTransactionBlocks },
+    { value: 'after_transaction', label: '\u63d2\u5165\u5230\u6307\u5b9a\u4e8b\u52a1\u5757\u540e', disabled: !hasTransactionBlocks }
   ]
 })
 
@@ -1936,11 +1995,32 @@ const needsImportTargetStep = computed(() => {
   return ['before', 'after'].includes(importCaseStepsForm.insert_mode)
 })
 
+const needsImportTargetTransaction = computed(() => {
+  return ['transaction_end', 'before_transaction', 'after_transaction'].includes(importCaseStepsForm.insert_mode)
+})
+
 const importTargetStepOptions = computed(() => {
   return currentSteps.value.map((step, index) => ({
     value: step.id,
     label: `${index + 1}. ${getStepSummary(step, index)}`
   }))
+})
+
+const importTargetTransactionOptions = computed(() => {
+  const seen = new Set()
+  const options = []
+  currentSteps.value.forEach((step) => {
+    const transactionId = getTransactionId(step)
+    if (!transactionId || seen.has(transactionId)) {
+      return
+    }
+    seen.add(transactionId)
+    options.push({
+      value: transactionId,
+      label: `${getTransactionName(step) || '未命名事务块'} (${getTransactionStepCount(transactionId)} 步)`
+    })
+  })
+  return options
 })
 
 const parsedExecutionLogs = computed(() => {
@@ -2244,7 +2324,7 @@ const filteredElementTreeOptions = computed(() => {
 
 // 方法定义
 const canStoreVariable = (actionType) => {
-  return ['fill', 'fillAndEnter', 'getText', 'switchTab', 'assert'].includes(actionType)
+  return ['fill', 'fillAndEnter', 'getText', 'getAttribute', 'switchTab', 'assert'].includes(actionType)
 }
 
 const parseDragTargetPayload = (inputValue) => {
@@ -2441,6 +2521,8 @@ const createStepDraft = (step = {}, expanded = false) => ({
   element_id: step.element_id ?? step.element ?? '',
   element_locator_strategy: step.element_locator_strategy || '',
   element_locator_value: step.element_locator_value || '',
+  element_locator_override_enabled: step.element_locator_override_enabled === true ||
+    (step.element_locator_override_enabled == null && Boolean(String(step.element_locator_value || '').trim())),
   input_value: step.input_value || '',
   wait_time: Number(step.wait_time ?? 1000) || 1000,
   assert_type: step.assert_type || 'textContains',
@@ -2458,26 +2540,26 @@ const createTransactionId = () => {
   return `tx-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }
 
-const resetImportCaseStepsForm = () => {
+const resetImportCaseStepsForm = (options = {}) => {
+  importCaseStepsForm.source_type = importableSourceTestCases.value.length ? 'case' : 'file'
   importCaseStepsForm.source_case_id = importableSourceTestCases.value[0]?.id ?? null
-  importCaseStepsForm.insert_mode = currentSteps.value.length ? 'after' : 'end'
+  importCaseStepsForm.insert_mode = options.insertMode || (currentSteps.value.length ? 'after' : 'end')
   importCaseStepsForm.target_step_id = currentSteps.value.some(step => isSameStepId(step.id, selectedStepId.value))
     ? selectedStepId.value
     : (currentSteps.value[0]?.id ?? null)
+  importCaseStepsForm.target_transaction_id = options.transactionId || importTargetTransactionOptions.value[0]?.value || null
+  importCaseStepsForm.overwrite = false
+  importStepsFile.value = null
+  importStepsUploadRef.value?.clearFiles?.()
 }
 
-const openImportCaseStepsDialog = () => {
+const openImportCaseStepsDialog = (options = {}) => {
   if (!selectedTestCase.value) {
     ElMessage.warning('\u8bf7\u5148\u9009\u62e9\u76ee\u6807\u7528\u4f8b')
     return
   }
 
-  if (!importableSourceTestCases.value.length) {
-    ElMessage.warning('\u5f53\u524d\u9879\u76ee\u6ca1\u6709\u5176\u4ed6\u53ef\u5bfc\u5165\u7528\u4f8b')
-    return
-  }
-
-  resetImportCaseStepsForm()
+  resetImportCaseStepsForm(options)
   showImportCaseStepsDialog.value = true
 }
 
@@ -2512,6 +2594,14 @@ const getImportInsertIndex = () => {
 
   if (importCaseStepsForm.insert_mode === 'end') {
     return currentSteps.value.length
+  }
+
+  if (['transaction_end', 'before_transaction', 'after_transaction'].includes(importCaseStepsForm.insert_mode)) {
+    const range = getTransactionRange(importCaseStepsForm.target_transaction_id)
+    if (!range) {
+      return -1
+    }
+    return importCaseStepsForm.insert_mode === 'before_transaction' ? range.start : range.end + 1
   }
 
   const targetIndex = currentSteps.value.findIndex(step => isSameStepId(step.id, importCaseStepsForm.target_step_id))
@@ -2985,6 +3075,9 @@ const buildStepPayload = (step, index) => ({
   element_id: needsElement(step.action_type) ? (step.element_id || null) : null,
   element_locator_strategy: needsElement(step.action_type) ? (step.element_locator_strategy || '') : '',
   element_locator_value: needsElement(step.action_type) ? String(step.element_locator_value || '').trim() : '',
+  element_locator_override_enabled: needsElement(step.action_type)
+    ? Boolean(step.element_locator_override_enabled && String(step.element_locator_value || '').trim())
+    : false,
   input_value: isCanvasAction(step.action_type)
     ? buildCanvasPayload(step)
     : step.action_type === 'drag'
@@ -3056,6 +3149,12 @@ const validateCurrentSteps = () => {
     if (step.save_as && !STEP_RUNTIME_VARIABLE_RE.test(step.save_as)) {
       step.expanded = true
       ElMessage.warning(t('uiAutomation.testCase.storeAsInvalid', { step: index + 1 }))
+      return false
+    }
+
+    if (step.action_type === 'getAttribute' && !String(step.input_value || '').trim()) {
+      step.expanded = true
+      ElMessage.warning(`第 ${index + 1} 步请填写要获取的属性名`)
       return false
     }
 
@@ -3778,6 +3877,7 @@ const applySavedTestCaseToState = (savedCase) => {
     selectedTestCase.value = savedCase
     const previousSelectedStepId = selectedStepId.value
     const previousCheckedStepIds = [...checkedStepIds.value]
+    const previousCheckedStepIndexes = getStepIndexesByIds(previousCheckedStepIds)
     currentSteps.value = (savedCase.steps || []).map(step =>
       createStepDraft(step, currentSteps.value.find(item => item.id === step.id)?.expanded || false)
     )
@@ -3785,9 +3885,11 @@ const applySavedTestCaseToState = (savedCase) => {
     selectedStepId.value = currentSteps.value.some(step => isSameStepId(step.id, previousSelectedStepId))
       ? previousSelectedStepId
       : null
-    checkedStepIds.value = previousCheckedStepIds.filter(id =>
+    const retainedCheckedStepIds = previousCheckedStepIds.filter(id =>
       currentSteps.value.some(step => isSameStepId(step.id, id))
     )
+    const remappedCheckedStepIds = getPersistedStepIdsByIndexes(previousCheckedStepIndexes)
+    checkedStepIds.value = [...new Set([...retainedCheckedStepIds, ...remappedCheckedStepIds])]
     syncTransactionCollapseMap()
   }
 }
@@ -4085,6 +4187,107 @@ const handleExportAllCases = async () => {
   await handleExportCases([])
 }
 
+const isPersistedStepId = (stepId) => /^\d+$/.test(String(stepId || ''))
+
+const getStepIndexesByIds = (stepIds = []) => {
+  return (stepIds || [])
+    .map(stepId => currentSteps.value.findIndex(step => isSameStepId(step.id, stepId)))
+    .filter(index => index >= 0)
+}
+
+const getPersistedStepIdsByIndexes = (stepIndexes = []) => {
+  return (stepIndexes || [])
+    .map(index => currentSteps.value[index]?.id)
+    .filter(stepId => isPersistedStepId(stepId))
+}
+
+const extractBlobErrorMessage = async (error, fallback) => {
+  const data = error?.response?.data
+  if (!(data instanceof Blob)) {
+    return extractRequestErrorMessage(error, fallback)
+  }
+
+  try {
+    const text = await data.text()
+    if (!text) {
+      return fallback
+    }
+    try {
+      const parsed = JSON.parse(text)
+      return extractRequestErrorMessage({ response: { data: parsed } }, fallback)
+    } catch {
+      return text
+    }
+  } catch {
+    return fallback
+  }
+}
+
+const handleExportCaseSteps = async ({ stepIds = [], transactionIds = [] } = {}) => {
+  if (!selectedTestCase.value) {
+    ElMessage.warning('请先选择用例')
+    return
+  }
+
+  if (!stepIds.length && !transactionIds.length) {
+    ElMessage.warning('请先选择要导出的步骤或事务块')
+    return
+  }
+
+  const unpersistedStepIds = stepIds.filter(stepId => !isPersistedStepId(stepId))
+  if (unpersistedStepIds.length) {
+    ElMessage.warning('存在未保存的步骤，请先保存用例后再导出')
+    return
+  }
+
+  const selectedStepIndexes = getStepIndexesByIds(stepIds)
+
+  try {
+    const latestCase = await persistSelectedTestCase({ showSuccess: false })
+    if (!latestCase) {
+      return
+    }
+
+    const exportStepIds = stepIds.length
+      ? getPersistedStepIdsByIndexes(selectedStepIndexes)
+      : []
+    if (stepIds.length && exportStepIds.length !== selectedStepIndexes.length) {
+      ElMessage.warning('保存后未能定位全部选中步骤，请重新勾选后再导出')
+      return
+    }
+    if (exportStepIds.length) {
+      checkedStepIds.value = exportStepIds
+    }
+
+    const response = await exportTestCaseSteps(selectedTestCase.value.id, {
+      step_ids: exportStepIds.join(','),
+      transaction_ids: transactionIds.join(',')
+    })
+    const blob = new Blob([response.data], {
+      type: response.headers['content-type'] || 'application/json'
+    })
+    const filename = getDownloadFilename(response.headers['content-disposition'], 'ui-test-case-steps.json')
+    downloadBlob(blob, filename)
+    ElMessage.success('步骤片段导出成功')
+  } catch (error) {
+    console.error('导出步骤片段失败:', error)
+    ElMessage.error(await extractBlobErrorMessage(error, '步骤片段导出失败'))
+  }
+}
+
+const handleExportCheckedSteps = async () => {
+  await handleExportCaseSteps({ stepIds: checkedStepIds.value })
+}
+
+const exportTransactionBlock = async (transactionId) => {
+  const normalizedId = String(transactionId || '').trim()
+  if (!normalizedId) {
+    ElMessage.warning('事务块不存在')
+    return
+  }
+  await handleExportCaseSteps({ transactionIds: [normalizedId] })
+}
+
 const openImportDialog = () => {
   if (!projectId.value) {
     ElMessage.warning(t('uiAutomation.project.selectProject'))
@@ -4101,6 +4304,14 @@ const handleImportFileChange = (file) => {
 
 const handleImportFileRemove = () => {
   importFile.value = null
+}
+
+const handleImportStepsFileChange = (file) => {
+  importStepsFile.value = file.raw
+}
+
+const handleImportStepsFileRemove = () => {
+  importStepsFile.value = null
 }
 
 const submitImportCases = async () => {
@@ -4797,6 +5008,7 @@ const onActionTypeChange = (step) => {
     step.element_id = ''
     step.element_locator_strategy = ''
     step.element_locator_value = ''
+    step.element_locator_override_enabled = false
     step.canvas_frame_selector = step.canvas_frame_selector || '#plt-workflow-iframe'
     step.canvas_hold_ms = Number(step.canvas_hold_ms ?? 300) || 300
     step.canvas_steps = Number(step.canvas_steps ?? 30) || 30
@@ -4811,6 +5023,7 @@ const onActionTypeChange = (step) => {
     step.element_id = ''
     step.element_locator_strategy = ''
     step.element_locator_value = ''
+    step.element_locator_override_enabled = false
   }
   if (!needsWaitTime(step.action_type)) {
     step.wait_time = 1000
@@ -4847,10 +5060,6 @@ const onActionTypeChange = (step) => {
 const onElementChange = (step) => {
   // 元素变化时的处理
   const element = availableElements.value.find(e => e.id === step.element_id)
-  if (element) {
-    step.element_locator_strategy = getElementLocatorStrategy(element)
-    step.element_locator_value = element.locator_value || ''
-  }
   if (element && !step.description) {
     step.description = `${getActionTypeText(step.action_type)}${element.name}`
   }
@@ -4858,6 +5067,17 @@ const onElementChange = (step) => {
 
 const getElementLocatorStrategy = (element) => {
   return element?.locator_strategy?.name || element?.locator_strategy || 'css'
+}
+
+const markStepLocatorOverride = (step) => {
+  const locatorValue = String(step.element_locator_value || '').trim()
+  step.element_locator_override_enabled = Boolean(locatorValue)
+  if (!locatorValue) {
+    step.element_locator_strategy = ''
+  } else if (!step.element_locator_strategy) {
+    const element = availableElements.value.find(item => item.id === step.element_id)
+    step.element_locator_strategy = getElementLocatorStrategy(element)
+  }
 }
 
 const getSelectedElementLocatorPlaceholder = (step) => {
@@ -4905,7 +5125,24 @@ const handleElementTreeNodeClick = (node) => {
 }
 
 const needsInputValue = (actionType) => {
-  return ['fill', 'fillAndEnter', 'switchTab'].includes(actionType)
+  return ['fill', 'fillAndEnter', 'getAttribute', 'switchTab'].includes(actionType)
+}
+
+const getInputValueLabel = (actionType) => {
+  if (actionType === 'getAttribute') {
+    return t('uiAutomation.testCase.attributeName')
+  }
+  return t('uiAutomation.testCase.inputValue')
+}
+
+const getInputValuePlaceholder = (actionType) => {
+  if (actionType === 'switchTab') {
+    return t('uiAutomation.testCase.switchTabPlaceholder')
+  }
+  if (actionType === 'getAttribute') {
+    return t('uiAutomation.testCase.attributePlaceholder')
+  }
+  return t('uiAutomation.testCase.inputPlaceholder')
 }
 
 const needsWaitTime = (actionType) => {
@@ -4920,7 +5157,108 @@ const needsElement = (actionType) => {
   return !['wait', 'switchTab', 'screenshot', 'refreshCurrentPage', 'closeCurrentPage', 'canvasClick', 'canvasDrag'].includes(actionType)
 }
 
-const submitImportCaseSteps = () => {
+const applyImportTargetTransaction = (importedSteps) => {
+  if (importCaseStepsForm.insert_mode !== 'transaction_end') {
+    return
+  }
+
+  const targetStep = getTransactionSteps(importCaseStepsForm.target_transaction_id)[0]
+  if (!targetStep) {
+    return
+  }
+
+  importedSteps.forEach(step => {
+    applyTransactionToStep(step, targetStep)
+  })
+}
+
+const submitImportCaseStepsFromFile = async () => {
+  if (!selectedTestCase.value) {
+    ElMessage.warning('请先选择目标用例')
+    return
+  }
+  if (!importStepsFile.value) {
+    ElMessage.warning('请先选择步骤 JSON 文件')
+    return
+  }
+  if (needsImportTargetStep.value && !importCaseStepsForm.target_step_id) {
+    ElMessage.warning('请选择目标步骤')
+    return
+  }
+  if (needsImportTargetTransaction.value && !importCaseStepsForm.target_transaction_id) {
+    ElMessage.warning('请选择目标事务块')
+    return
+  }
+  if (needsImportTargetStep.value && !isPersistedStepId(importCaseStepsForm.target_step_id)) {
+    ElMessage.warning('目标步骤尚未保存，请先保存用例后再导入')
+    return
+  }
+
+  const targetStepIndexes = needsImportTargetStep.value
+    ? getStepIndexesByIds([importCaseStepsForm.target_step_id])
+    : []
+  if (needsImportTargetStep.value && targetStepIndexes.length !== 1) {
+    ElMessage.warning('目标步骤不存在，请重新选择')
+    return
+  }
+
+  importingCaseSteps.value = true
+  try {
+    const savedCase = await persistSelectedTestCase({ showSuccess: false })
+    if (!savedCase) {
+      return
+    }
+
+    const targetStepId = needsImportTargetStep.value
+      ? getPersistedStepIdsByIndexes(targetStepIndexes)[0]
+      : null
+    if (needsImportTargetStep.value && !targetStepId) {
+      ElMessage.warning('保存后未能定位目标步骤，请重新选择后再导入')
+      return
+    }
+    if (targetStepId) {
+      importCaseStepsForm.target_step_id = targetStepId
+    }
+
+    const formData = new FormData()
+    formData.append('file', importStepsFile.value)
+    formData.append('insert_mode', importCaseStepsForm.insert_mode)
+    formData.append('overwrite', importCaseStepsForm.overwrite ? '1' : '0')
+    if (needsImportTargetStep.value) {
+      formData.append('target_step_id', targetStepId)
+    }
+    if (needsImportTargetTransaction.value) {
+      formData.append('target_transaction_id', importCaseStepsForm.target_transaction_id)
+    }
+
+    const response = await importTestCaseSteps(selectedTestCase.value.id, formData)
+    const importedCase = response.data?.test_case
+    if (importedCase) {
+      applySavedTestCaseToState(importedCase)
+    } else {
+      const detailResponse = await getTestCaseDetail(selectedTestCase.value.id)
+      applySavedTestCaseToState(detailResponse.data)
+    }
+    checkedStepIds.value = []
+    showImportCaseStepsDialog.value = false
+    importStepsUploadRef.value?.clearFiles?.()
+    importStepsFile.value = null
+    await refreshElementCatalogForCurrentProject()
+    ElMessage.success(`已导入 ${response.data?.summary?.imported_count || 0} 个步骤`)
+  } catch (error) {
+    console.error('导入步骤片段失败:', error)
+    ElMessage.error(extractRequestErrorMessage(error, '导入步骤片段失败'))
+  } finally {
+    importingCaseSteps.value = false
+  }
+}
+
+const submitImportCaseSteps = async () => {
+  if (importCaseStepsForm.source_type === 'file') {
+    await submitImportCaseStepsFromFile()
+    return
+  }
+
   const sourceCase = testCases.value.find(item => String(item.id) === String(importCaseStepsForm.source_case_id))
   if (!sourceCase) {
     ElMessage.warning('\u8bf7\u9009\u62e9\u8981\u5bfc\u5165\u7684\u7528\u4f8b')
@@ -4937,13 +5275,18 @@ const submitImportCaseSteps = () => {
     ElMessage.warning('\u8bf7\u9009\u62e9\u76ee\u6807\u6b65\u9aa4')
     return
   }
-
-  const insertIndex = getImportInsertIndex()
-  if (insertIndex < 0) {
-    ElMessage.warning('\u76ee\u6807\u6b65\u9aa4\u4e0d\u5b58\u5728\uff0c\u8bf7\u91cd\u65b0\u9009\u62e9')
+  if (needsImportTargetTransaction.value && !importCaseStepsForm.target_transaction_id) {
+    ElMessage.warning('请选择目标事务块')
     return
   }
 
+  const insertIndex = getImportInsertIndex()
+  if (insertIndex < 0) {
+    ElMessage.warning('目标位置不存在，请重新选择')
+    return
+  }
+
+  applyImportTargetTransaction(importedSteps)
   currentSteps.value.splice(insertIndex, 0, ...importedSteps)
   selectedStepId.value = importedSteps[0]?.id ?? null
   checkedStepIds.value = importedSteps.map(step => step.id)
@@ -5503,6 +5846,7 @@ const getActionTypeText = (actionType) => {
     'fill': t('uiAutomation.testCase.actionType.fill'),
     'fillAndEnter': t('uiAutomation.testCase.actionType.fillAndEnter'),
     'getText': t('uiAutomation.testCase.actionType.getText'),
+    'getAttribute': t('uiAutomation.testCase.actionGetAttribute'),
     'waitFor': t('uiAutomation.testCase.actionType.waitFor'),
     'hover': t('uiAutomation.testCase.actionType.hover'),
     'scroll': t('uiAutomation.testCase.actionType.scroll'),
@@ -5555,6 +5899,7 @@ const getActionText = (actionType) => {
     'fill': t('uiAutomation.testCase.actionText.fill'),
     'fillAndEnter': t('uiAutomation.testCase.actionText.fillAndEnter'),
     'getText': t('uiAutomation.testCase.actionText.getText'),
+    'getAttribute': t('uiAutomation.testCase.actionGetAttribute'),
     'waitFor': t('uiAutomation.testCase.actionText.waitFor'),
     'hover': t('uiAutomation.testCase.actionText.hover'),
     'scroll': t('uiAutomation.testCase.actionText.scroll'),
@@ -5618,26 +5963,45 @@ watch(showMoveDialog, (visible) => {
 
 watch(showImportCaseStepsDialog, (visible) => {
   if (!visible) {
+    importStepsFile.value = null
+    importStepsUploadRef.value?.clearFiles?.()
+    importCaseStepsForm.source_type = 'case'
     importCaseStepsForm.source_case_id = null
     importCaseStepsForm.insert_mode = 'end'
     importCaseStepsForm.target_step_id = null
+    importCaseStepsForm.target_transaction_id = null
+    importCaseStepsForm.overwrite = false
   }
 })
 
 watch(() => importCaseStepsForm.insert_mode, (mode) => {
   if (!['before', 'after'].includes(mode)) {
     importCaseStepsForm.target_step_id = null
+  } else {
+    if (!currentSteps.value.length) {
+      importCaseStepsForm.insert_mode = 'end'
+      importCaseStepsForm.target_step_id = null
+      return
+    }
+
+    if (!currentSteps.value.some(step => isSameStepId(step.id, importCaseStepsForm.target_step_id))) {
+      importCaseStepsForm.target_step_id = currentSteps.value[0]?.id ?? null
+    }
+  }
+
+  if (!['transaction_end', 'before_transaction', 'after_transaction'].includes(mode)) {
+    importCaseStepsForm.target_transaction_id = null
     return
   }
 
-  if (!currentSteps.value.length) {
+  if (!importTargetTransactionOptions.value.length) {
     importCaseStepsForm.insert_mode = 'end'
-    importCaseStepsForm.target_step_id = null
+    importCaseStepsForm.target_transaction_id = null
     return
   }
 
-  if (!currentSteps.value.some(step => isSameStepId(step.id, importCaseStepsForm.target_step_id))) {
-    importCaseStepsForm.target_step_id = currentSteps.value[0]?.id ?? null
+  if (!importTargetTransactionOptions.value.some(item => item.value === importCaseStepsForm.target_transaction_id)) {
+    importCaseStepsForm.target_transaction_id = importTargetTransactionOptions.value[0]?.value ?? null
   }
 })
 

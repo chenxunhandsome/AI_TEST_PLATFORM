@@ -17,6 +17,7 @@ from .execution_dispatcher import (
     refresh_scheduled_task_execution_progress,
     refresh_suite_execution_progress,
 )
+from .execution_records import set_execution_step_details
 from .models import LocalRunner, TestCaseExecution
 from .scroll_coordinate_picker import (
     claim_local_scroll_coordinate_picker_task,
@@ -318,10 +319,11 @@ class LocalRunnerViewSet(viewsets.ReadOnlyModelViewSet):
         execution.execution_time = request.data.get('execution_time') or 0
         execution.error_message = error_message
         execution.finished_at = timezone.now()
+        set_execution_step_details(execution, execution_logs)
         execution.save(
             update_fields=[
                 'status', 'execution_logs', 'screenshots', 'execution_time',
-                'error_message', 'finished_at'
+                'error_message', 'finished_at', 'step_details'
             ]
         )
 

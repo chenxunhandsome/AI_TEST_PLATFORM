@@ -49,6 +49,10 @@
             >
               {{ $t('uiAutomation.common.batchDelete') }}
             </el-button>
+            <el-button @click="openCleanupDialog">
+              <el-icon><Delete /></el-icon>
+              清理设置
+            </el-button>
           </el-form-item>
         </el-form>
       </div>
@@ -185,6 +189,49 @@
             </div>
           </el-tab-pane>
 
+          <el-tab-pane label="步骤详情" name="stepDetails">
+            <el-table :data="getCurrentStepDetails()" border style="width: 100%" max-height="520">
+              <el-table-column prop="step_number" label="步骤" width="70" align="center" />
+              <el-table-column label="状态" width="90" align="center">
+                <template #default="{ row }">
+                  <el-tag :type="row.status === 'passed' || row.success ? 'success' : row.status === 'skipped' ? 'info' : 'danger'" size="small">
+                    {{ row.status === 'skipped' ? '跳过' : (row.status === 'passed' || row.success ? '通过' : '失败') }}
+                  </el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="130">
+                <template #default="{ row }">{{ getActionText(row.action_type) }}</template>
+              </el-table-column>
+              <el-table-column label="点击内容" min-width="150">
+                <template #default="{ row }">{{ row.clicked_content || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="输入内容" min-width="150">
+                <template #default="{ row }">
+                  <span class="detail-value">{{ row.input_content || '-' }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="操作元素" min-width="180">
+                <template #default="{ row }">{{ row.element?.name || '-' }}</template>
+              </el-table-column>
+              <el-table-column label="定位器" min-width="240">
+                <template #default="{ row }">
+                  <div v-if="row.locator_value" class="locator-cell">
+                    <el-tag size="small" type="info">{{ row.locator_strategy || 'css' }}</el-tag>
+                    <span>{{ row.locator_value }}</span>
+                  </div>
+                  <span v-else>-</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="说明/错误" min-width="220">
+                <template #default="{ row }">
+                  <div>{{ row.description || '-' }}</div>
+                  <div v-if="row.error" class="step-error-text">{{ row.error }}</div>
+                </template>
+              </el-table-column>
+            </el-table>
+            <el-empty v-if="getCurrentStepDetails().length === 0" description="暂无步骤详情" />
+          </el-tab-pane>
+
           <!-- 失败截图 - 仅失败或错误状态显示 -->
           <el-tab-pane :label="$t('uiAutomation.execution.failedScreenshots')" name="screenshots" v-if="currentExecution.status === 'failed' || currentExecution.status === 'error'">
             <div class="screenshots-container">
@@ -226,6 +273,26 @@
       </div>
       <template #footer>
         <el-button @click="showDetailDialog = false">{{ $t('uiAutomation.common.close') }}</el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog v-model="cleanupDialogVisible" title="执行记录定时清理" width="520px">
+      <el-form :model="cleanupForm" label-width="120px">
+        <el-form-item label="启用自动清理">
+          <el-switch v-model="cleanupForm.enabled" />
+        </el-form-item>
+        <el-form-item label="保留天数">
+          <el-input-number v-model="cleanupForm.retention_days" :min="1" :max="3650" :step="1" style="width: 180px" />
+          <span class="cleanup-tip">自动清理早于该天数的执行记录</span>
+        </el-form-item>
+        <el-form-item label="最后清理时间">
+          <span>{{ formatDateTime(cleanupForm.last_cleaned_at) }}</span>
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="cleanupDialogVisible = false">取消</el-button>
+        <el-button type="warning" @click="handleCleanupNow" :loading="cleanupLoading">立即清理</el-button>
+        <el-button type="primary" @click="saveCleanupSetting" :loading="cleanupLoading">保存设置</el-button>
       </template>
     </el-dialog>
 
@@ -280,7 +347,7 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Search, View, WarningFilled, Refresh } from '@element-plus/icons-vue'
+import { Search, View, WarningFilled, Refresh, Delete } from '@element-plus/icons-vue'
 import { useI18n } from 'vue-i18n'
 import {
   getTestCaseExecutions,
@@ -288,7 +355,10 @@ import {
   deleteTestCaseExecution,
   batchDeleteTestCaseExecutions,
   runTestCase,
-  getLocalRunners
+  getLocalRunners,
+  getExecutionCleanupSetting,
+  updateExecutionCleanupSetting,
+  cleanupTestCaseExecutionsNow
 } from '@/api/ui_automation'
 import { useUiAutomationStore } from '@/stores/uiAutomation'
 
@@ -319,6 +389,14 @@ const selectedIds = ref([])
 const showDetailDialog = ref(false)
 const activeTab = ref('logs')
 const currentExecution = ref(null)
+
+const cleanupDialogVisible = ref(false)
+const cleanupLoading = ref(false)
+const cleanupForm = reactive({
+  enabled: false,
+  retention_days: 30,
+  last_cleaned_at: null
+})
 
 // 重跑对话框相关
 const showRerunDialogVisible = ref(false)
@@ -456,6 +534,86 @@ const parseExecutionLogs = (logs) => {
   } catch (e) {
     console.error('解析执行日志失败:', e)
     return []
+  }
+}
+
+const getCurrentStepDetails = () => {
+  if (!currentExecution.value) return []
+  if (Array.isArray(currentExecution.value.step_details) && currentExecution.value.step_details.length > 0) {
+    return currentExecution.value.step_details
+  }
+  return parseExecutionLogs(currentExecution.value.execution_logs)
+}
+
+const openCleanupDialog = async () => {
+  if (!projectId.value) {
+    ElMessage.warning('请先选择项目')
+    return
+  }
+  cleanupDialogVisible.value = true
+  cleanupLoading.value = true
+  try {
+    const response = await getExecutionCleanupSetting(projectId.value)
+    Object.assign(cleanupForm, {
+      enabled: response.data.enabled || false,
+      retention_days: response.data.retention_days || 30,
+      last_cleaned_at: response.data.last_cleaned_at || null
+    })
+  } catch (error) {
+    ElMessage.error('加载清理设置失败')
+    console.error('加载清理设置失败:', error)
+  } finally {
+    cleanupLoading.value = false
+  }
+}
+
+const saveCleanupSetting = async () => {
+  if (!projectId.value) return
+  cleanupLoading.value = true
+  try {
+    const response = await updateExecutionCleanupSetting({
+      project: projectId.value,
+      enabled: cleanupForm.enabled,
+      retention_days: cleanupForm.retention_days
+    })
+    Object.assign(cleanupForm, response.data)
+    ElMessage.success('清理设置已保存')
+  } catch (error) {
+    ElMessage.error(error.response?.data?.retention_days?.[0] || error.response?.data?.error || '保存清理设置失败')
+  } finally {
+    cleanupLoading.value = false
+  }
+}
+
+const handleCleanupNow = async () => {
+  if (!projectId.value) return
+  try {
+    await ElMessageBox.confirm(
+      `将删除 ${cleanupForm.retention_days} 天以前且非运行中的执行记录，是否继续？`,
+      '确认清理',
+      {
+        confirmButtonText: '确认',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch {
+    return
+  }
+
+  cleanupLoading.value = true
+  try {
+    const response = await cleanupTestCaseExecutionsNow({
+      project: projectId.value,
+      retention_days: cleanupForm.retention_days
+    })
+    cleanupForm.last_cleaned_at = response.data.last_cleaned_at
+    ElMessage.success(response.data.message || `已清理 ${response.data.deleted_count || 0} 条执行记录`)
+    await loadExecutions()
+  } catch (error) {
+    ElMessage.error(error.response?.data?.error || '清理执行记录失败')
+  } finally {
+    cleanupLoading.value = false
   }
 }
 
@@ -902,5 +1060,31 @@ onMounted(async () => {
     padding: 10px 15px;
     font-weight: 600;
   }
+}
+
+.locator-cell {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  word-break: break-all;
+}
+
+.detail-value {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.step-error-text {
+  margin-top: 4px;
+  color: #f56c6c;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.cleanup-tip {
+  margin-left: 12px;
+  color: #909399;
+  font-size: 13px;
 }
 </style>

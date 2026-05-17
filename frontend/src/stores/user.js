@@ -220,11 +220,13 @@ export const useUserStore = defineStore('user', () => {
 
     if (accessToken.value) {
       // 检查token是否过期
-      if (isTokenExpired.value && refreshToken.value) {
-        console.log('Token已过期，尝试刷新...')
+      if (refreshToken.value) {
+        // Refreshing the page rebuilds the Pinia store, so refresh the token once
+        // during auth init to slide the 24-hour expiration window forward.
+        console.log('页面刷新后重置token过期时间...')
         try {
           await refreshAccessToken()
-          console.log('Token刷新成功')
+          console.log('Token过期时间已重置')
         } catch (error) {
           console.error('Token刷新失败:', error)
           return
@@ -232,6 +234,11 @@ export const useUserStore = defineStore('user', () => {
       }
 
       // 获取用户信息
+      if (!refreshToken.value && isTokenExpired.value) {
+        await logout()
+        return
+      }
+
       if (!user.value) {
         try {
           console.log('获取用户信息...')

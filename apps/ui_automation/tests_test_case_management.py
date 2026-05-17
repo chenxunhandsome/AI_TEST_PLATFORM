@@ -117,6 +117,7 @@ class TestCaseManagementApiTests(APITestCase):
                 'element_id': element.id,
                 'element_locator_strategy': 'xpath',
                 'element_locator_value': "//button[@data-test='submit']",
+                'element_locator_override_enabled': True,
                 'description': 'click submit',
                 'wait_time': 1000,
             }]
@@ -127,6 +128,7 @@ class TestCaseManagementApiTests(APITestCase):
         self.assertEqual(step.element, element)
         self.assertEqual(step.element_locator_strategy, 'xpath')
         self.assertEqual(step.element_locator_value, "//button[@data-test='submit']")
+        self.assertTrue(step.element_locator_override_enabled)
 
     def test_copy_case_uses_next_available_suffix(self):
         source_case = self.create_case('case-alpha')

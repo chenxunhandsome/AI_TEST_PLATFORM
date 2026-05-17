@@ -88,6 +88,76 @@ class LocatorParameterizationTests(TestCase):
             "//span[text()='提交']",
         )
 
+    def test_step_locator_value_is_ignored_when_override_not_enabled(self):
+        element = Element.objects.create(
+            project=self.project,
+            name='submit-button',
+            element_type='BUTTON',
+            locator_strategy=self.xpath_strategy,
+            locator_value="//button[@id='managed']",
+            created_by=self.user,
+        )
+        test_case = UiTestCase.objects.create(
+            name='managed-locator-case',
+            description='',
+            project=self.project,
+            status='draft',
+            priority='medium',
+            created_by=self.user,
+        )
+        TestCaseStep.objects.create(
+            test_case=test_case,
+            step_number=1,
+            action_type='click',
+            element=element,
+            element_locator_strategy='XPath',
+            element_locator_value="//button[@id='stale-copy']",
+            element_locator_override_enabled=False,
+            description='click managed',
+        )
+
+        payload = build_test_case_payload(test_case)
+
+        self.assertEqual(
+            payload['steps'][0]['element_data']['locator_value'],
+            "//button[@id='managed']",
+        )
+
+    def test_step_locator_value_wins_when_override_enabled(self):
+        element = Element.objects.create(
+            project=self.project,
+            name='submit-button',
+            element_type='BUTTON',
+            locator_strategy=self.xpath_strategy,
+            locator_value="//button[@id='managed']",
+            created_by=self.user,
+        )
+        test_case = UiTestCase.objects.create(
+            name='manual-locator-case',
+            description='',
+            project=self.project,
+            status='draft',
+            priority='medium',
+            created_by=self.user,
+        )
+        TestCaseStep.objects.create(
+            test_case=test_case,
+            step_number=1,
+            action_type='click',
+            element=element,
+            element_locator_strategy='XPath',
+            element_locator_value="//button[@id='manual']",
+            element_locator_override_enabled=True,
+            description='click manual',
+        )
+
+        payload = build_test_case_payload(test_case)
+
+        self.assertEqual(
+            payload['steps'][0]['element_data']['locator_value'],
+            "//button[@id='manual']",
+        )
+
     def test_build_local_execution_payload_resolves_prior_step_saved_variable_in_locator(self):
         input_element = Element.objects.create(
             project=self.project,

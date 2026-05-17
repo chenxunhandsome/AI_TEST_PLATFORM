@@ -797,6 +797,26 @@ export function importTestCases(data) {
   })
 }
 
+export function exportTestCaseSteps(id, params) {
+  return request({
+    url: `/ui-automation/test-cases/${id}/export-steps/`,
+    method: 'get',
+    params,
+    responseType: 'blob'
+  })
+}
+
+export function importTestCaseSteps(id, data) {
+  return request({
+    url: `/ui-automation/test-cases/${id}/import-steps/`,
+    method: 'post',
+    data,
+    headers: {
+      'Content-Type': 'multipart/form-data'
+    }
+  })
+}
+
 // 获取测试用例执行历史
 export function getAITestCaseGenerationSkills(params) {
   return request({
@@ -954,6 +974,30 @@ export function batchDeleteTestCaseExecutions(ids) {
 }
 
 // 批量运行测试用例
+export function getExecutionCleanupSetting(project) {
+  return request({
+    url: '/ui-automation/test-case-executions/cleanup-setting/',
+    method: 'get',
+    params: { project }
+  })
+}
+
+export function updateExecutionCleanupSetting(data) {
+  return request({
+    url: '/ui-automation/test-case-executions/cleanup-setting/',
+    method: 'patch',
+    data
+  })
+}
+
+export function cleanupTestCaseExecutionsNow(data) {
+  return request({
+    url: '/ui-automation/test-case-executions/cleanup-now/',
+    method: 'post',
+    data
+  })
+}
+
 export function batchRunTestCases(data) {
   return request({
     url: '/ui-automation/test-cases/batch-run/',
