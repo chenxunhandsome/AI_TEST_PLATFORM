@@ -2679,6 +2679,44 @@ class ElementViewSet(viewsets.ModelViewSet):
         serializer = ScriptElementUsageSerializer(usages, many=True)
         return Response(serializer.data)
 
+    @action(detail=True, methods=['get'], url_path='test-case-usages')
+    def test_case_usages(self, request, pk=None):
+        """获取使用当前元素的UI自动化用例。"""
+        element = self.get_object()
+        steps = (
+            TestCaseStep.objects
+            .filter(element=element, test_case__project=element.project)
+            .select_related('test_case', 'test_case__project', 'test_case__folder')
+            .order_by('test_case__name', 'test_case_id', 'step_number')
+        )
+
+        usages_by_case = {}
+        for step in steps:
+            test_case = step.test_case
+            usage = usages_by_case.setdefault(test_case.id, {
+                'case_id': test_case.id,
+                'case_name': test_case.name,
+                'project_id': test_case.project_id,
+                'project_name': test_case.project.name if test_case.project else '',
+                'folder_id': test_case.folder_id,
+                'folder_name': test_case.folder.name if test_case.folder else '',
+                'status': test_case.status,
+                'priority': test_case.priority,
+                'updated_at': test_case.updated_at,
+                'usage_count': 0,
+                'steps': [],
+            })
+            usage['usage_count'] += 1
+            usage['steps'].append({
+                'step_id': step.id,
+                'step_number': step.step_number,
+                'action_type': step.action_type,
+                'description': step.description,
+                'is_enabled': step.is_enabled,
+            })
+
+        return Response(list(usages_by_case.values()))
+
     @action(detail=False, methods=['get'])
     def tree(self, request):
         """获取元素树形结构"""

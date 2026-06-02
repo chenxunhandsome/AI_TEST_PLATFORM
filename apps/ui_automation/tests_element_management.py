@@ -112,6 +112,58 @@ class ElementManagementApiTests(APITestCase):
         self.assertEqual(auto_copied_step.element_locator_value, '')
         self.assertEqual(build_step_element_data(auto_copied_step)['locator_value'], '#new-submit')
 
+    def test_element_test_case_usages_returns_cases_that_reference_element(self):
+        element = self.create_element('submit', '#submit')
+        unused_element = self.create_element('cancel', '#cancel')
+        test_case = UiTestCase.objects.create(
+            name='case-uses-submit',
+            description='',
+            project=self.project,
+            status='draft',
+            priority='medium',
+            created_by=self.user,
+        )
+        UiTestCase.objects.create(
+            name='case-without-submit',
+            description='',
+            project=self.project,
+            status='draft',
+            priority='medium',
+            created_by=self.user,
+        )
+        TestCaseStep.objects.create(
+            test_case=test_case,
+            step_number=1,
+            action_type='click',
+            element=element,
+            description='click submit',
+        )
+        TestCaseStep.objects.create(
+            test_case=test_case,
+            step_number=2,
+            action_type='waitFor',
+            element=element,
+            description='wait submit',
+        )
+        TestCaseStep.objects.create(
+            test_case=test_case,
+            step_number=3,
+            action_type='click',
+            element=unused_element,
+            description='click cancel',
+        )
+
+        response = self.client.get(f'{self.list_url}{element.id}/test-case-usages/')
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(response.data), 1)
+        usage = response.data[0]
+        self.assertEqual(usage['case_id'], test_case.id)
+        self.assertEqual(usage['case_name'], test_case.name)
+        self.assertEqual(usage['project_id'], self.project.id)
+        self.assertEqual(usage['usage_count'], 2)
+        self.assertEqual([step['step_number'] for step in usage['steps']], [1, 2])
+
     def test_group_allows_same_name_under_different_parent(self):
         ElementGroup.objects.create(
             project=self.project,

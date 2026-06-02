@@ -478,6 +478,13 @@ export function getElementUsages(id) {
   })
 }
 
+export function getElementTestCaseUsages(id) {
+  return request({
+    url: `/ui-automation/elements/${id}/test-case-usages/`,
+    method: 'get'
+  })
+}
+
 export function getElementTree(params) {
   return request({
     url: '/ui-automation/elements/tree/',

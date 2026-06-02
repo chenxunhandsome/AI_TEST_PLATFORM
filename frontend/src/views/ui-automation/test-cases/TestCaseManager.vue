@@ -1656,6 +1656,7 @@ import {
 import draggable from 'vuedraggable'
 import DataFactorySelector from '@/components/DataFactorySelector.vue'
 import { useI18n } from 'vue-i18n'
+import { useRoute } from 'vue-router'
 
 import {
   getUiProjects,
@@ -1705,6 +1706,7 @@ import { getVariableFunctions } from '@/api/data-factory'
 import { useUiAutomationStore } from '@/stores/uiAutomation'
 
 const { t } = useI18n()
+const route = useRoute()
 const uiAutomationStore = useUiAutomationStore()
 
 const text = {
@@ -1803,6 +1805,7 @@ const aiText = {
 
 const projects = ref([])
 const projectId = ref('')
+const pendingJumpCaseId = ref('')
 const testCases = ref([])
 const testCaseFolders = ref([])
 const elementGroups = ref([])
@@ -1970,6 +1973,8 @@ const filteredTestCases = computed(() => {
     return matchedFolder && matchedKeyword
   })
 })
+
+const getRouteQueryValue = (value) => Array.isArray(value) ? value[0] : value
 
 // 解析执行日志
 const importableSourceTestCases = computed(() => {
@@ -3861,6 +3866,26 @@ const syncSelectedTestCase = () => {
   syncTransactionCollapseMap()
 }
 
+const focusTestCaseFromRoute = () => {
+  const routeCaseId = getRouteQueryValue(route.query.caseId)
+  if (!routeCaseId) {
+    pendingJumpCaseId.value = ''
+    return false
+  }
+
+  const targetCase = testCases.value.find(item => String(item.id) === String(routeCaseId))
+  if (!targetCase) {
+    pendingJumpCaseId.value = String(routeCaseId)
+    return false
+  }
+
+  pendingJumpCaseId.value = ''
+  searchKeyword.value = ''
+  folderFilter.value = targetCase.folder?.id ? String(targetCase.folder.id) : 'all'
+  selectTestCase(targetCase)
+  return true
+}
+
 const applySavedTestCaseToState = (savedCase) => {
   if (!savedCase?.id) {
     return
@@ -3973,6 +3998,7 @@ const loadTestCases = async () => {
     testCases.value = response.data.results || response.data
     selectedCaseIds.value = selectedCaseIds.value.filter(id => testCases.value.some(item => item.id === id))
     syncSelectedTestCase()
+    focusTestCaseFromRoute()
   } catch (error) {
     console.error('获取测试用例失败:', error)
   }
@@ -4053,6 +4079,7 @@ const refreshElementCatalogForCurrentProject = async ({ clearBeforeLoad = true }
 const onProjectChange = async () => {
   uiAutomationStore.setSelectedProject(projectId.value)
   selectedTestCase.value = null
+  pendingJumpCaseId.value = ''
   selectedCaseIds.value = []
   currentSteps.value = []
   selectedStepId.value = null
@@ -6030,6 +6057,28 @@ watch([projectId, selectedBrowser, executionMode, selectedRunnerId], () => {
   closeScrollCoordinatePickerSession(true)
 })
 
+watch(
+  () => [route.query.projectId, route.query.caseId],
+  async ([routeProjectId, routeCaseId]) => {
+    const targetProjectId = getRouteQueryValue(routeProjectId)
+    const targetCaseId = getRouteQueryValue(routeCaseId)
+    if (!targetCaseId) {
+      return
+    }
+
+    pendingJumpCaseId.value = String(targetCaseId)
+    if (targetProjectId && String(projectId.value) !== String(targetProjectId)) {
+      projectId.value = Number.isNaN(Number(targetProjectId)) ? targetProjectId : Number(targetProjectId)
+      await onProjectChange()
+      return
+    }
+
+    if (!focusTestCaseFromRoute()) {
+      await loadTestCases()
+    }
+  }
+)
+
 onMounted(() => {
   window.addEventListener('resize', normalizeElementSelectorDialogSize)
 })
@@ -6043,7 +6092,9 @@ onMounted(async () => {
   console.log('loadVariableFunctions 完成')
 
   if (projects.value.length > 0) {
-    projectId.value = uiAutomationStore.resolveSelectedProjectId(projects.value)
+    const routeProjectId = getRouteQueryValue(route.query.projectId)
+    const matchedRouteProject = projects.value.find(project => String(project.id) === String(routeProjectId))
+    projectId.value = matchedRouteProject ? matchedRouteProject.id : uiAutomationStore.resolveSelectedProjectId(projects.value)
     await onProjectChange()
   }
 })

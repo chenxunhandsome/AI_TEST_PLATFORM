@@ -223,6 +223,41 @@
               </el-form-item>
             </el-form>
           </div>
+
+          <div v-if="selectedElement.id" class="element-usage-panel">
+            <div class="usage-panel-header">
+              <div>
+                <h3>用例引用</h3>
+                <span>{{ elementTestCaseUsages.length }} 个用例使用当前元素</span>
+              </div>
+              <el-button size="small" :loading="loadingElementUsages" @click="loadElementTestCaseUsages(selectedElement.id)">
+                刷新
+              </el-button>
+            </div>
+            <el-table
+              v-loading="loadingElementUsages"
+              :data="elementTestCaseUsages"
+              size="small"
+              border
+              empty-text="暂无用例引用当前元素"
+            >
+              <el-table-column prop="case_name" label="用例名称" min-width="180" show-overflow-tooltip />
+              <el-table-column prop="folder_name" label="文件夹" min-width="120" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.folder_name || '未分组' }}</template>
+              </el-table-column>
+              <el-table-column prop="usage_count" label="引用次数" width="90" align="center" />
+              <el-table-column label="步骤" min-width="240" show-overflow-tooltip>
+                <template #default="{ row }">
+                  {{ formatUsageSteps(row.steps) }}
+                </template>
+              </el-table-column>
+              <el-table-column label="操作" width="100" fixed="right">
+                <template #default="{ row }">
+                  <el-button link type="primary" @click="jumpToTestCase(row)">跳转</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
+          </div>
         </div>
       </div>
     </div>
@@ -373,6 +408,7 @@
 <script setup>
 import { ref, reactive, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Plus, FolderAdd, Document, Search, Edit, Delete,
@@ -396,12 +432,14 @@ import {
   exportElements,
   importElements,
   validateElementLocator,
+  getElementTestCaseUsages,
   generateElementSuggestions
 } from '@/api/ui_automation'
 import { useUiAutomationStore } from '@/stores/uiAutomation'
 
 // 鍥介檯鍖?
 const { t } = useI18n()
+const router = useRouter()
 const uiAutomationStore = useUiAutomationStore()
 
 // 鍝嶅簲寮忔暟鎹?
@@ -411,6 +449,8 @@ const pages = ref([])
 const locatorStrategies = ref([])
 const treeData = ref([])
 const selectedElement = ref(null)
+const elementTestCaseUsages = ref([])
+const loadingElementUsages = ref(false)
 const checkedElementIds = ref([])
 const expandedKeys = ref([])
 const treeKey = ref(0) // 鐢ㄤ簬寮哄埗閲嶆柊娓叉煋鏍戠粍浠?
@@ -641,6 +681,45 @@ const currentProjectName = computed(() => {
 const selectedElementCount = computed(() => checkedElementIds.value.length)
 
 const checkedElementTreeKeys = computed(() => checkedElementIds.value.map(id => getElementTreeKey(id)))
+
+const loadElementTestCaseUsages = async (elementId) => {
+  if (!elementId) {
+    elementTestCaseUsages.value = []
+    return
+  }
+
+  loadingElementUsages.value = true
+  try {
+    const response = await getElementTestCaseUsages(elementId)
+    elementTestCaseUsages.value = response.data || []
+  } catch (error) {
+    console.error('获取元素用例引用失败:', error)
+    elementTestCaseUsages.value = []
+    ElMessage.error('获取元素用例引用失败')
+  } finally {
+    loadingElementUsages.value = false
+  }
+}
+
+const formatUsageSteps = (steps = []) => {
+  if (!Array.isArray(steps) || !steps.length) {
+    return '-'
+  }
+  return steps
+    .slice(0, 4)
+    .map(step => `#${step.step_number} ${step.description || step.action_type || ''}`.trim())
+    .join('；') + (steps.length > 4 ? ` 等${steps.length}步` : '')
+}
+
+const jumpToTestCase = (usage) => {
+  router.push({
+    name: 'UiTestCases',
+    query: {
+      projectId: usage.project_id,
+      caseId: usage.case_id
+    }
+  })
+}
 
 const transferScopeLabel = computed(() => {
   if (transferScope.value === 'selected') {
@@ -1104,6 +1183,7 @@ const loadElementTree = async () => {
 const onProjectChange = async () => {
   uiAutomationStore.setSelectedProject(selectedProject.value)
   selectedElement.value = null
+  elementTestCaseUsages.value = []
   checkedElementIds.value = []
   suggestions.value = []
   resetCreatePageForm()
@@ -1139,6 +1219,7 @@ const handleTreeCheck = () => {
 
 // 鍒涘缓绌哄厓绱?
 const createEmptyElement = () => {
+  elementTestCaseUsages.value = []
   selectedElement.value = {
     name: '',
     element_type: 'BUTTON',
@@ -1325,6 +1406,7 @@ const handleBatchDeleteElements = async () => {
 
     if (selectedElement.value && deletingIds.includes(selectedElement.value.id)) {
       selectedElement.value = null
+      elementTestCaseUsages.value = []
       suggestions.value = []
     }
     checkedElementIds.value = []
@@ -1470,6 +1552,7 @@ const onNodeClick = async (data) => {
     try {
       const response = await getElementDetail(data.id)
       selectedElement.value = normalizeElementForEditing(response.data)
+      await loadElementTestCaseUsages(data.id)
 
       // 寮哄埗鍒锋柊琛ㄥ崟锛岀‘淇濅笅鎷夋姝ｇ‘鏄剧ず
       formKey.value += 1
@@ -1551,6 +1634,7 @@ const saveElement = async () => {
       // 閲嶆柊鑾峰彇瀹屾暣鐨勫厓绱犺鎯呬互纭繚鎵€鏈夊叧鑱斿瓧娈垫纭樉绀?
       const detailResponse = await getElementDetail(selectedElement.value.id)
       selectedElement.value = normalizeElementForEditing(detailResponse.data)
+      await loadElementTestCaseUsages(selectedElement.value.id)
       console.log('鏇存柊鍚庤幏鍙栧埌瀹屾暣鍏冪礌璇︽儏:', selectedElement.value)
       console.log('locator_strategy_id鍊?', selectedElement.value.locator_strategy_id, '绫诲瀷:', typeof selectedElement.value.locator_strategy_id)
       console.log('locator_strategy瀵硅薄:', selectedElement.value.locator_strategy)
@@ -1577,6 +1661,7 @@ const saveElement = async () => {
       // 閲嶆柊鑾峰彇瀹屾暣鐨勫厓绱犺鎯呬互纭繚鎵€鏈夊叧鑱斿瓧娈垫纭樉绀?
       const detailResponse = await getElementDetail(response.data.id)
       selectedElement.value = normalizeElementForEditing(detailResponse.data)
+      await loadElementTestCaseUsages(selectedElement.value.id)
       console.log('鑾峰彇鍒板畬鏁村厓绱犺鎯?', selectedElement.value)
       console.log('locator_strategy_id鍊?', selectedElement.value.locator_strategy_id, '绫诲瀷:', typeof selectedElement.value.locator_strategy_id)
       console.log('locator_strategy瀵硅薄:', selectedElement.value.locator_strategy)
@@ -1752,6 +1837,7 @@ const editNode = async () => {
     try {
       const response = await getElementDetail(rightClickedNode.value.id)
       selectedElement.value = normalizeElementForEditing(response.data)
+      await loadElementTestCaseUsages(rightClickedNode.value.id)
       console.log('Set selected element for editing via API:', selectedElement.value)
 
       // 寮哄埗鍒锋柊琛ㄥ崟锛岀‘淇濅笅鎷夋姝ｇ‘鏄剧ず
@@ -1805,6 +1891,7 @@ const deleteNode = async () => {
       // 濡傛灉褰撳墠閫変腑鐨勬槸琚垹闄ょ殑鍏冪礌锛屾竻绌洪€変腑
       if (selectedElement.value && selectedElement.value.id === rightClickedNode.value.id) {
         selectedElement.value = null
+        elementTestCaseUsages.value = []
       }
     }
 
@@ -1991,6 +2078,33 @@ const updatePage = async () => {
 
 .element-form {
   margin-top: 20px;
+}
+
+.element-usage-panel {
+  margin-top: 20px;
+  padding: 16px;
+  background: #fff;
+  border: 1px solid #ebeef5;
+  border-radius: 8px;
+}
+
+.usage-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.usage-panel-header h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+  font-weight: 600;
+  color: #303133;
+}
+
+.usage-panel-header span {
+  font-size: 13px;
+  color: #909399;
 }
 
 .form-help-text {
