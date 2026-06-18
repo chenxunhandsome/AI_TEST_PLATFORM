@@ -21,6 +21,7 @@ import NotificationLogs from '@/views/notification/NotificationLogs.vue'
 import UiDashboard from '@/views/ui-automation/dashboard/Dashboard.vue'
 import UiProjectList from '@/views/ui-automation/projects/ProjectList.vue'
 import UiElementManagerEnhanced from '@/views/ui-automation/elements/ElementManagerEnhanced.vue'
+import UiPageGraphManager from '@/views/ui-automation/page-graphs/PageGraphManager.vue'
 import UiTestCaseManager from '@/views/ui-automation/test-cases/TestCaseManager.vue'
 import UiScriptEditorEnhanced from '@/views/ui-automation/scripts/ScriptEditorEnhanced.vue'
 import UiScriptList from '@/views/ui-automation/scripts/ScriptList.vue'
@@ -258,6 +259,11 @@ const routes = [
         path: 'elements-enhanced',
         name: 'UiElementsEnhanced',
         component: UiElementManagerEnhanced
+      },
+      {
+        path: 'page-graphs',
+        name: 'UiPageGraphs',
+        component: UiPageGraphManager
       },
       {
         path: 'test-cases',

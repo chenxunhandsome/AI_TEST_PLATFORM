@@ -174,6 +174,143 @@ class Element(models.Model):
         return locators
 
 
+class UIPageGraph(models.Model):
+    """Crawled page graph for AI assisted UI test generation."""
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('running', 'Running'),
+        ('completed', 'Completed'),
+        ('failed', 'Failed'),
+        ('timeout', 'Timeout'),
+        ('cancelled', 'Cancelled'),
+    ]
+
+    project = models.ForeignKey(UiProject, on_delete=models.CASCADE, related_name='page_graphs', verbose_name='Project')
+    name = models.CharField(max_length=200, verbose_name='Graph Name')
+    start_url = models.URLField(verbose_name='Start URL')
+    login_url = models.URLField(blank=True, verbose_name='Login URL')
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending', db_index=True, verbose_name='Status')
+    crawl_config = models.JSONField(default=dict, blank=True, verbose_name='Crawl Config')
+    summary = models.JSONField(default=dict, blank=True, verbose_name='Summary')
+    progress = models.JSONField(default=dict, blank=True, verbose_name='Crawl Progress')
+    crawl_state = models.JSONField(default=dict, blank=True, verbose_name='Crawl State')
+    error_message = models.TextField(blank=True, verbose_name='Error Message')
+    started_at = models.DateTimeField(null=True, blank=True, verbose_name='Started At')
+    heartbeat_at = models.DateTimeField(null=True, blank=True, db_index=True, verbose_name='Heartbeat At')
+    completed_at = models.DateTimeField(null=True, blank=True, verbose_name='Completed At')
+    created_by = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, verbose_name='Created By')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created At')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='Updated At')
+
+    class Meta:
+        db_table = 'ui_page_graphs'
+        verbose_name = 'UI Page Graph'
+        verbose_name_plural = 'UI Page Graphs'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['project', 'status'], name='ui_page_gr_project_e1de68_idx'),
+            models.Index(fields=['created_at'], name='ui_page_gr_created_e3ba86_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.project.name} - {self.name}'
+
+
+class UIPageNode(models.Model):
+    """A crawled page/state node."""
+    graph = models.ForeignKey(UIPageGraph, on_delete=models.CASCADE, related_name='nodes', verbose_name='Graph')
+    project = models.ForeignKey(UiProject, on_delete=models.CASCADE, related_name='page_graph_nodes', verbose_name='Project')
+    url = models.URLField(max_length=1000, verbose_name='URL')
+    path = models.CharField(max_length=500, blank=True, verbose_name='Path')
+    title = models.CharField(max_length=300, blank=True, verbose_name='Title')
+    route_key = models.CharField(max_length=500, db_index=True, verbose_name='Route Key')
+    page_text = models.TextField(blank=True, verbose_name='Page Text')
+    keywords = models.JSONField(default=list, blank=True, verbose_name='Keywords')
+    metadata = models.JSONField(default=dict, blank=True, verbose_name='Metadata')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created At')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='Updated At')
+
+    class Meta:
+        db_table = 'ui_page_graph_nodes'
+        verbose_name = 'UI Page Graph Node'
+        verbose_name_plural = 'UI Page Graph Nodes'
+        ordering = ['path', 'title']
+        constraints = [
+            models.UniqueConstraint(fields=['graph', 'route_key'], name='ui_page_graph_node_unique_route')
+        ]
+        indexes = [
+            models.Index(fields=['project', 'route_key'], name='ui_page_no_project_5bcd04_idx'),
+        ]
+
+    def __str__(self):
+        return self.title or self.path or self.url
+
+
+class UIPageElement(models.Model):
+    """Element extracted from a crawled page and linked to the platform element library."""
+    graph = models.ForeignKey(UIPageGraph, on_delete=models.CASCADE, related_name='graph_elements', verbose_name='Graph')
+    page_node = models.ForeignKey(UIPageNode, on_delete=models.CASCADE, related_name='elements', verbose_name='Page Node')
+    project = models.ForeignKey(UiProject, on_delete=models.CASCADE, related_name='page_graph_elements', verbose_name='Project')
+    element = models.ForeignKey(Element, on_delete=models.SET_NULL, null=True, blank=True, related_name='page_graph_links', verbose_name='Element')
+    name = models.CharField(max_length=240, verbose_name='Name')
+    role = models.CharField(max_length=80, blank=True, verbose_name='Role')
+    element_type = models.CharField(max_length=50, default='BUTTON', verbose_name='Element Type')
+    text = models.CharField(max_length=500, blank=True, verbose_name='Text')
+    locator_strategy = models.CharField(max_length=50, verbose_name='Locator Strategy')
+    locator_value = models.TextField(verbose_name='Locator Value')
+    backup_locators = models.JSONField(default=list, blank=True, verbose_name='Backup Locators')
+    is_unique = models.BooleanField(default=False, verbose_name='Unique')
+    is_stable = models.BooleanField(default=False, verbose_name='Stable')
+    action_keywords = models.JSONField(default=list, blank=True, verbose_name='Action Keywords')
+    attributes = models.JSONField(default=dict, blank=True, verbose_name='Attributes')
+    bounds = models.JSONField(default=dict, blank=True, verbose_name='Bounds')
+    dom_signature = models.CharField(max_length=128, blank=True, db_index=True, verbose_name='DOM Signature')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created At')
+    updated_at = models.DateTimeField(auto_now=True, verbose_name='Updated At')
+
+    class Meta:
+        db_table = 'ui_page_graph_elements'
+        verbose_name = 'UI Page Graph Element'
+        verbose_name_plural = 'UI Page Graph Elements'
+        ordering = ['page_node', 'name']
+        indexes = [
+            models.Index(fields=['project', 'element_type'], name='ui_page_el_project_24a5f8_idx'),
+            models.Index(fields=['graph', 'is_unique'], name='ui_page_el_graph_i_0d870d_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.page_node}: {self.name}'
+
+
+class UIPageEdge(models.Model):
+    """Navigation/action edge between crawled page nodes."""
+    graph = models.ForeignKey(UIPageGraph, on_delete=models.CASCADE, related_name='edges', verbose_name='Graph')
+    project = models.ForeignKey(UiProject, on_delete=models.CASCADE, related_name='page_graph_edges', verbose_name='Project')
+    source = models.ForeignKey(UIPageNode, on_delete=models.CASCADE, related_name='outgoing_edges', verbose_name='Source')
+    target = models.ForeignKey(UIPageNode, on_delete=models.CASCADE, related_name='incoming_edges', verbose_name='Target')
+    trigger_element = models.ForeignKey(UIPageElement, on_delete=models.SET_NULL, null=True, blank=True, related_name='triggered_edges', verbose_name='Trigger Element')
+    action_type = models.CharField(max_length=50, default='click', verbose_name='Action Type')
+    trigger_text = models.CharField(max_length=500, blank=True, verbose_name='Trigger Text')
+    locator_strategy = models.CharField(max_length=50, blank=True, verbose_name='Locator Strategy')
+    locator_value = models.TextField(blank=True, verbose_name='Locator Value')
+    keywords = models.JSONField(default=list, blank=True, verbose_name='Keywords')
+    metadata = models.JSONField(default=dict, blank=True, verbose_name='Metadata')
+    created_at = models.DateTimeField(auto_now_add=True, verbose_name='Created At')
+
+    class Meta:
+        db_table = 'ui_page_graph_edges'
+        verbose_name = 'UI Page Graph Edge'
+        verbose_name_plural = 'UI Page Graph Edges'
+        ordering = ['source', 'target', 'trigger_text']
+        indexes = [
+            models.Index(fields=['project'], name='ui_page_ed_project_0f8ad3_idx'),
+            models.Index(fields=['graph'], name='ui_page_ed_graph_i_2d40c2_idx'),
+        ]
+
+    def __str__(self):
+        return f'{self.source_id} -> {self.target_id}: {self.trigger_text}'
+
+
 class TestScript(models.Model):
     """测试脚本模型"""
     SCRIPT_TYPE_CHOICES = [
@@ -659,6 +796,7 @@ class TestCaseStep(models.Model):
     """测试用例步骤模型"""
     ACTION_TYPE_CHOICES = [
         ('click', '点击'),
+        ('doubleClick', '双击'),
         ('fill', '输入文本'),
         ('fillAndEnter', '输入并回车'),
         ('getText', '获取文本'),
@@ -702,6 +840,9 @@ class TestCaseStep(models.Model):
     transaction_id = models.CharField(max_length=64, blank=True, db_index=True, verbose_name='事务块ID')
     transaction_name = models.CharField(max_length=100, blank=True, verbose_name='事务块名称')
     transaction_disabled = models.BooleanField(default=False, verbose_name='事务块是否禁用')
+    parent_transaction_id = models.CharField(max_length=64, blank=True, db_index=True, verbose_name='父事务块ID')
+    parent_transaction_name = models.CharField(max_length=100, blank=True, verbose_name='父事务块名称')
+    parent_transaction_disabled = models.BooleanField(default=False, verbose_name='父事务块是否禁用')
     created_at = models.DateTimeField(auto_now_add=True, verbose_name='创建时间')
 
     class Meta:

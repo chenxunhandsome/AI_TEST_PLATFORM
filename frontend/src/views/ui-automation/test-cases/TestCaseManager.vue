@@ -200,6 +200,10 @@
                   <el-icon><FolderAdd /></el-icon>
                   创建事务块
                 </el-button>
+                <el-button size="small" :disabled="!canMergeCheckedTransactionBlocks" @click="mergeSelectedTransactionBlocks">
+                  <el-icon><Folder /></el-icon>
+                  合并事务块
+                </el-button>
                 <el-button size="small" :disabled="!checkedStepCount" @click="removeSelectedFromTransaction">
                   <el-icon><FolderOpened /></el-icon>
                   移出事务块
@@ -222,11 +226,113 @@
                   @change="handleStepsReorder"
                 >
                   <template #item="{ element, index }">
-                    <div class="step-entry">
+                    <div
+                      class="step-entry"
+                      v-memo="[
+                        element.id,
+                        index,
+                        element.expanded,
+                        element.action_type,
+                        element.description,
+                        element.is_enabled,
+                        element.element_id,
+                        element.drag_target_element_id,
+                        element.element_locator_strategy,
+                        element.element_locator_value,
+                        element.element_locator_override_enabled,
+                        element.input_value,
+                        element.wait_time,
+                        element.assert_type,
+                        element.assert_value,
+                        element.save_as,
+                        element.scroll_direction,
+                        element.scroll_start_x,
+                        element.scroll_start_y,
+                        element.scroll_target_x,
+                        element.scroll_target_y,
+                        element.canvas_frame_selector,
+                        element.canvas_hold_ms,
+                        element.canvas_steps,
+                        element.canvas_click_x,
+                        element.canvas_click_y,
+                        element.canvas_start_x,
+                        element.canvas_start_y,
+                        element.canvas_target_x,
+                        element.canvas_target_y,
+                        element.transaction_id,
+                        element.transaction_name,
+                        element.transaction_disabled,
+                        element.parent_transaction_id,
+                        element.parent_transaction_name,
+                        element.parent_transaction_disabled,
+                        selectedStepId,
+                        draggingTransactionId,
+                        draggingParentTransactionId,
+                        isStepChecked(element.id),
+                        isTransactionCollapsed(element.transaction_id),
+                        isTransactionCollapsed(element.parent_transaction_id)
+                      ]"
+                    >
+                      <div
+                        v-if="shouldRenderParentTransactionHeader(index)"
+                        class="transaction-block transaction-block--parent"
+                        :class="{
+                          collapsed: isTransactionCollapsed(element.parent_transaction_id),
+                          'transaction-block--disabled': isParentTransactionDisabled(element.parent_transaction_id),
+                          'transaction-block--dragging': draggingParentTransactionId === getParentTransactionId(element)
+                        }"
+                        draggable="true"
+                        @dragstart="handleParentTransactionDragStart(element.parent_transaction_id, $event)"
+                        @dragover.prevent
+                        @drop.prevent="handleParentTransactionDrop(element.parent_transaction_id, $event)"
+                        @dragend="handleParentTransactionDragEnd"
+                      >
+                        <div class="transaction-block-main" @click="toggleTransactionCollapse(element.parent_transaction_id)">
+                          <el-icon class="transaction-block-drag" @click.stop><Rank /></el-icon>
+                          <el-icon class="transaction-block-toggle">
+                            <component :is="isTransactionCollapsed(element.parent_transaction_id) ? 'ArrowDown' : 'ArrowUp'" />
+                          </el-icon>
+                          <el-checkbox
+                            class="transaction-block-checkbox"
+                            :model-value="isParentTransactionFullyChecked(element.parent_transaction_id)"
+                            @click.stop
+                            @change="toggleParentTransactionSelection(element.parent_transaction_id, $event)"
+                          />
+                          <el-icon class="transaction-block-icon"><Folder /></el-icon>
+                          <span class="transaction-block-name">{{ element.parent_transaction_name }}</span>
+                          <el-tag size="small" type="success">{{ getParentTransactionChildCount(element.parent_transaction_id) }} 个子事务块</el-tag>
+                          <el-tag size="small" type="info">{{ getParentTransactionStepCount(element.parent_transaction_id) }} 步</el-tag>
+                          <el-tag v-if="isParentTransactionDisabled(element.parent_transaction_id)" size="small" type="warning" effect="plain">已禁用</el-tag>
+                          <span class="transaction-block-summary">{{ getParentTransactionSummary(element.parent_transaction_id) }}</span>
+                        </div>
+                        <div class="transaction-block-actions" @click.stop>
+                          <el-switch
+                            size="small"
+                            :model-value="!isParentTransactionDisabled(element.parent_transaction_id)"
+                            active-text="启用"
+                            inactive-text="禁用"
+                            @change="toggleParentTransactionDisabled(element.parent_transaction_id, $event)"
+                          />
+                          <el-button size="small" text @click="copyParentTransactionBlock(element.parent_transaction_id)">
+                            复制
+                          </el-button>
+                          <el-button size="small" text @click="renameParentTransactionBlock(element.parent_transaction_id)">
+                            重命名
+                          </el-button>
+                          <el-button size="small" text type="danger" @click="deleteParentTransactionBlock(element.parent_transaction_id)">
+                            删除
+                          </el-button>
+                          <el-button size="small" text type="danger" @click="clearParentTransactionBlock(element.parent_transaction_id)">
+                            解散父块
+                          </el-button>
+                        </div>
+                      </div>
+
                       <div
                         v-if="shouldRenderTransactionHeader(index)"
                         class="transaction-block"
                         :class="{
+                          'transaction-block--child': hasParentTransaction(element),
                           collapsed: isTransactionCollapsed(element.transaction_id),
                           'transaction-block--disabled': isTransactionDisabled(element.transaction_id),
                           'transaction-block--dragging': draggingTransactionId === getTransactionId(element)
@@ -290,6 +396,7 @@
                           expanded: element.expanded,
                           selected: isSelectedStep(element.id),
                           'step-item--in-transaction': hasTransaction(element),
+                          'step-item--nested-transaction': hasParentTransaction(element),
                           'step-item--disabled': element.is_enabled === false
                         }"
                         @click="selectStep(element.id)"
@@ -371,6 +478,7 @@
                             @change="onActionTypeChange(element)"
                           >
                             <el-option :label="t('uiAutomation.testCase.actionClick')" value="click" />
+                            <el-option :label="t('uiAutomation.testCase.actionDoubleClick')" value="doubleClick" />
                             <el-option :label="t('uiAutomation.testCase.actionFill')" value="fill" />
                             <el-option :label="t('uiAutomation.testCase.actionFillAndEnter')" value="fillAndEnter" />
                             <el-option :label="t('uiAutomation.testCase.actionGetText')" value="getText" />
@@ -1816,6 +1924,7 @@ const selectedStepId = ref(null)
 const checkedStepIds = ref([])
 const transactionCollapseState = ref({})
 const draggingTransactionId = ref('')
+const draggingParentTransactionId = ref('')
 const availableElements = ref([])
 const searchKeyword = ref('')
 const folderFilter = ref('all')
@@ -1980,6 +2089,44 @@ const getRouteQueryValue = (value) => Array.isArray(value) ? value[0] : value
 const importableSourceTestCases = computed(() => {
   const currentCaseId = selectedTestCase.value?.id
   return testCases.value.filter(item => item.id !== currentCaseId)
+})
+
+const availableElementMap = computed(() => {
+  return new Map(availableElements.value.map(element => [String(element.id), element]))
+})
+
+const checkedStepIdSet = computed(() => {
+  return new Set(checkedStepIds.value.map(id => String(id)))
+})
+
+const transactionStepMap = computed(() => {
+  const map = new Map()
+  currentSteps.value.forEach((step) => {
+    const transactionId = getTransactionId(step)
+    if (!transactionId) {
+      return
+    }
+    if (!map.has(transactionId)) {
+      map.set(transactionId, [])
+    }
+    map.get(transactionId).push(step)
+  })
+  return map
+})
+
+const parentTransactionStepMap = computed(() => {
+  const map = new Map()
+  currentSteps.value.forEach((step) => {
+    const parentTransactionId = getParentTransactionId(step)
+    if (!parentTransactionId) {
+      return
+    }
+    if (!map.has(parentTransactionId)) {
+      map.set(parentTransactionId, [])
+    }
+    map.get(parentTransactionId).push(step)
+  })
+  return map
 })
 
 const importInsertModeOptions = computed(() => {
@@ -2347,7 +2494,7 @@ const parseDragTargetPayload = (inputValue) => {
 }
 
 const buildDragTargetPayload = (targetElementId) => {
-  const targetElement = availableElements.value.find(item => item.id === targetElementId)
+  const targetElement = availableElementMap.value.get(String(targetElementId || ''))
   if (!targetElement) {
     return ''
   }
@@ -2538,6 +2685,9 @@ const createStepDraft = (step = {}, expanded = false) => ({
   transaction_id: String(step.transaction_id || '').trim(),
   transaction_name: String(step.transaction_name || '').trim(),
   transaction_disabled: step.transaction_disabled === true,
+  parent_transaction_id: String(step.parent_transaction_id || '').trim(),
+  parent_transaction_name: String(step.parent_transaction_name || '').trim(),
+  parent_transaction_disabled: step.parent_transaction_disabled === true,
   expanded
 })
 
@@ -2570,6 +2720,7 @@ const openImportCaseStepsDialog = (options = {}) => {
 
 const cloneImportedSteps = (sourceSteps = []) => {
   const transactionIdMap = new Map()
+  const parentTransactionIdMap = new Map()
 
   return (sourceSteps || []).map((step) => {
     const clonedStep = createStepDraft({ ...step, id: null }, false)
@@ -2579,6 +2730,9 @@ const cloneImportedSteps = (sourceSteps = []) => {
       clonedStep.transaction_id = ''
       clonedStep.transaction_name = ''
       clonedStep.transaction_disabled = false
+      clonedStep.parent_transaction_id = ''
+      clonedStep.parent_transaction_name = ''
+      clonedStep.parent_transaction_disabled = false
       return clonedStep
     }
 
@@ -2588,6 +2742,15 @@ const cloneImportedSteps = (sourceSteps = []) => {
 
     clonedStep.transaction_id = transactionIdMap.get(originalTransactionId)
     clonedStep.transaction_name = String(step?.transaction_name || '').trim()
+    const originalParentTransactionId = String(step?.parent_transaction_id || '').trim()
+    if (originalParentTransactionId) {
+      if (!parentTransactionIdMap.has(originalParentTransactionId)) {
+        parentTransactionIdMap.set(originalParentTransactionId, createTransactionId())
+      }
+      clonedStep.parent_transaction_id = parentTransactionIdMap.get(originalParentTransactionId)
+      clonedStep.parent_transaction_name = String(step?.parent_transaction_name || '').trim()
+      clonedStep.parent_transaction_disabled = step?.parent_transaction_disabled === true
+    }
     return clonedStep
   })
 }
@@ -2629,15 +2792,48 @@ const getTransactionDisabled = (step) => {
   return step?.transaction_disabled === true
 }
 
+const getParentTransactionId = (step) => {
+  return String(step?.parent_transaction_id || '').trim()
+}
+
+const getParentTransactionName = (step) => {
+  return String(step?.parent_transaction_name || '').trim()
+}
+
+const getParentTransactionDisabled = (step) => {
+  return step?.parent_transaction_disabled === true
+}
+
 const hasTransaction = (step) => {
   return Boolean(getTransactionId(step))
 }
 
+const hasParentTransaction = (step) => {
+  return Boolean(getParentTransactionId(step))
+}
+
 const isStepChecked = (stepId) => {
-  return checkedStepIds.value.some(id => isSameStepId(id, stepId))
+  return checkedStepIdSet.value.has(String(stepId))
 }
 
 const checkedStepCount = computed(() => checkedStepIds.value.length)
+
+const getCheckedTransactionIds = () => {
+  const transactionIds = []
+  currentSteps.value.forEach((step) => {
+    if (!isStepChecked(step.id)) {
+      return
+    }
+
+    const transactionId = getTransactionId(step)
+    if (transactionId && !transactionIds.includes(transactionId)) {
+      transactionIds.push(transactionId)
+    }
+  })
+  return transactionIds
+}
+
+const canMergeCheckedTransactionBlocks = computed(() => getCheckedTransactionIds().length >= 2)
 
 const syncCheckedStepIds = () => {
   checkedStepIds.value = checkedStepIds.value.filter(id =>
@@ -2647,9 +2843,7 @@ const syncCheckedStepIds = () => {
 
 const syncTransactionCollapseMap = () => {
   const validTransactionIds = new Set(
-    currentSteps.value
-      .map(step => getTransactionId(step))
-      .filter(Boolean)
+    currentSteps.value.flatMap(step => [getTransactionId(step), getParentTransactionId(step)]).filter(Boolean)
   )
 
   transactionCollapseState.value = Object.fromEntries(
@@ -2659,7 +2853,7 @@ const syncTransactionCollapseMap = () => {
 
 const collapseAllTransactionBlocks = () => {
   const transactionIds = [
-    ...new Set(currentSteps.value.map(step => getTransactionId(step)).filter(Boolean))
+    ...new Set(currentSteps.value.flatMap(step => [getTransactionId(step), getParentTransactionId(step)]).filter(Boolean))
   ]
 
   transactionCollapseState.value = Object.fromEntries(
@@ -2672,6 +2866,17 @@ const clearTransactionFromSteps = (steps = []) => {
     step.transaction_id = ''
     step.transaction_name = ''
     step.transaction_disabled = false
+    step.parent_transaction_id = ''
+    step.parent_transaction_name = ''
+    step.parent_transaction_disabled = false
+  })
+}
+
+const clearParentTransactionFromSteps = (steps = []) => {
+  steps.forEach((step) => {
+    step.parent_transaction_id = ''
+    step.parent_transaction_name = ''
+    step.parent_transaction_disabled = false
   })
 }
 
@@ -2679,17 +2884,43 @@ const applyTransactionToStep = (step, transactionSource) => {
   const transactionId = getTransactionId(transactionSource)
   const transactionName = getTransactionName(transactionSource)
   const transactionDisabled = getTransactionDisabled(transactionSource)
+  const parentTransactionId = getParentTransactionId(transactionSource)
+  const parentTransactionName = getParentTransactionName(transactionSource)
+  const parentTransactionDisabled = getParentTransactionDisabled(transactionSource)
 
   if (!transactionId || !transactionName) {
     step.transaction_id = ''
     step.transaction_name = ''
     step.transaction_disabled = false
+    step.parent_transaction_id = ''
+    step.parent_transaction_name = ''
+    step.parent_transaction_disabled = false
     return
   }
 
   step.transaction_id = transactionId
   step.transaction_name = transactionName
   step.transaction_disabled = transactionDisabled
+  step.parent_transaction_id = parentTransactionId
+  step.parent_transaction_name = parentTransactionName
+  step.parent_transaction_disabled = parentTransactionId ? parentTransactionDisabled : false
+}
+
+const applyParentTransactionToSteps = (steps = [], parentSource) => {
+  const parentTransactionId = getParentTransactionId(parentSource)
+  const parentTransactionName = getParentTransactionName(parentSource)
+  const parentTransactionDisabled = getParentTransactionDisabled(parentSource)
+
+  if (!parentTransactionId || !parentTransactionName) {
+    clearParentTransactionFromSteps(steps)
+    return
+  }
+
+  steps.forEach((step) => {
+    step.parent_transaction_id = parentTransactionId
+    step.parent_transaction_name = parentTransactionName
+    step.parent_transaction_disabled = parentTransactionDisabled
+  })
 }
 
 const getAdjacentTransactionSource = (index) => {
@@ -2772,6 +3003,73 @@ const normalizeTransactionBlocks = () => {
 
   finalizeSegment()
 
+  const seenParentTransactionIds = new Set()
+  let parentSegmentSteps = []
+  let parentSegmentId = ''
+  let parentSegmentName = ''
+  let parentSegmentDisabled = false
+
+  const finalizeParentSegment = () => {
+    if (!parentSegmentSteps.length) {
+      return
+    }
+
+    const childTransactionIds = [
+      ...new Set(parentSegmentSteps.map(step => getTransactionId(step)).filter(Boolean))
+    ]
+
+    if (
+      !parentSegmentId ||
+      !parentSegmentName ||
+      childTransactionIds.length < 2 ||
+      seenParentTransactionIds.has(parentSegmentId)
+    ) {
+      clearParentTransactionFromSteps(parentSegmentSteps)
+      delete transactionCollapseState.value[parentSegmentId]
+    } else {
+      parentSegmentSteps.forEach((step) => {
+        step.parent_transaction_id = parentSegmentId
+        step.parent_transaction_name = parentSegmentName
+        step.parent_transaction_disabled = parentSegmentDisabled
+      })
+      seenParentTransactionIds.add(parentSegmentId)
+    }
+
+    parentSegmentSteps = []
+    parentSegmentId = ''
+    parentSegmentName = ''
+    parentSegmentDisabled = false
+  }
+
+  currentSteps.value.forEach((step) => {
+    const parentTransactionId = getParentTransactionId(step)
+    const parentTransactionName = getParentTransactionName(step)
+
+    if (!hasTransaction(step) || !parentTransactionId || !parentTransactionName) {
+      finalizeParentSegment()
+      step.parent_transaction_id = ''
+      step.parent_transaction_name = ''
+      step.parent_transaction_disabled = false
+      return
+    }
+
+    if (!parentSegmentSteps.length || parentSegmentId === parentTransactionId) {
+      parentSegmentSteps.push(step)
+      parentSegmentId = parentTransactionId
+      parentSegmentDisabled = parentSegmentDisabled || getParentTransactionDisabled(step)
+      parentSegmentName = parentSegmentName || parentTransactionName || '未命名父事务块'
+      return
+    }
+
+    finalizeParentSegment()
+    parentSegmentSteps = [step]
+    parentSegmentId = parentTransactionId
+    parentSegmentDisabled = getParentTransactionDisabled(step)
+    parentSegmentName = parentTransactionName || '未命名父事务块'
+  })
+
+  finalizeParentSegment()
+
   syncCheckedStepIds()
   syncTransactionCollapseMap()
 }
@@ -2788,7 +3086,11 @@ const toggleStepChecked = (stepId, checked) => {
 }
 
 const getTransactionSteps = (transactionId) => {
-  return currentSteps.value.filter(step => getTransactionId(step) === String(transactionId || ''))
+  return transactionStepMap.value.get(String(transactionId || '')) || []
+}
+
+const getParentTransactionSteps = (parentTransactionId) => {
+  return parentTransactionStepMap.value.get(String(parentTransactionId || '')) || []
 }
 
 const getCheckedStepIndices = () => {
@@ -2815,8 +3117,22 @@ const shouldRenderTransactionHeader = (index) => {
     return false
   }
 
+  if (hasParentTransaction(currentStep) && isTransactionCollapsed(getParentTransactionId(currentStep))) {
+    return false
+  }
+
   const previousStep = currentSteps.value[index - 1]
   return getTransactionId(previousStep) !== getTransactionId(currentStep)
+}
+
+const shouldRenderParentTransactionHeader = (index) => {
+  const currentStep = currentSteps.value[index]
+  if (!hasParentTransaction(currentStep)) {
+    return false
+  }
+
+  const previousStep = currentSteps.value[index - 1]
+  return getParentTransactionId(previousStep) !== getParentTransactionId(currentStep)
 }
 
 const isTransactionCollapsed = (transactionId) => {
@@ -2824,7 +3140,8 @@ const isTransactionCollapsed = (transactionId) => {
 }
 
 const shouldHideStepItem = (step) => {
-  return hasTransaction(step) && isTransactionCollapsed(getTransactionId(step))
+  return (hasParentTransaction(step) && isTransactionCollapsed(getParentTransactionId(step))) ||
+    (hasTransaction(step) && isTransactionCollapsed(getTransactionId(step)))
 }
 
 const toggleTransactionCollapse = (transactionId) => {
@@ -2888,6 +3205,71 @@ const toggleTransactionSelection = (transactionId, checked) => {
   )
 }
 
+const getParentTransactionStepCount = (parentTransactionId) => {
+  return getParentTransactionSteps(parentTransactionId).length
+}
+
+const getParentTransactionChildCount = (parentTransactionId) => {
+  return new Set(getParentTransactionSteps(parentTransactionId).map(step => getTransactionId(step)).filter(Boolean)).size
+}
+
+const isParentTransactionDisabled = (parentTransactionId) => {
+  const steps = getParentTransactionSteps(parentTransactionId)
+  return steps.length > 0 && steps.every(step => step.parent_transaction_disabled === true)
+}
+
+const toggleParentTransactionDisabled = (parentTransactionId, enabled) => {
+  const disabled = !Boolean(enabled)
+  getParentTransactionSteps(parentTransactionId).forEach((step) => {
+    step.parent_transaction_disabled = disabled
+  })
+  ElMessage.success(disabled ? '父事务块已禁用，执行时将跳过块内所有步骤' : '父事务块已启用')
+}
+
+const getParentTransactionSummary = (parentTransactionId) => {
+  const childNames = []
+  getParentTransactionSteps(parentTransactionId).forEach((step) => {
+    const childId = getTransactionId(step)
+    if (!childId || childNames.some(item => item.id === childId)) {
+      return
+    }
+    childNames.push({
+      id: childId,
+      name: getTransactionName(step) || '未命名事务块'
+    })
+  })
+
+  if (!childNames.length) {
+    return '点击展开查看子事务块'
+  }
+
+  const labels = childNames.map(item => item.name).slice(0, 3)
+  return labels.length < childNames.length
+    ? `${labels.join(' / ')} 等`
+    : labels.join(' / ')
+}
+
+const isParentTransactionFullyChecked = (parentTransactionId) => {
+  const steps = getParentTransactionSteps(parentTransactionId)
+  return steps.length > 0 && steps.every(step => isStepChecked(step.id))
+}
+
+const toggleParentTransactionSelection = (parentTransactionId, checked) => {
+  const stepIds = getParentTransactionSteps(parentTransactionId).map(step => step.id)
+  if (checked) {
+    stepIds.forEach((stepId) => {
+      if (!isStepChecked(stepId)) {
+        checkedStepIds.value.push(stepId)
+      }
+    })
+    return
+  }
+
+  checkedStepIds.value = checkedStepIds.value.filter(id =>
+    !stepIds.some(stepId => isSameStepId(stepId, id))
+  )
+}
+
 const createTransactionBlock = async () => {
   if (!checkedStepCount.value) {
     ElMessage.warning('请先勾选要归入事务块的步骤')
@@ -2915,6 +3297,9 @@ const createTransactionBlock = async () => {
         step.transaction_id = transactionId
         step.transaction_name = transactionName
         step.transaction_disabled = false
+        step.parent_transaction_id = ''
+        step.parent_transaction_name = ''
+        step.parent_transaction_disabled = false
       }
     })
 
@@ -2931,6 +3316,107 @@ const createTransactionBlock = async () => {
   }
 }
 
+const mergeSelectedTransactionBlocks = async () => {
+  const transactionIds = getCheckedTransactionIds()
+  if (transactionIds.length < 2) {
+    ElMessage.warning('请至少勾选两个事务块')
+    return
+  }
+
+  const transactionRanges = transactionIds
+    .map((transactionId) => ({
+      transactionId,
+      range: getTransactionRange(transactionId),
+      steps: getTransactionSteps(transactionId)
+    }))
+    .filter(item => item.range && item.steps.length)
+    .sort((left, right) => left.range.start - right.range.start)
+
+  if (transactionRanges.length < 2) {
+    ElMessage.warning('请至少勾选两个有效事务块')
+    return
+  }
+
+  if (transactionRanges.some(item => !item.steps.every(step => isStepChecked(step.id)))) {
+    ElMessage.warning('合并事务块时需要勾选完整事务块，请通过事务块标题前的复选框选择')
+    return
+  }
+
+  const mergeStart = Math.min(...transactionRanges.map(item => item.range.start))
+  const mergeEnd = Math.max(...transactionRanges.map(item => item.range.end))
+  const mergedSteps = currentSteps.value.slice(mergeStart, mergeEnd + 1)
+  if (mergedSteps.length < 2) {
+    ElMessage.warning('合并后的事务块至少需要包含两个步骤')
+    return
+  }
+
+  const selectedTransactionIdSet = new Set(transactionIds)
+  const invalidGapSteps = mergedSteps.filter(step => !selectedTransactionIdSet.has(getTransactionId(step)))
+  if (invalidGapSteps.length) {
+    ElMessage.warning('待合并事务块之间不能夹杂未选中的事务块或普通步骤，请先调整顺序或归入事务块')
+    return
+  }
+
+  const includedTransactions = []
+  mergedSteps.forEach((step) => {
+    const transactionId = getTransactionId(step)
+    if (!transactionId || includedTransactions.some(item => item.transactionId === transactionId)) {
+      return
+    }
+
+    includedTransactions.push({
+      transactionId,
+      transactionName: getTransactionName(step) || '未命名事务块'
+    })
+  })
+
+  const firstTransaction = transactionRanges[0]
+  const defaultName = getTransactionName(firstTransaction.steps[0]) || '合并事务块'
+  const includedTransactionNames = includedTransactions
+    .map(item => item.transactionName)
+    .join('、')
+  const gapStepCount = mergedSteps.filter(step => !getTransactionId(step)).length
+  const gapMessage = gapStepCount > 0
+    ? `，并纳入中间 ${gapStepCount} 个步骤`
+    : ''
+
+  try {
+    const { value } = await ElMessageBox.prompt(
+      `将合并 ${includedTransactions.length} 个事务块（${includedTransactionNames}）${gapMessage}。请输入合并后的事务块名称：`,
+      '合并事务块',
+      {
+        confirmButtonText: '合并',
+        cancelButtonText: '取消',
+        inputValue: defaultName,
+        inputPlaceholder: '请输入事务块名称',
+        inputValidator: (inputValue) => String(inputValue || '').trim() ? true : '事务块名称不能为空'
+      }
+    )
+
+    const mergedTransactionId = createTransactionId()
+    const mergedTransactionName = String(value || '').trim()
+
+    mergedSteps.forEach((step) => {
+      step.parent_transaction_id = mergedTransactionId
+      step.parent_transaction_name = mergedTransactionName
+      step.parent_transaction_disabled = false
+    })
+
+    transactionCollapseState.value = {
+      ...transactionCollapseState.value,
+      [mergedTransactionId]: false,
+      ...Object.fromEntries(includedTransactions.map(({ transactionId }) => [transactionId, true]))
+    }
+    checkedStepIds.value = mergedSteps.map(step => step.id)
+    normalizeTransactionBlocks()
+    ElMessage.success(`已合并为事务块“${mergedTransactionName}”，请保存用例`)
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') {
+      ElMessage.error('合并事务块失败')
+    }
+  }
+}
+
 const removeSelectedFromTransaction = () => {
   if (!checkedStepCount.value) {
     ElMessage.warning('请先勾选要移出的步骤')
@@ -2942,6 +3428,9 @@ const removeSelectedFromTransaction = () => {
       step.transaction_id = ''
       step.transaction_name = ''
       step.transaction_disabled = false
+      step.parent_transaction_id = ''
+      step.parent_transaction_name = ''
+      step.parent_transaction_disabled = false
     }
   })
 
@@ -3047,10 +3536,120 @@ const clearTransactionBlock = (transactionId) => {
     step.transaction_id = ''
     step.transaction_name = ''
     step.transaction_disabled = false
+    step.parent_transaction_id = ''
+    step.parent_transaction_name = ''
+    step.parent_transaction_disabled = false
   })
 
   normalizeTransactionBlocks()
   ElMessage.success('已解散事务块')
+}
+
+const renameParentTransactionBlock = async (parentTransactionId) => {
+  const steps = getParentTransactionSteps(parentTransactionId)
+  if (!steps.length) {
+    return
+  }
+
+  try {
+    const { value } = await ElMessageBox.prompt('请输入新的父事务块名称', '重命名父事务块', {
+      confirmButtonText: '确定',
+      cancelButtonText: '取消',
+      inputValue: steps[0].parent_transaction_name || '',
+      inputPlaceholder: '请输入父事务块名称',
+      inputValidator: (inputValue) => String(inputValue || '').trim() ? true : '父事务块名称不能为空'
+    })
+
+    const parentTransactionName = String(value || '').trim()
+    steps.forEach((step) => {
+      step.parent_transaction_name = parentTransactionName
+    })
+    normalizeTransactionBlocks()
+    ElMessage.success('父事务块名称已更新')
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error('重命名父事务块失败')
+    }
+  }
+}
+
+const copyParentTransactionBlock = (parentTransactionId) => {
+  const steps = getParentTransactionSteps(parentTransactionId)
+  if (!steps.length) {
+    return
+  }
+
+  const range = getParentTransactionRange(parentTransactionId)
+  const newParentTransactionId = createTransactionId()
+  const newParentTransactionName = `${getParentTransactionName(steps[0]) || '父事务块'} 副本`
+  const childTransactionIdMap = new Map()
+  const copiedSteps = steps.map((step) => {
+    const originalChildId = getTransactionId(step)
+    if (!childTransactionIdMap.has(originalChildId)) {
+      childTransactionIdMap.set(originalChildId, createTransactionId())
+    }
+    const copiedStep = createStepDraft({
+      ...step,
+      id: null,
+      transaction_id: childTransactionIdMap.get(originalChildId),
+      transaction_name: getTransactionName(step),
+      transaction_disabled: getTransactionDisabled(step),
+      parent_transaction_id: newParentTransactionId,
+      parent_transaction_name: newParentTransactionName,
+      parent_transaction_disabled: isParentTransactionDisabled(parentTransactionId)
+    }, false)
+    copiedStep.expanded = false
+    return copiedStep
+  })
+
+  currentSteps.value.splice((range?.end ?? currentSteps.value.length - 1) + 1, 0, ...copiedSteps)
+  selectedStepId.value = copiedSteps[0]?.id ?? null
+  checkedStepIds.value = copiedSteps.map(step => step.id)
+  transactionCollapseState.value = {
+    ...transactionCollapseState.value,
+    [newParentTransactionId]: false,
+    ...Object.fromEntries([...childTransactionIdMap.values()].map(transactionId => [transactionId, true]))
+  }
+  normalizeTransactionBlocks()
+  ElMessage.success(`已复制父事务块“${newParentTransactionName}”，请保存用例`)
+}
+
+const deleteParentTransactionBlock = async (parentTransactionId) => {
+  const steps = getParentTransactionSteps(parentTransactionId)
+  if (!steps.length) {
+    return
+  }
+
+  const parentTransactionName = getParentTransactionName(steps[0]) || '父事务块'
+  try {
+    await ElMessageBox.confirm(
+      `确认删除父事务块“${parentTransactionName}”及块内 ${steps.length} 个步骤？此操作保存后生效。`,
+      '删除父事务块',
+      {
+        confirmButtonText: '删除',
+        cancelButtonText: '取消',
+        type: 'warning'
+      }
+    )
+  } catch (error) {
+    return
+  }
+
+  const stepIds = new Set(steps.map(step => String(step.id)))
+  currentSteps.value = currentSteps.value.filter(step => !stepIds.has(String(step.id)))
+  checkedStepIds.value = checkedStepIds.value.filter(id => !stepIds.has(String(id)))
+  if (selectedStepId.value && stepIds.has(String(selectedStepId.value))) {
+    selectedStepId.value = currentSteps.value[0]?.id ?? null
+  }
+  delete transactionCollapseState.value[String(parentTransactionId || '')]
+  normalizeTransactionBlocks()
+  ElMessage.success(`已删除父事务块“${parentTransactionName}”，请保存用例`)
+}
+
+const clearParentTransactionBlock = (parentTransactionId) => {
+  clearParentTransactionFromSteps(getParentTransactionSteps(parentTransactionId))
+  normalizeTransactionBlocks()
+  ElMessage.success('已解散父事务块，子事务块保留')
 }
 
 const isSameStepId = (left, right) => {
@@ -3098,7 +3697,10 @@ const buildStepPayload = (step, index) => ({
   save_as: canStoreVariable(step.action_type) ? String(step.save_as || '').trim() : '',
   transaction_id: getTransactionId(step),
   transaction_name: getTransactionName(step),
-  transaction_disabled: hasTransaction(step) && step.transaction_disabled === true
+  transaction_disabled: hasTransaction(step) && step.transaction_disabled === true,
+  parent_transaction_id: hasTransaction(step) ? getParentTransactionId(step) : '',
+  parent_transaction_name: hasTransaction(step) ? getParentTransactionName(step) : '',
+  parent_transaction_disabled: hasTransaction(step) && hasParentTransaction(step) && step.parent_transaction_disabled === true
 })
 
 const formatStoredVariable = (name) => {
@@ -3130,9 +3732,9 @@ const getStepElementSummary = (step) => {
   if (!needsElement(step.action_type)) {
     return ''
   }
-  const element = availableElements.value.find(item => item.id === step.element_id)
+  const element = availableElementMap.value.get(String(step.element_id || ''))
   if (step.action_type === 'drag') {
-    const targetElement = availableElements.value.find(item => item.id === step.drag_target_element_id)
+    const targetElement = availableElementMap.value.get(String(step.drag_target_element_id || ''))
     if (element?.name && targetElement?.name) {
       return `${element.name} -> ${targetElement.name}`
     }
@@ -3273,6 +3875,44 @@ const getTransactionRange = (transactionId) => {
   }
 }
 
+const getParentTransactionRange = (parentTransactionId) => {
+  const normalizedId = String(parentTransactionId || '')
+  const indices = currentSteps.value.reduce((result, step, index) => {
+    if (getParentTransactionId(step) === normalizedId) {
+      result.push(index)
+    }
+    return result
+  }, [])
+
+  if (!indices.length) {
+    return null
+  }
+
+  return {
+    start: Math.min(...indices),
+    end: Math.max(...indices),
+    length: indices.length
+  }
+}
+
+const moveStepRangeToTargetRange = (sourceRange, targetRange, event, options = {}) => {
+  const movedSteps = currentSteps.value.splice(sourceRange.start, sourceRange.length)
+  const targetRect = event?.currentTarget?.getBoundingClientRect?.()
+  const dropAfterTarget = targetRect
+    ? event.clientY > targetRect.top + targetRect.height / 2
+    : false
+  let insertIndex = dropAfterTarget ? targetRange.end + 1 : targetRange.start
+  if (sourceRange.start < insertIndex) {
+    insertIndex = Math.max(0, insertIndex - sourceRange.length)
+  }
+
+  currentSteps.value.splice(insertIndex, 0, ...movedSteps)
+  if (options.normalize !== false) {
+    normalizeTransactionBlocks()
+  }
+  return movedSteps
+}
+
 const handleTransactionDragStart = (transactionId, event) => {
   const normalizedId = String(transactionId || '')
   if (!normalizedId) {
@@ -3280,6 +3920,7 @@ const handleTransactionDragStart = (transactionId, event) => {
   }
 
   draggingTransactionId.value = normalizedId
+  draggingParentTransactionId.value = ''
   if (event?.dataTransfer) {
     event.dataTransfer.effectAllowed = 'move'
     event.dataTransfer.setData('text/plain', normalizedId)
@@ -3292,8 +3933,22 @@ const handleTransactionDragEnd = () => {
 
 const handleTransactionDrop = (targetTransactionId, event) => {
   const sourceTransactionId = draggingTransactionId.value
+  const sourceParentTransactionId = draggingParentTransactionId.value
   const targetId = String(targetTransactionId || '')
   draggingTransactionId.value = ''
+
+  if (sourceParentTransactionId) {
+    draggingParentTransactionId.value = ''
+    const sourceRange = getParentTransactionRange(sourceParentTransactionId)
+    const targetRange = getTransactionRange(targetId)
+    if (!sourceRange || !targetRange) {
+      return
+    }
+
+    moveStepRangeToTargetRange(sourceRange, targetRange, event)
+    ElMessage.success('父事务块顺序已调整，请保存用例')
+    return
+  }
 
   if (!sourceTransactionId || !targetId || sourceTransactionId === targetId) {
     return
@@ -3305,6 +3960,8 @@ const handleTransactionDrop = (targetTransactionId, event) => {
     return
   }
 
+  const targetSteps = getTransactionSteps(targetId)
+  const targetParentSource = targetSteps.find(step => hasParentTransaction(step))
   const movedSteps = currentSteps.value.splice(sourceRange.start, sourceRange.length)
   const targetRect = event?.currentTarget?.getBoundingClientRect?.()
   const dropAfterTarget = targetRect
@@ -3316,8 +3973,65 @@ const handleTransactionDrop = (targetTransactionId, event) => {
   }
 
   currentSteps.value.splice(insertIndex, 0, ...movedSteps)
+  if (targetParentSource) {
+    applyParentTransactionToSteps(movedSteps, targetParentSource)
+  }
   normalizeTransactionBlocks()
   ElMessage.success('事务块顺序已调整，请保存用例')
+}
+
+const handleParentTransactionDragStart = (parentTransactionId, event) => {
+  const normalizedId = String(parentTransactionId || '')
+  if (!normalizedId) {
+    return
+  }
+
+  draggingParentTransactionId.value = normalizedId
+  draggingTransactionId.value = ''
+  if (event?.dataTransfer) {
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', normalizedId)
+  }
+}
+
+const handleParentTransactionDragEnd = () => {
+  draggingParentTransactionId.value = ''
+}
+
+const handleParentTransactionDrop = (targetParentTransactionId, event) => {
+  const sourceParentTransactionId = draggingParentTransactionId.value
+  const sourceTransactionId = draggingTransactionId.value
+  const targetId = String(targetParentTransactionId || '')
+  draggingParentTransactionId.value = ''
+
+  if (sourceTransactionId) {
+    draggingTransactionId.value = ''
+    const sourceRange = getTransactionRange(sourceTransactionId)
+    const targetRange = getParentTransactionRange(targetId)
+    if (!sourceRange || !targetRange) {
+      return
+    }
+
+    const targetParentSource = getParentTransactionSteps(targetId)[0]
+    const movedSteps = moveStepRangeToTargetRange(sourceRange, targetRange, event, { normalize: false })
+    applyParentTransactionToSteps(movedSteps, targetParentSource)
+    normalizeTransactionBlocks()
+    ElMessage.success('事务块顺序已调整，请保存用例')
+    return
+  }
+
+  if (!sourceParentTransactionId || !targetId || sourceParentTransactionId === targetId) {
+    return
+  }
+
+  const sourceRange = getParentTransactionRange(sourceParentTransactionId)
+  const targetRange = getParentTransactionRange(targetId)
+  if (!sourceRange || !targetRange) {
+    return
+  }
+
+  moveStepRangeToTargetRange(sourceRange, targetRange, event)
+  ElMessage.success('父事务块顺序已调整，请保存用例')
 }
 
 const extractRequestErrorMessage = (error, fallback) => {
@@ -4976,6 +5690,9 @@ const addStep = () => {
       newStep.transaction_id = selectedStep.transaction_id
       newStep.transaction_name = selectedStep.transaction_name
       newStep.transaction_disabled = selectedStep.transaction_disabled === true
+      newStep.parent_transaction_id = selectedStep.parent_transaction_id || ''
+      newStep.parent_transaction_name = selectedStep.parent_transaction_name || ''
+      newStep.parent_transaction_disabled = selectedStep.parent_transaction_disabled === true
     }
   }
 
@@ -5021,6 +5738,9 @@ const handleStepsReorder = (event) => {
         movedStep.transaction_id = ''
         movedStep.transaction_name = ''
         movedStep.transaction_disabled = false
+        movedStep.parent_transaction_id = ''
+        movedStep.parent_transaction_name = ''
+        movedStep.parent_transaction_disabled = false
       }
     }
   }
@@ -5086,7 +5806,7 @@ const onActionTypeChange = (step) => {
 
 const onElementChange = (step) => {
   // 元素变化时的处理
-  const element = availableElements.value.find(e => e.id === step.element_id)
+  const element = availableElementMap.value.get(String(step.element_id || ''))
   if (element && !step.description) {
     step.description = `${getActionTypeText(step.action_type)}${element.name}`
   }
@@ -5102,18 +5822,18 @@ const markStepLocatorOverride = (step) => {
   if (!locatorValue) {
     step.element_locator_strategy = ''
   } else if (!step.element_locator_strategy) {
-    const element = availableElements.value.find(item => item.id === step.element_id)
+    const element = availableElementMap.value.get(String(step.element_id || ''))
     step.element_locator_strategy = getElementLocatorStrategy(element)
   }
 }
 
 const getSelectedElementLocatorPlaceholder = (step) => {
-  const element = availableElements.value.find(item => item.id === step?.element_id)
+  const element = availableElementMap.value.get(String(step?.element_id || ''))
   return element?.locator_value || '选择元素后可手动修改定位表达式'
 }
 
 const getSelectedElementLabel = (elementId) => {
-  const element = availableElements.value.find(item => item.id === elementId)
+  const element = availableElementMap.value.get(String(elementId || ''))
   if (!element) {
     return t('uiAutomation.testCase.elementPending')
   }
@@ -5343,8 +6063,7 @@ const persistSelectedTestCase = async ({ showSuccess = true } = {}) => {
     }
 
     const updateResponse = await updateTestCase(selectedTestCase.value.id, updateData)
-    const detailResponse = await getTestCaseDetail(selectedTestCase.value.id).catch(() => null)
-    const savedCase = detailResponse?.data || updateResponse?.data || updateData
+    const savedCase = updateResponse?.data || updateData
     if (showSuccess) {
       ElMessage.success(t('uiAutomation.testCase.save.success'))
     }
@@ -5870,6 +6589,8 @@ const getStatusText = (status) => {
 const getActionTypeText = (actionType) => {
   const textMap = {
     'click': t('uiAutomation.testCase.actionType.click'),
+    'doubleClick': t('uiAutomation.testCase.actionType.doubleClick'),
+    'double_click': t('uiAutomation.testCase.actionType.doubleClick'),
     'fill': t('uiAutomation.testCase.actionType.fill'),
     'fillAndEnter': t('uiAutomation.testCase.actionType.fillAndEnter'),
     'getText': t('uiAutomation.testCase.actionType.getText'),
@@ -5923,6 +6644,8 @@ const formatTime = (timestamp) => {
 const getActionText = (actionType) => {
   const actionMap = {
     'click': t('uiAutomation.testCase.actionText.click'),
+    'doubleClick': t('uiAutomation.testCase.actionText.doubleClick'),
+    'double_click': t('uiAutomation.testCase.actionText.doubleClick'),
     'fill': t('uiAutomation.testCase.actionText.fill'),
     'fillAndEnter': t('uiAutomation.testCase.actionText.fillAndEnter'),
     'getText': t('uiAutomation.testCase.actionText.getText'),
@@ -6413,6 +7136,16 @@ onBeforeUnmount(() => {
   background: linear-gradient(90deg, #fff8ed 0%, #fff3df 100%);
 }
 
+.transaction-block--parent {
+  border-color: #67c23a;
+  background: linear-gradient(90deg, #f0f9eb 0%, #e1f3d8 100%);
+}
+
+.transaction-block--child {
+  margin-left: 28px;
+  border-style: dashed;
+}
+
 .transaction-block--dragging {
   opacity: 0.55;
 }
@@ -6444,6 +7177,12 @@ onBeforeUnmount(() => {
 .transaction-block--disabled .transaction-block-toggle,
 .transaction-block--disabled .transaction-block-drag {
   color: #e6a23c;
+}
+
+.transaction-block--parent .transaction-block-icon,
+.transaction-block--parent .transaction-block-toggle,
+.transaction-block--parent .transaction-block-drag {
+  color: #67c23a;
 }
 
 .transaction-block-checkbox {
@@ -6486,6 +7225,10 @@ onBeforeUnmount(() => {
 .step-item--in-transaction {
   margin-left: 20px;
   border-color: #d9ecff;
+}
+
+.step-item--nested-transaction {
+  margin-left: 56px;
 }
 
 .step-item--disabled {

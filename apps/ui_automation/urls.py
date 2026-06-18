@@ -8,6 +8,7 @@ from .views import (
     ElementGroupViewSet,
     ElementViewSet,
     TestScriptViewSet,
+    PageGraphViewSet,
     PageObjectViewSet,
     ScriptStepViewSet,
     TestSuiteViewSet,
@@ -20,11 +21,20 @@ from .views import (
     UiScheduledTaskViewSet,
     AIExecutionRecordViewSet,
     AICaseViewSet,
+    AITestCaseGenerationSkillCategoryViewSet,
+    AITestCaseGenerationSkillDependencyViewSet,
+    AITestCaseGenerationSkillExecutionLogViewSet,
+    AITestCaseGenerationSkillModuleViewSet,
+    AITestCaseGenerationSkillTriggerViewSet,
     AITestCaseGenerationSkillViewSet,
     AITestCaseGenerationViewSet,
     UiNotificationLogViewSet,
     OperationRecordViewSet,
     UiDashboardViewSet,
+    UIPageEdgeViewSet,
+    UIPageElementViewSet,
+    UIPageGraphViewSet,
+    UIPageNodeViewSet,
     start_scroll_coordinate_picker,
     get_scroll_coordinate_picker_position,
     get_scroll_coordinate_picker_pages,
@@ -38,9 +48,14 @@ router = DefaultRouter()
 router.register(r'dashboard', UiDashboardViewSet, basename='dashboard')
 router.register(r'projects', UiProjectViewSet)
 router.register(r'locator-strategies', LocatorStrategyViewSet)
+router.register(r'page-graphs', UIPageGraphViewSet, basename='page-graphs')
+router.register(r'page-graph-nodes', UIPageNodeViewSet, basename='page-graph-nodes')
+router.register(r'page-graph-elements', UIPageElementViewSet, basename='page-graph-elements')
+router.register(r'page-graph-edges', UIPageEdgeViewSet, basename='page-graph-edges')
 router.register(r'element-groups', ElementGroupViewSet)
 router.register(r'elements', ElementViewSet)
 router.register(r'test-scripts', TestScriptViewSet)
+router.register(r'page-graphs', PageGraphViewSet, basename='page-graphs')
 router.register(r'page-objects', PageObjectViewSet)
 router.register(r'steps', ScriptStepViewSet)
 router.register(r'test-suites', TestSuiteViewSet)
@@ -55,6 +70,11 @@ router.register(r'ai-execution-records', AIExecutionRecordViewSet)
 router.register(r'ai-cases', AICaseViewSet, basename='ai-cases')
 router.register(r'ai-case-generation', AICaseViewSet, basename='ai-case-generation')
 router.register(r'ai-test-case-generation-skills', AITestCaseGenerationSkillViewSet, basename='ai-test-case-generation-skills')
+router.register(r'ai-test-case-generation-skill-categories', AITestCaseGenerationSkillCategoryViewSet, basename='ai-test-case-generation-skill-categories')
+router.register(r'ai-test-case-generation-skill-modules', AITestCaseGenerationSkillModuleViewSet, basename='ai-test-case-generation-skill-modules')
+router.register(r'ai-test-case-generation-skill-triggers', AITestCaseGenerationSkillTriggerViewSet, basename='ai-test-case-generation-skill-triggers')
+router.register(r'ai-test-case-generation-skill-dependencies', AITestCaseGenerationSkillDependencyViewSet, basename='ai-test-case-generation-skill-dependencies')
+router.register(r'ai-test-case-generation-skill-logs', AITestCaseGenerationSkillExecutionLogViewSet, basename='ai-test-case-generation-skill-logs')
 router.register(r'ai-test-case-generation', AITestCaseGenerationViewSet, basename='ai-test-case-generation')
 router.register(r'notification-logs', UiNotificationLogViewSet)
 router.register(r'operation-records', OperationRecordViewSet)

@@ -3,7 +3,7 @@ import uuid
 from django.db import transaction
 
 from .models import TestCaseExecution
-from .local_execution_service import attach_execution_plan, build_test_case_payload
+from .local_execution_service import attach_execution_plan_from_test_case
 
 
 def generate_run_identifier():
@@ -44,7 +44,7 @@ def queue_local_test_case_executions(
                 assigned_runner=assigned_runner,
                 run_identifier=run_identifier,
             )
-            attach_execution_plan(execution, build_test_case_payload(test_case))
+            attach_execution_plan_from_test_case(execution, test_case)
             executions.append(execution)
 
     return executions, run_identifier

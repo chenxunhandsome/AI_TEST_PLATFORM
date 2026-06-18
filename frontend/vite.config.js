@@ -1,9 +1,12 @@
 import { defineConfig, loadEnv } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import { resolve } from 'path'
+import { fileURLToPath } from 'url'
+
+const configDir = fileURLToPath(new URL('.', import.meta.url))
 
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, __dirname, '')
+  const env = loadEnv(mode, configDir, '')
   const backendTarget = env.VITE_BACKEND_TARGET || 'http://127.0.0.1:8000'
   const wsTarget = env.VITE_WS_TARGET || backendTarget.replace(/^http/i, 'ws')
   const devPort = Number.parseInt(env.VITE_DEV_PORT || '3000', 10)
@@ -13,7 +16,7 @@ export default defineConfig(({ mode }) => {
     plugins: [vue()],
     resolve: {
       alias: {
-        '@': resolve(__dirname, 'src'),
+        '@': resolve(configDir, 'src'),
       },
     },
     css: {

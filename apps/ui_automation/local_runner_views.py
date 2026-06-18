@@ -9,7 +9,6 @@ from rest_framework.response import Response
 
 from .local_execution_service import (
     LOCAL_RUNNER_REQUIRED_PROTOCOL_VERSION,
-    attach_execution_plan,
     build_execution_plan_from_payload,
     build_test_case_payload,
 )
@@ -91,7 +90,7 @@ def _get_execution_plan(execution):
         return plan
 
     payload = build_test_case_payload(execution.test_case)
-    return build_execution_plan_from_payload(payload)
+    return build_execution_plan_from_payload(payload, include_payload=False)
 
 
 def _validate_local_execution_integrity(execution, reported_status, logs, error_message):
@@ -219,7 +218,7 @@ class LocalRunnerViewSet(viewsets.ReadOnlyModelViewSet):
             execution = (
                 TestCaseExecution.objects
                 .select_for_update()
-                .select_related('test_case', 'project', 'assigned_runner', 'created_by')
+                .select_related('test_case', 'test_case__project', 'project', 'assigned_runner', 'created_by')
                 .filter(
                     created_by=request.user,
                     execution_mode='local',
@@ -241,7 +240,8 @@ class LocalRunnerViewSet(viewsets.ReadOnlyModelViewSet):
         payload = plan.get('payload') if isinstance(plan.get('payload'), dict) else None
         if not payload:
             payload = build_test_case_payload(execution.test_case)
-            attach_execution_plan(execution, payload)
+            execution.execution_plan = build_execution_plan_from_payload(payload, include_payload=False)
+            execution.save(update_fields=['execution_plan'])
         return Response({
             'task': {
                 'task_type': 'test_case',

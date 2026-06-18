@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 
 LOCAL_RUNNER_PROTOCOL_VERSION = 2
 LOCAL_RUNNER_REQUIRED_PROTOCOL_VERSION = 2
+SUCCESS_STEP_LOG_LIMIT = 500
 
 
 def _normalize_runtime_variable_name(value):
@@ -44,9 +45,21 @@ def _build_step_plan_signature(step_items):
     return hashlib.sha256(raw.encode('utf-8')).hexdigest()
 
 
-def build_execution_plan_from_payload(payload):
-    steps = list(payload.get('steps') or [])
-    plan_items = [
+def _build_execution_plan(step_items, payload=None):
+    plan = {
+        'planned_step_count': len(step_items),
+        'planned_step_numbers': [item['sequence'] for item in step_items],
+        'planned_step_ids': [item['step_id'] for item in step_items],
+        'plan_signature': _build_step_plan_signature(step_items),
+        'plan_items': step_items,
+    }
+    if payload is not None:
+        plan['payload'] = payload
+    return plan
+
+
+def _plan_items_from_payload(payload):
+    return [
         {
             'sequence': index,
             'step_id': step.get('step_id'),
@@ -54,22 +67,59 @@ def build_execution_plan_from_payload(payload):
             'action_type': step.get('action_type', ''),
             'description': step.get('description', ''),
         }
-        for index, step in enumerate(steps, start=1)
+        for index, step in enumerate(list(payload.get('steps') or []), start=1)
     ]
-    return {
-        'planned_step_count': len(steps),
-        'planned_step_numbers': [item['sequence'] for item in plan_items],
-        'planned_step_ids': [item['step_id'] for item in plan_items],
-        'plan_signature': _build_step_plan_signature(plan_items),
-        'plan_items': plan_items,
-        'payload': payload,
-    }
 
 
-def attach_execution_plan(execution, payload):
-    execution.execution_plan = build_execution_plan_from_payload(payload)
+def build_execution_plan_from_payload(payload, include_payload=True):
+    return _build_execution_plan(
+        _plan_items_from_payload(payload),
+        payload=payload if include_payload else None,
+    )
+
+
+def build_execution_plan_from_test_case(test_case):
+    step_items = [
+        {
+            'sequence': index,
+            'step_id': item['id'],
+            'source_step_number': item['step_number'],
+            'action_type': item['action_type'] or '',
+            'description': item['description'] or '',
+        }
+        for index, item in enumerate(
+            test_case.steps.order_by('step_number', 'id').values(
+                'id', 'step_number', 'action_type', 'description'
+            ),
+            start=1,
+        )
+    ]
+    return _build_execution_plan(step_items)
+
+
+def attach_execution_plan(execution, payload, include_payload=True):
+    execution.execution_plan = build_execution_plan_from_payload(payload, include_payload=include_payload)
     execution.save(update_fields=['execution_plan'])
     return execution.execution_plan
+
+
+def attach_execution_plan_from_test_case(execution, test_case=None):
+    execution.execution_plan = build_execution_plan_from_test_case(test_case or execution.test_case)
+    execution.save(update_fields=['execution_plan'])
+    return execution.execution_plan
+
+
+def _iter_test_case_steps_for_payload(test_case):
+    steps_queryset = test_case.steps
+    if hasattr(steps_queryset, 'select_related'):
+        steps_queryset = steps_queryset.select_related(
+            'element',
+            'element__locator_strategy',
+        )
+    try:
+        return steps_queryset.order_by('step_number', 'id')
+    except TypeError:
+        return steps_queryset.order_by('step_number')
 
 
 def _resolve_serialized_step_payload(step):
@@ -83,8 +133,9 @@ def _resolve_serialized_step_payload(step):
 
     is_enabled = getattr(step, 'is_enabled', True) is not False
     transaction_disabled = getattr(step, 'transaction_disabled', False) is True
+    parent_transaction_disabled = getattr(step, 'parent_transaction_disabled', False) is True
     save_as = _normalize_runtime_variable_name(step.save_as)
-    if is_enabled and not transaction_disabled and save_as:
+    if is_enabled and not transaction_disabled and not parent_transaction_disabled and save_as:
         if step.action_type in {'fill', 'fillAndEnter', 'switchTab'}:
             set_runtime_variable(save_as, resolved_input_value)
         elif step.action_type == 'assert':
@@ -97,6 +148,7 @@ def _resolve_serialized_step_payload(step):
         'description': step.description or '',
         'is_enabled': is_enabled,
         'transaction_disabled': transaction_disabled,
+        'parent_transaction_disabled': parent_transaction_disabled,
         'save_as': save_as,
         'input_value': resolved_input_value,
         'wait_time': step.wait_time,
@@ -113,7 +165,7 @@ def build_test_case_payload(test_case):
     try:
         initialize_project_runtime_variables(project=test_case.project)
 
-        for step in test_case.steps.all().order_by('step_number', 'id'):
+        for step in _iter_test_case_steps_for_payload(test_case):
             element_data = resolve_element_locator_payload(build_step_element_data(step))
 
             step_payload = _resolve_serialized_step_payload(step)
@@ -135,7 +187,7 @@ def build_test_case_payload(test_case):
     }
     payload.update({
         key: value
-        for key, value in build_execution_plan_from_payload(payload).items()
+        for key, value in build_execution_plan_from_payload(payload, include_payload=False).items()
         if key != 'payload'
     })
     return payload
@@ -180,6 +232,7 @@ def _make_step(step_data):
         description=step_data.get('description', ''),
         is_enabled=step_data.get('is_enabled', True),
         transaction_disabled=step_data.get('transaction_disabled', False),
+        parent_transaction_disabled=step_data.get('parent_transaction_disabled', False),
         save_as=step_data.get('save_as', ''),
         input_value=step_data.get('input_value', ''),
         wait_time=step_data.get('wait_time') or 1000,
@@ -278,6 +331,7 @@ def _append_step_result(
     assert_value='',
     wait_time=None,
 ):
+    compact_log = _compact_step_log(step_log or error or '', success)
     result = {
         'step_number': step_number,
         'step_id': step_id,
@@ -287,7 +341,7 @@ def _append_step_result(
         'error': error,
         'status': status or ('passed' if success else 'failed'),
         'message': message or '',
-        'log': step_log or error or '',
+        'log': compact_log,
         'input_value': input_value or '',
         'assert_value': assert_value or '',
         'wait_time': wait_time,
@@ -304,6 +358,13 @@ def _append_step_result(
     if timeout_debug:
         result['timeout_debug'] = timeout_debug
     step_results.append(result)
+
+
+def _compact_step_log(value, success):
+    text = str(value or '')
+    if not success or len(text) <= SUCCESS_STEP_LOG_LIMIT:
+        return text
+    return f'{text[:SUCCESS_STEP_LOG_LIMIT]}...'
 
 
 def _build_timeout_debug(engine_type, step, element_data):
@@ -417,12 +478,17 @@ def _run_selenium(payload, browser, headless, start_time, step_results, screensh
             step = _make_step(step_data)
             action_text = dict(TestCaseStep.ACTION_TYPE_CHOICES).get(step.action_type, step.action_type)
 
-            if getattr(step, 'is_enabled', True) is False or getattr(step, 'transaction_disabled', False) is True:
-                skip_message = (
-                    '事务块已禁用，已跳过执行'
-                    if getattr(step, 'transaction_disabled', False) is True
-                    else '步骤已禁用，已跳过执行'
-                )
+            if (
+                getattr(step, 'is_enabled', True) is False
+                or getattr(step, 'transaction_disabled', False) is True
+                or getattr(step, 'parent_transaction_disabled', False) is True
+            ):
+                if getattr(step, 'parent_transaction_disabled', False) is True:
+                    skip_message = '父事务块已禁用，已跳过执行'
+                elif getattr(step, 'transaction_disabled', False) is True:
+                    skip_message = '事务块已禁用，已跳过执行'
+                else:
+                    skip_message = '步骤已禁用，已跳过执行'
                 _append_step_result(
                     step_results,
                     index,
@@ -551,12 +617,17 @@ async def _run_playwright_async(payload, browser, headless, start_time, step_res
             step = _make_step(step_data)
             action_text = dict(TestCaseStep.ACTION_TYPE_CHOICES).get(step.action_type, step.action_type)
 
-            if getattr(step, 'is_enabled', True) is False or getattr(step, 'transaction_disabled', False) is True:
-                skip_message = (
-                    '事务块已禁用，已跳过执行'
-                    if getattr(step, 'transaction_disabled', False) is True
-                    else '步骤已禁用，已跳过执行'
-                )
+            if (
+                getattr(step, 'is_enabled', True) is False
+                or getattr(step, 'transaction_disabled', False) is True
+                or getattr(step, 'parent_transaction_disabled', False) is True
+            ):
+                if getattr(step, 'parent_transaction_disabled', False) is True:
+                    skip_message = '父事务块已禁用，已跳过执行'
+                elif getattr(step, 'transaction_disabled', False) is True:
+                    skip_message = '事务块已禁用，已跳过执行'
+                else:
+                    skip_message = '步骤已禁用，已跳过执行'
                 _append_step_result(
                     step_results,
                     index,

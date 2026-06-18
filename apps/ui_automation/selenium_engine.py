@@ -925,6 +925,7 @@ class SeleniumTestEngine:
             
         start_time = time.time()
         screenshot_base64 = None
+        is_double_click = action_type in {'doubleClick', 'double_click'}
 
         try:
             # wait和screenshot操作不需要元素定位器
@@ -1150,6 +1151,8 @@ class SeleniumTestEngine:
                     element = wait.until(find_visible_element)
                 else:
                     element = wait.until(EC.element_to_be_clickable((by_type, by_value)))
+            elif is_double_click:
+                element = wait.until(EC.element_to_be_clickable((by_type, by_value)))
             else:
                 # 其他操作：等待元素出现
                 element = wait.until(EC.presence_of_element_located((by_type, by_value)))
@@ -1232,6 +1235,51 @@ class SeleniumTestEngine:
                                         element = wait.until(EC.element_to_be_clickable((by_type, by_value)))
                                 else:
                                     raise
+                        else:
+                            raise
+
+            elif is_double_click:
+                for attempt in range(max_retries):
+                    try:
+                        if force_action or not element.is_displayed():
+                            self.driver.execute_script("""
+                                const element = arguments[0];
+                                const base = { bubbles: true, cancelable: true, view: window, button: 0 };
+                                element.dispatchEvent(new MouseEvent('mousedown', { ...base, buttons: 1, detail: 1 }));
+                                element.dispatchEvent(new MouseEvent('mouseup', { ...base, buttons: 0, detail: 1 }));
+                                element.dispatchEvent(new MouseEvent('click', { ...base, buttons: 0, detail: 1 }));
+                                element.dispatchEvent(new MouseEvent('mousedown', { ...base, buttons: 1, detail: 2 }));
+                                element.dispatchEvent(new MouseEvent('mouseup', { ...base, buttons: 0, detail: 2 }));
+                                element.dispatchEvent(new MouseEvent('click', { ...base, buttons: 0, detail: 2 }));
+                                element.dispatchEvent(new MouseEvent('dblclick', { ...base, buttons: 0, detail: 2 }));
+                            """, element)
+                            execution_time = round(time.time() - start_time, 2)
+                            log = f"✓ 双击元素 '{element_name}' 成功（使用JavaScript事件）\n"
+                            log += f"  - 定位器: {locator_strategy}={locator_value}\n"
+                            log += f"  - 超时设置: {timeout_seconds}秒\n"
+                            if force_action:
+                                log += f"  - 强制操作: 是（使用JavaScript双击事件）\n"
+                            log += f"  - 执行时间: {execution_time}秒"
+                        else:
+                            self.driver.execute_script(
+                                "arguments[0].scrollIntoView({block: 'center', inline: 'center'});",
+                                element,
+                            )
+                            time.sleep(0.2)
+                            ActionChains(self.driver).double_click(element).perform()
+                            execution_time = round(time.time() - start_time, 2)
+                            log = f"✓ 双击元素 '{element_name}' 成功\n"
+                            log += f"  - 定位器: {locator_strategy}={locator_value}\n"
+                            log += f"  - 按键: 鼠标左键\n"
+                            log += f"  - 超时设置: {timeout_seconds}秒\n"
+                            log += f"  - 执行时间: {execution_time}秒"
+                        return True, log, None
+                    except StaleElementReferenceException:
+                        if attempt < max_retries - 1:
+                            logger.warning(f"⚠️ 元素过期（Stale Element），正在重试双击... (尝试 {attempt + 2}/{max_retries})")
+                            time.sleep(1.0 if attempt == 0 else 1.5)
+                            element = wait.until(EC.element_to_be_clickable((by_type, by_value)))
+                            time.sleep(0.3)
                         else:
                             raise
 
@@ -1603,7 +1651,7 @@ class SeleniumTestEngine:
             # 5. 如果仍然没有有用信息，提供操作类型相关的提示
             if len(error_parts) == 0 or (len(error_parts) == 1 and 'TimeoutException' in error_parts[0]):
                 # 添加操作相关的上下文
-                if action_type == 'click':
+                if action_type in {'click', 'doubleClick', 'double_click'}:
                     error_parts.append(f"等待元素可点击失败（超时{timeout_seconds}秒）")
                 elif action_type in {'fill', 'fillAndEnter'}:
                     error_parts.append(f"等待输入框可用失败（超时{timeout_seconds}秒）")

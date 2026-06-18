@@ -5,7 +5,7 @@ from django.utils import timezone
 
 
 INPUT_ACTIONS = {'fill', 'fillAndEnter', 'switchTab'}
-CLICK_ACTIONS = {'click', 'canvasClick'}
+CLICK_ACTIONS = {'click', 'doubleClick', 'double_click', 'canvasClick'}
 
 
 def parse_execution_logs(logs):
@@ -71,10 +71,24 @@ def _sources_from_execution_plan(execution_plan):
     if not isinstance(execution_plan, dict):
         return []
     payload = execution_plan.get('payload') or {}
-    if not isinstance(payload, dict):
+    if isinstance(payload, dict):
+        steps = payload.get('steps') or []
+        if isinstance(steps, list) and steps:
+            return steps
+
+    plan_items = execution_plan.get('plan_items') or []
+    if not isinstance(plan_items, list):
         return []
-    steps = payload.get('steps') or []
-    return steps if isinstance(steps, list) else []
+    return [
+        {
+            'step_id': item.get('step_id'),
+            'step_number': item.get('sequence') or item.get('source_step_number'),
+            'action_type': item.get('action_type') or '',
+            'description': item.get('description') or '',
+        }
+        for item in plan_items
+        if isinstance(item, dict)
+    ]
 
 
 def _result_lookup(step_results):

@@ -1,0 +1,26 @@
+from django.db import migrations, models
+
+
+class Migration(migrations.Migration):
+
+    dependencies = [
+        ('ui_automation', '0020_testcasestep_double_click'),
+    ]
+
+    operations = [
+        migrations.AddField(
+            model_name='testcasestep',
+            name='parent_transaction_id',
+            field=models.CharField(blank=True, db_index=True, max_length=64, verbose_name='父事务块ID'),
+        ),
+        migrations.AddField(
+            model_name='testcasestep',
+            name='parent_transaction_name',
+            field=models.CharField(blank=True, max_length=100, verbose_name='父事务块名称'),
+        ),
+        migrations.AddField(
+            model_name='testcasestep',
+            name='parent_transaction_disabled',
+            field=models.BooleanField(default=False, verbose_name='父事务块是否禁用'),
+        ),
+    ]

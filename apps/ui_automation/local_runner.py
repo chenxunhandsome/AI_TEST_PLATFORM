@@ -120,7 +120,23 @@ def build_metadata():
 
 def format_step_timeout_summary(payload):
     lines = []
-    for index, step in enumerate((payload or {}).get('steps') or [], start=1):
+    steps = (payload or {}).get('steps') or []
+    max_preview = 30
+    total = len(steps)
+    if total <= max_preview:
+        preview_steps = [(index, step) for index, step in enumerate(steps, start=1)]
+    else:
+        head_count = 20
+        tail_count = 5
+        preview_steps = (
+            [(index, step) for index, step in enumerate(steps[:head_count], start=1)]
+            + [(None, {'_omitted': total - head_count - tail_count})]
+            + [(total - tail_count + offset + 1, step) for offset, step in enumerate(steps[-tail_count:])]
+        )
+    for index, step in preview_steps:
+        if step.get('_omitted'):
+            lines.append(f"  ... omitted {step['_omitted']} steps ...")
+            continue
         element_data = step.get('element_data') or {}
         element_wait_timeout = element_data.get('wait_timeout')
         if element_wait_timeout is not None:

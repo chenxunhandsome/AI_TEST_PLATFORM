@@ -721,7 +721,8 @@ export function createTestCase(data) {
   return request({
     url: '/ui-automation/test-cases/',
     method: 'post',
-    data
+    data,
+    timeout: 120000
   })
 }
 
@@ -738,7 +739,8 @@ export function updateTestCase(id, data) {
   return request({
     url: `/ui-automation/test-cases/${id}/`,
     method: 'patch',
-    data
+    data,
+    timeout: 120000
   })
 }
 
@@ -952,6 +954,134 @@ export function getUiAutomationAIModelConfigs() {
   return request({
     url: '/ui-automation/ai-models/',
     method: 'get'
+  })
+}
+
+export function getUIPageGraphs(params) {
+  return request({
+    url: '/ui-automation/page-graphs/',
+    method: 'get',
+    params,
+    timeout: 120000
+  })
+}
+
+export function crawlUIPageGraph(data) {
+  return request({
+    url: '/ui-automation/page-graphs/crawl/',
+    method: 'post',
+    data,
+    timeout: 120000
+  })
+}
+
+export function recrawlUIPageGraph(id, data) {
+  return request({
+    url: `/ui-automation/page-graphs/${id}/recrawl/`,
+    method: 'post',
+    data,
+    timeout: 120000
+  })
+}
+
+export function cancelUIPageGraph(id) {
+  return request({
+    url: `/ui-automation/page-graphs/${id}/cancel/`,
+    method: 'post'
+  })
+}
+
+export function resumeUIPageGraph(id, data) {
+  return request({
+    url: `/ui-automation/page-graphs/${id}/resume/`,
+    method: 'post',
+    data,
+    timeout: 120000
+  })
+}
+
+export function deleteUIPageGraph(id) {
+  return request({
+    url: `/ui-automation/page-graphs/${id}/`,
+    method: 'delete'
+  })
+}
+
+export function getLatestUIPageGraph(params) {
+  return request({
+    url: '/ui-automation/page-graphs/latest/',
+    method: 'get',
+    params,
+    timeout: 120000
+  })
+}
+
+export function getUIPageGraphDetail(id, params) {
+  return request({
+    url: `/ui-automation/page-graphs/${id}/detail/`,
+    method: 'get',
+    params,
+    timeout: 120000
+  })
+}
+
+export function searchUIPageGraph(data) {
+  return request({
+    url: '/ui-automation/page-graphs/search/',
+    method: 'post',
+    data,
+    timeout: 120000
+  })
+}
+
+export function getUIPageGraphNodes(params) {
+  return request({
+    url: '/ui-automation/page-graph-nodes/',
+    method: 'get',
+    params,
+    timeout: 120000
+  })
+}
+
+export function updateUIPageGraphNode(id, data) {
+  return request({
+    url: `/ui-automation/page-graph-nodes/${id}/`,
+    method: 'patch',
+    data
+  })
+}
+
+export function getUIPageGraphElements(params) {
+  return request({
+    url: '/ui-automation/page-graph-elements/',
+    method: 'get',
+    params,
+    timeout: 120000
+  })
+}
+
+export function updateUIPageGraphElement(id, data) {
+  return request({
+    url: `/ui-automation/page-graph-elements/${id}/`,
+    method: 'patch',
+    data
+  })
+}
+
+export function getUIPageGraphEdges(params) {
+  return request({
+    url: '/ui-automation/page-graph-edges/',
+    method: 'get',
+    params,
+    timeout: 120000
+  })
+}
+
+export function updateUIPageGraphEdge(id, data) {
+  return request({
+    url: `/ui-automation/page-graph-edges/${id}/`,
+    method: 'patch',
+    data
   })
 }
 

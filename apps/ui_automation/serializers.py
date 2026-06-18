@@ -11,7 +11,8 @@ from .models import (
     AITestCaseGenerationSkillDependency, AITestCaseGenerationSkillExecutionLog,
     AITestCaseGenerationSkillModule, AITestCaseGenerationSkillTrigger,
     AITestCaseGenerationRecord,
-    AICase, AIExecutionRecord
+    AICase, AIExecutionRecord,
+    UIPageGraph, UIPageNode, UIPageElement, UIPageEdge
 )
 from django.contrib.auth import get_user_model
 from .project_runtime import normalize_project_global_variables
@@ -208,6 +209,87 @@ class TestScriptCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = TestScript
         fields = ('project', 'name', 'description', 'script_type', 'content', 'language', 'framework')
+
+
+class UIPageNodeBriefSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UIPageNode
+        fields = ('id', 'url', 'path', 'title', 'route_key', 'keywords')
+
+
+class UIPageElementSerializer(serializers.ModelSerializer):
+    page_title = serializers.CharField(source='page_node.title', read_only=True)
+    page_path = serializers.CharField(source='page_node.path', read_only=True)
+    platform_element_id = serializers.IntegerField(source='element_id', read_only=True)
+
+    class Meta:
+        model = UIPageElement
+        fields = (
+            'id', 'graph', 'page_node', 'page_title', 'page_path', 'platform_element_id',
+            'name', 'role', 'element_type', 'text', 'locator_strategy', 'locator_value',
+            'backup_locators', 'is_unique', 'is_stable', 'action_keywords', 'attributes',
+            'bounds', 'dom_signature', 'created_at', 'updated_at'
+        )
+        read_only_fields = (
+            'id', 'graph', 'page_node', 'page_title', 'page_path', 'platform_element_id',
+            'attributes', 'bounds', 'dom_signature', 'created_at', 'updated_at'
+        )
+
+
+class UIPageEdgeSerializer(serializers.ModelSerializer):
+    source_title = serializers.CharField(source='source.title', read_only=True)
+    source_path = serializers.CharField(source='source.path', read_only=True)
+    target_title = serializers.CharField(source='target.title', read_only=True)
+    target_path = serializers.CharField(source='target.path', read_only=True)
+
+    class Meta:
+        model = UIPageEdge
+        fields = (
+            'id', 'graph', 'source', 'source_title', 'source_path', 'target',
+            'target_title', 'target_path', 'trigger_element', 'action_type',
+            'trigger_text', 'locator_strategy', 'locator_value', 'keywords',
+            'metadata', 'created_at'
+        )
+        read_only_fields = (
+            'id', 'graph', 'source', 'source_title', 'source_path', 'target',
+            'trigger_element', 'metadata', 'created_at'
+        )
+
+
+class UIPageNodeSerializer(serializers.ModelSerializer):
+    element_count = serializers.IntegerField(read_only=True)
+    outgoing_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = UIPageNode
+        fields = (
+            'id', 'graph', 'project', 'url', 'path', 'title', 'route_key',
+            'page_text', 'keywords', 'metadata', 'element_count', 'outgoing_count',
+            'created_at', 'updated_at'
+        )
+        read_only_fields = (
+            'id', 'graph', 'project', 'url', 'route_key', 'element_count',
+            'outgoing_count', 'created_at', 'updated_at'
+        )
+
+
+class UIPageGraphSerializer(serializers.ModelSerializer):
+    project_name = serializers.CharField(source='project.name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.username', read_only=True)
+    node_count = serializers.IntegerField(read_only=True)
+    edge_count = serializers.IntegerField(read_only=True)
+    element_count = serializers.IntegerField(read_only=True)
+
+    class Meta:
+        model = UIPageGraph
+        fields = (
+            'id', 'project', 'project_name', 'name', 'start_url', 'login_url',
+            'status', 'crawl_config', 'summary', 'progress', 'crawl_state',
+            'error_message', 'started_at', 'heartbeat_at', 'completed_at',
+            'created_by', 'created_by_name', 'node_count',
+            'edge_count', 'element_count', 'created_at', 'updated_at'
+        )
+        read_only_fields = fields
 
 
 class TestScriptUpdateSerializer(serializers.ModelSerializer):
@@ -666,7 +748,9 @@ class TestCaseStepSerializer(serializers.ModelSerializer):
             'element_locator_strategy', 'element_locator_value',
             'element_locator_override_enabled',
             'input_value', 'wait_time', 'assert_type', 'assert_value', 'description', 'is_enabled',
-            'save_as', 'transaction_id', 'transaction_name', 'transaction_disabled', 'created_at'
+            'save_as', 'transaction_id', 'transaction_name', 'transaction_disabled',
+            'parent_transaction_id', 'parent_transaction_name', 'parent_transaction_disabled',
+            'created_at'
         ]
 
     def validate(self, attrs):

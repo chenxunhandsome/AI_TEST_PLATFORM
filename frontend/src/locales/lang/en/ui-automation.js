@@ -1111,6 +1111,7 @@ export default {
     expandAll: 'Expand All',
     selectAction: 'Select Action',
     actionClick: 'Click',
+    actionDoubleClick: 'Double Click',
     actionFill: 'Fill Text',
     actionFillAndEnter: 'Fill And Press Enter',
     actionGetText: 'Get Text',
@@ -1243,6 +1244,7 @@ export default {
     // Action types (for displaying action type names)
     actionType: {
       click: 'Click',
+      doubleClick: 'Double Click',
       fill: 'Fill',
       fillAndEnter: 'Fill And Press Enter',
       getText: 'Get Text',
@@ -1258,6 +1260,7 @@ export default {
     // Action text (for displaying action descriptions in execution logs)
     actionText: {
       click: 'Click',
+      doubleClick: 'Double Click',
       fill: 'Fill Text',
       fillAndEnter: 'Fill And Press Enter',
       getText: 'Get Text',
@@ -1313,6 +1316,7 @@ export default {
   // Action Types
   actionTypes: {
     click: 'Click',
+    doubleClick: 'Double Click',
     fill: 'Fill',
     fillAndEnter: 'Fill And Press Enter',
     getText: 'Get Text',

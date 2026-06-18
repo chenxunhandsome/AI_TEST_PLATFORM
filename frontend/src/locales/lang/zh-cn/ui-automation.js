@@ -1111,6 +1111,7 @@ export default {
     expandAll: '展开全部',
     selectAction: '选择操作',
     actionClick: '点击',
+    actionDoubleClick: '双击',
     actionFill: '输入文本',
     actionFillAndEnter: '\u8f93\u5165\u5e76\u56de\u8f66',
     actionGetText: '获取文本',
@@ -1236,6 +1237,7 @@ export default {
     // 操作类型（用于显示操作类型名称）
     actionType: {
       click: '点击',
+      doubleClick: '双击',
       fill: '填写',
       fillAndEnter: '\u8f93\u5165\u5e76\u56de\u8f66',
       getText: '获取文本',
@@ -1250,6 +1252,7 @@ export default {
     // 操作文本（用于执行日志中显示操作描述）
     actionText: {
       click: '点击',
+      doubleClick: '双击',
       fill: '输入文本',
       fillAndEnter: '\u8f93\u5165\u5e76\u56de\u8f66',
       getText: '获取文本',
@@ -1311,6 +1314,7 @@ export default {
   // 操作类型
   actionTypes: {
     click: '点击',
+    doubleClick: '双击',
     fill: '填写',
     fillAndEnter: '\u8f93\u5165\u5e76\u56de\u8f66',
     getText: '获取文本',

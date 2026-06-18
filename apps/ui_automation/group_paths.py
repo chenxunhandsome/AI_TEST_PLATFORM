@@ -1,22 +1,30 @@
-def has_group_path_separator(group_path):
-    value = str(group_path or '')
-    return '/' in value or '\\' in value
+import re
 
 
-def normalize_group_path(group_path):
-    if not group_path:
-        return []
+GROUP_PATH_SPLIT_RE = re.compile(r'\s*(?:/|\\|>|＞|／|->|→)\s*')
+GROUP_PATH_SEPARATOR_RE = re.compile(r'(?:/|\\|>|＞|／|->|→)')
 
-    if isinstance(group_path, str):
-        items = group_path.replace('\\', '/').split('/')
-    elif isinstance(group_path, (list, tuple)):
-        items = group_path
+
+def normalize_group_path(raw_group_path):
+    """Normalize group path input into clean hierarchical segments."""
+    if isinstance(raw_group_path, str):
+        candidates = [raw_group_path]
+    elif isinstance(raw_group_path, (list, tuple)):
+        candidates = list(raw_group_path)
     else:
         return []
 
-    normalized = []
-    for item in items:
-        value = str(item or '').strip()
-        if value:
-            normalized.append(value[:200])
-    return normalized
+    segments = []
+    for item in candidates:
+        text = str(item or '').strip()
+        if not text:
+            continue
+        for segment in GROUP_PATH_SPLIT_RE.split(text):
+            normalized = segment.strip()
+            if normalized:
+                segments.append(normalized)
+    return segments
+
+
+def has_group_path_separator(name):
+    return bool(GROUP_PATH_SEPARATOR_RE.search(str(name or '')))

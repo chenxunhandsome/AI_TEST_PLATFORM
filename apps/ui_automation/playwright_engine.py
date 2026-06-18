@@ -1222,6 +1222,7 @@ class PlaywrightTestEngine:
             (是否成功, 日志信息, 截图base64)
         """
         action_type = step.action_type
+        is_double_click = action_type in {'doubleClick', 'double_click'}
         element_data = resolve_element_locator_payload(element_data) or {}
         
         # 预先解析变量
@@ -1920,6 +1921,24 @@ class PlaywrightTestEngine:
                         log += f"  - 强制操作: 是（跳过可见性检查，等待attached）\n"
                     log += f"  - 执行时间: {execution_time}秒"
                     return True, log, None
+
+            elif is_double_click:
+                if force_action:
+                    try:
+                        await locator.wait_for(state='attached', timeout=timeout_ms)
+                    except:
+                        pass
+
+                await locator.dblclick(timeout=timeout_ms, force=force_action)
+                execution_time = round(time.time() - start_time, 2)
+                log = f"✓ 双击元素 '{element_name}' 成功\n"
+                log += f"  - 定位器: {locator_strategy}={locator_value}\n"
+                log += f"  - 按键: 鼠标左键\n"
+                log += f"  - 超时设置: {timeout_ms/1000}秒\n"
+                if force_action:
+                    log += f"  - 强制操作: 是（跳过可见性检查，等待attached）\n"
+                log += f"  - 执行时间: {execution_time}秒"
+                return True, log, None
 
             elif action_type == 'fill':
                 await locator.fill(resolved_input_value, timeout=timeout_ms, force=force_action)

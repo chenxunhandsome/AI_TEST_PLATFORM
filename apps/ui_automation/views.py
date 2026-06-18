@@ -9,9 +9,12 @@ from django.http import HttpResponse
 from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework import filters
 from django.db import models, transaction
+from django.db.models import F, OuterRef, Subquery, Window
+from django.db.models.functions import RowNumber
 from django.utils import timezone
 import asyncio
 import csv
+import hashlib
 import io
 import logging
 import json
@@ -24,6 +27,7 @@ import uuid
 from pathlib import Path
 from queue import Empty, Queue
 from threading import Event, RLock, Thread
+from types import SimpleNamespace
 from urllib.parse import quote
 from playwright.sync_api import sync_playwright
 
@@ -39,7 +43,8 @@ from .models import (
     AITestCaseGenerationSkillDependency, AITestCaseGenerationSkillExecutionLog,
     AITestCaseGenerationSkillModule, AITestCaseGenerationSkillTrigger,
     AITestCaseGenerationRecord,
-    AICase, AIExecutionRecord, LocalRunner
+    AICase, AIExecutionRecord, LocalRunner,
+    UIPageGraph, UIPageNode, UIPageElement, UIPageEdge
 )
 from .serializers import (
     UiProjectSerializer, UiProjectCreateSerializer, UiProjectUpdateSerializer,
@@ -62,7 +67,8 @@ from .serializers import (
     AITestCaseGenerationSkillDependencySerializer, AITestCaseGenerationSkillExecutionLogSerializer,
     AITestCaseGenerationSkillModuleSerializer, AITestCaseGenerationSkillTriggerSerializer,
     AITestCaseGenerationRecordSerializer,
-    AICaseSerializer, AIExecutionRecordSerializer
+    AICaseSerializer, AIExecutionRecordSerializer,
+    UIPageGraphSerializer, UIPageNodeSerializer, UIPageElementSerializer, UIPageEdgeSerializer
 )
 from .operation_logger import log_operation
 from .locator_strategy_defaults import ensure_default_locator_strategies
@@ -77,7 +83,7 @@ from .project_runtime import (
     initialize_project_runtime_variables,
 )
 from .step_element_resolver import build_step_element_data
-from .local_execution_service import attach_execution_plan, build_test_case_payload
+from .local_execution_service import attach_execution_plan_from_test_case
 from .execution_dispatcher import (
     initialize_local_task_result,
     queue_local_suite_execution,
@@ -109,6 +115,18 @@ from .ai_case_generator import (
     get_generation_model_config,
     optimize_skill_with_ai,
     parse_uploaded_case_source,
+)
+from .page_graph_service import (
+    build_page_graph_context,
+    build_coverage_from_state,
+    create_page_graph,
+    latest_completed_graph,
+    latest_generation_graph,
+    mark_stale_page_graphs,
+    preserve_saved_credentials,
+    resume_page_graph_crawl,
+    search_graph,
+    start_page_graph_crawl,
 )
 
 logger = logging.getLogger(__name__)
@@ -1893,6 +1911,9 @@ def build_test_case_step_manifest_items(test_case, steps):
             'transaction_id': step.transaction_id or '',
             'transaction_name': step.transaction_name or '',
             'transaction_disabled': step.transaction_disabled,
+            'parent_transaction_id': step.parent_transaction_id or '',
+            'parent_transaction_name': step.parent_transaction_name or '',
+            'parent_transaction_disabled': step.parent_transaction_disabled,
             'element': build_element_manifest_item(step.element) if step.element else None,
             'drag_target_element': build_element_manifest_item(drag_target_element) if drag_target_element else None,
         })
@@ -1979,6 +2000,14 @@ def resolve_imported_test_case_step(project, step_data, created_by=None, overwri
     if transaction_id and not transaction_name:
         transaction_id = ''
 
+    parent_transaction_id = str(step_data.get('parent_transaction_id', '') or '').strip()
+    parent_transaction_name = str(step_data.get('parent_transaction_name', '') or '').strip()
+    if parent_transaction_name and not parent_transaction_id:
+        parent_transaction_id = str(uuid.uuid4())
+    if parent_transaction_id and (not parent_transaction_name or not transaction_id):
+        parent_transaction_id = ''
+        parent_transaction_name = ''
+
     return {
         'action_type': step_data.get('action_type', 'click'),
         'description': str(step_data.get('description', '') or '').strip(),
@@ -1997,6 +2026,9 @@ def resolve_imported_test_case_step(project, step_data, created_by=None, overwri
         'transaction_id': transaction_id,
         'transaction_name': transaction_name,
         'transaction_disabled': normalize_import_bool(step_data.get('transaction_disabled', False), False),
+        'parent_transaction_id': parent_transaction_id,
+        'parent_transaction_name': parent_transaction_name,
+        'parent_transaction_disabled': normalize_import_bool(step_data.get('parent_transaction_disabled', False), False),
         'element': element,
     }
 
@@ -2021,6 +2053,7 @@ def extract_test_case_steps_from_manifest(manifest):
 def resolve_imported_test_case_steps(project, steps_data, user, overwrite=False, target_transaction=None):
     resolved_steps = []
     transaction_id_map = {}
+    parent_transaction_id_map = {}
 
     for step_data in steps_data:
         resolved_step = resolve_imported_test_case_step(
@@ -2034,11 +2067,23 @@ def resolve_imported_test_case_steps(project, steps_data, user, overwrite=False,
             resolved_step['transaction_id'] = target_transaction['id']
             resolved_step['transaction_name'] = target_transaction['name']
             resolved_step['transaction_disabled'] = target_transaction.get('disabled', False)
+            resolved_step['parent_transaction_id'] = target_transaction.get('parent_id', '')
+            resolved_step['parent_transaction_name'] = target_transaction.get('parent_name', '')
+            resolved_step['parent_transaction_disabled'] = target_transaction.get('parent_disabled', False)
         elif resolved_step.get('transaction_id'):
             original_transaction_id = resolved_step['transaction_id']
             if original_transaction_id not in transaction_id_map:
                 transaction_id_map[original_transaction_id] = str(uuid.uuid4())
             resolved_step['transaction_id'] = transaction_id_map[original_transaction_id]
+            original_parent_transaction_id = resolved_step.get('parent_transaction_id', '')
+            if original_parent_transaction_id:
+                if original_parent_transaction_id not in parent_transaction_id_map:
+                    parent_transaction_id_map[original_parent_transaction_id] = str(uuid.uuid4())
+                resolved_step['parent_transaction_id'] = parent_transaction_id_map[original_parent_transaction_id]
+        else:
+            resolved_step['parent_transaction_id'] = ''
+            resolved_step['parent_transaction_name'] = ''
+            resolved_step['parent_transaction_disabled'] = False
 
         resolved_steps.append(resolved_step)
 
@@ -2072,12 +2117,28 @@ def validate_test_case_steps_payload(steps_data):
         if transaction_id and not transaction_name:
             raise ValidationError(f'步骤 {index} 的事务块名称不能为空')
 
+        parent_transaction_id = str(step_data.get('parent_transaction_id', '') or '').strip()
+        parent_transaction_name = str(step_data.get('parent_transaction_name', '') or '').strip()
+        if parent_transaction_name and not parent_transaction_id:
+            parent_transaction_id = str(uuid.uuid4())
+        if parent_transaction_id and not parent_transaction_name:
+            raise ValidationError(f'步骤 {index} 的父事务块名称不能为空')
+        if parent_transaction_id and not transaction_id:
+            parent_transaction_id = ''
+            parent_transaction_name = ''
+
         step_data['description'] = description
         step_data['is_enabled'] = normalize_import_bool(step_data.get('is_enabled', True), True)
         step_data['save_as'] = save_as
         step_data['transaction_id'] = transaction_id
         step_data['transaction_name'] = transaction_name
         step_data['transaction_disabled'] = normalize_import_bool(step_data.get('transaction_disabled', False), False)
+        step_data['parent_transaction_id'] = parent_transaction_id
+        step_data['parent_transaction_name'] = parent_transaction_name
+        step_data['parent_transaction_disabled'] = normalize_import_bool(
+            step_data.get('parent_transaction_disabled', False),
+            False
+        )
         validated_steps.append(step_data)
 
     return validated_steps
@@ -2161,6 +2222,9 @@ def import_test_case_manifest_into_project(project, manifest, user, overwrite=Fa
                     transaction_id=resolved_step['transaction_id'],
                     transaction_name=resolved_step['transaction_name'],
                     transaction_disabled=resolved_step.get('transaction_disabled', False),
+                    parent_transaction_id=resolved_step.get('parent_transaction_id', ''),
+                    parent_transaction_name=resolved_step.get('parent_transaction_name', ''),
+                    parent_transaction_disabled=resolved_step.get('parent_transaction_disabled', False),
                 )
 
     return summary
@@ -2210,11 +2274,14 @@ def build_test_case_step_payload(step):
         'transaction_id': step.transaction_id or '',
         'transaction_name': step.transaction_name or '',
         'transaction_disabled': step.transaction_disabled,
+        'parent_transaction_id': step.parent_transaction_id or '',
+        'parent_transaction_name': step.parent_transaction_name or '',
+        'parent_transaction_disabled': step.parent_transaction_disabled,
     }
 
 
 def create_test_case_steps(test_case, steps_data):
-    created_count = 0
+    step_objects = []
 
     for index, raw_step in enumerate(steps_data or [], start=1):
         step_data = dict(raw_step or {})
@@ -2225,7 +2292,7 @@ def create_test_case_steps(test_case, steps_data):
             element_value = element_value.id
 
         try:
-            TestCaseStep.objects.create(
+            step_objects.append(TestCaseStep(
                 test_case=test_case,
                 step_number=index,
                 action_type=step_data.get('action_type', 'click'),
@@ -2245,15 +2312,26 @@ def create_test_case_steps(test_case, steps_data):
                 save_as=step_data.get('save_as', ''),
                 transaction_id=step_data.get('transaction_id', ''),
                 transaction_name=step_data.get('transaction_name', ''),
-                transaction_disabled=step_data.get('transaction_disabled', False)
-            )
-            created_count += 1
+                transaction_disabled=step_data.get('transaction_disabled', False),
+                parent_transaction_id=step_data.get('parent_transaction_id', ''),
+                parent_transaction_name=step_data.get('parent_transaction_name', ''),
+                parent_transaction_disabled=step_data.get('parent_transaction_disabled', False)
+            ))
         except Exception as exc:
-            logger.error(f"创建步骤 {index} 失败: {exc}")
+            logger.error(f"构建步骤 {index} 失败: {exc}")
             logger.error(f"步骤数据: {step_data}")
-            raise ValidationError(f'创建步骤 {index} 失败: {exc}') from exc
+            raise ValidationError(f'构建步骤 {index} 失败: {exc}') from exc
 
-    return created_count
+    if not step_objects:
+        return 0
+
+    try:
+        TestCaseStep.objects.bulk_create(step_objects, batch_size=500)
+    except Exception as exc:
+        logger.error(f"批量创建测试步骤失败: {exc}")
+        raise ValidationError(f'批量创建测试步骤失败: {exc}') from exc
+
+    return len(step_objects)
 
 
 def cancel_pending_local_executions_after_step_change(test_case):
@@ -2271,17 +2349,33 @@ def cancel_pending_local_executions_after_step_change(test_case):
 
     now = timezone.now()
     message = '测试用例步骤已被修改，旧的本地执行计划已失效，请重新执行该用例。'
+    suite_refresh_keys = [
+        (execution.test_suite, execution.run_identifier)
+        for execution in pending_executions
+        if execution.test_suite_id and execution.run_identifier
+    ]
+    task_refresh_keys = [
+        (execution.scheduled_task, execution.run_identifier)
+        for execution in pending_executions
+        if execution.scheduled_task_id and execution.run_identifier
+    ]
+    execution_ids = [execution.id for execution in pending_executions]
+    TestCaseExecution.objects.filter(id__in=execution_ids).update(
+        status='failed',
+        error_message=message,
+        finished_at=now,
+    )
+
     for execution in pending_executions:
         execution.status = 'failed'
         execution.error_message = message
         execution.finished_at = now
-        execution.save(update_fields=['status', 'error_message', 'finished_at'])
 
-        if execution.test_suite_id and execution.run_identifier:
-            refresh_suite_execution_progress(execution.test_suite, execution.run_identifier)
+    for test_suite, run_identifier in suite_refresh_keys:
+        refresh_suite_execution_progress(test_suite, run_identifier)
 
-        if execution.scheduled_task_id and execution.run_identifier:
-            refresh_scheduled_task_execution_progress(execution.scheduled_task, execution.run_identifier)
+    for scheduled_task, run_identifier in task_refresh_keys:
+        refresh_scheduled_task_execution_progress(scheduled_task, run_identifier)
 
     logger.info(
         "Cancelled %s pending local execution(s) for test case %s after step changes",
@@ -2361,6 +2455,9 @@ def get_target_transaction_payload(test_case, insert_mode, target_transaction_id
         'id': target_step.transaction_id,
         'name': target_step.transaction_name,
         'disabled': target_step.transaction_disabled,
+        'parent_id': target_step.parent_transaction_id or '',
+        'parent_name': target_step.parent_transaction_name or '',
+        'parent_disabled': target_step.parent_transaction_disabled,
     }
 
 
@@ -2427,6 +2524,32 @@ def store_step_runtime_variable(step, action_type, resolved_input_value, resolve
 
     set_runtime_variable(save_as, value_to_store)
     return save_as, value_to_store
+
+
+def build_execution_steps_data(test_case):
+    steps_data = []
+    test_steps = list(
+        test_case.steps
+        .select_related('element', 'element__locator_strategy')
+        .order_by('step_number', 'id')
+    )
+    for step in test_steps:
+        element_data = resolve_element_locator_payload(build_step_element_data(step))
+        steps_data.append({
+            'step': step,
+            'action_type': step.action_type,
+            'description': step.description,
+            'is_enabled': step.is_enabled,
+            'transaction_disabled': step.transaction_disabled,
+            'parent_transaction_disabled': step.parent_transaction_disabled,
+            'save_as': step.save_as,
+            'input_value': step.input_value,
+            'wait_time': step.wait_time,
+            'assert_type': step.assert_type,
+            'assert_value': step.assert_value,
+            'element_data': element_data,
+        })
+    return steps_data
 
 
 def extract_step_info(s, step_index):
@@ -2551,6 +2674,462 @@ class LocatorStrategyViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         ensure_default_locator_strategies()
         return super().get_queryset().order_by('id')
+
+
+class UIPageGraphViewSet(viewsets.ModelViewSet):
+    """Manage crawled UI page graphs used by AI test case generation."""
+    serializer_class = UIPageGraphSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['project', 'status']
+    search_fields = ['name', 'start_url', 'login_url']
+    ordering_fields = ['created_at', 'completed_at', 'updated_at']
+    ordering = ['-created_at']
+
+    def get_queryset(self):
+        try:
+            mark_stale_page_graphs()
+        except Exception:
+            logger.warning('清理超时页面图谱状态失败', exc_info=True)
+        user = self.request.user
+        accessible_projects = UiProject.objects.filter(
+            models.Q(owner=user) | models.Q(members=user)
+        ).distinct()
+        node_counts = UIPageNode.objects.filter(graph=OuterRef('pk')).values('graph').annotate(
+            count=models.Count('id')
+        ).values('count')
+        edge_counts = UIPageEdge.objects.filter(graph=OuterRef('pk')).values('graph').annotate(
+            count=models.Count('id')
+        ).values('count')
+        element_counts = UIPageElement.objects.filter(graph=OuterRef('pk')).values('graph').annotate(
+            count=models.Count('id')
+        ).values('count')
+        return UIPageGraph.objects.filter(project__in=accessible_projects).select_related(
+            'project', 'created_by'
+        ).annotate(
+            node_count=Subquery(node_counts[:1]),
+            edge_count=Subquery(edge_counts[:1]),
+            element_count=Subquery(element_counts[:1]),
+        )
+
+    def get_project_for_request(self, request):
+        project_id = request.data.get('project') or request.data.get('project_id') or request.query_params.get('project')
+        if not project_id:
+            raise ValidationError('请选择UI项目')
+        return get_object_or_404(
+            UiProject.objects.filter(models.Q(owner=request.user) | models.Q(members=request.user)).distinct(),
+            id=project_id,
+        )
+
+    def destroy(self, request, *args, **kwargs):
+        graph = self.get_object()
+        graph_name = graph.name
+        self.perform_destroy(graph)
+        return Response({'message': f'页面图谱“{graph_name}”已删除'}, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['post'], url_path='crawl')
+    def crawl(self, request):
+        project = self.get_project_for_request(request)
+        try:
+            graph = start_page_graph_crawl(project, request.user, request.data)
+        except Exception as exc:
+            logger.error('页面图谱爬取失败: %s', exc, exc_info=True)
+            return Response({'error': f'页面图谱爬取失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+
+        graph = self.get_queryset().get(id=graph.id)
+        return Response({'message': '页面图谱爬取任务已提交，后台正在执行', 'graph': self.get_serializer(graph).data})
+
+    @action(detail=False, methods=['get'], url_path='latest')
+    def latest(self, request):
+        project = self.get_project_for_request(request)
+        graph = latest_completed_graph(project)
+        if not graph:
+            return Response({'graph': None})
+        graph = self.get_queryset().get(id=graph.id)
+        return Response({'graph': self.get_serializer(graph).data})
+
+    @action(detail=False, methods=['post'], url_path='search')
+    def search(self, request):
+        project = self.get_project_for_request(request)
+        query = request.data.get('query') or request.data.get('description') or ''
+        limit = max(1, min(int(request.data.get('limit') or 80), 200))
+        graph_id = request.data.get('graph_id')
+        graph = get_object_or_404(self.get_queryset(), id=graph_id) if graph_id else None
+        return Response({'results': search_graph(project, query, graph=graph, limit=limit)})
+
+    @action(detail=False, methods=['post'], url_path='context')
+    def context(self, request):
+        project = self.get_project_for_request(request)
+        query = request.data.get('query') or request.data.get('description') or ''
+        limit = max(1, min(int(request.data.get('limit') or 120), 200))
+        return Response({'context': build_page_graph_context(project, query, limit=limit)})
+
+    @action(detail=True, methods=['get'], url_path='detail')
+    def graph_detail(self, request, pk=None):
+        graph = self.get_object()
+        mode = request.query_params.get('mode') or 'full'
+        if mode == 'overview':
+            node_limit = max(1, min(int(request.query_params.get('node_limit') or 300), 1000))
+            element_per_node = max(0, min(int(request.query_params.get('element_per_node') or 12), 50))
+            edge_per_node = max(0, min(int(request.query_params.get('edge_per_node') or 30), 100))
+            node_ids = list(
+                UIPageNode.objects.filter(graph=graph)
+                .order_by('id')
+                .values_list('id', flat=True)[:node_limit]
+            )
+            nodes = list(
+                UIPageNode.objects.filter(id__in=node_ids)
+                .annotate(
+                    element_count=models.Count('elements', distinct=True),
+                    outgoing_count=models.Count('outgoing_edges', distinct=True),
+                )
+                .order_by('id')
+                .values(
+                    'id', 'graph_id', 'project_id', 'url', 'path', 'title', 'route_key',
+                    'keywords', 'metadata', 'element_count', 'outgoing_count',
+                    'created_at', 'updated_at'
+                )
+            )
+            elements = []
+            if element_per_node > 0 and node_ids:
+                elements = list(
+                    UIPageElement.objects.filter(graph=graph, page_node_id__in=node_ids)
+                    .annotate(
+                        row_number=Window(
+                            expression=RowNumber(),
+                            partition_by=[F('page_node_id')],
+                            order_by=F('id').asc(),
+                        )
+                    )
+                    .filter(row_number__lte=element_per_node)
+                    .select_related('page_node')
+                    .order_by('page_node_id', 'id')
+                    .values(
+                        'id', 'graph_id', 'page_node_id', 'project_id', 'element_id',
+                        'name', 'role', 'element_type', 'text', 'locator_strategy',
+                        'locator_value', 'is_unique', 'is_stable',
+                        'created_at', 'updated_at', 'page_node__title', 'page_node__path'
+                    )
+                )
+            edges = []
+            if edge_per_node > 0 and node_ids:
+                edges = list(
+                    UIPageEdge.objects.filter(graph=graph, source_id__in=node_ids)
+                    .annotate(
+                        row_number=Window(
+                            expression=RowNumber(),
+                            partition_by=[F('source_id')],
+                            order_by=F('id').asc(),
+                        )
+                    )
+                    .filter(row_number__lte=edge_per_node)
+                    .select_related('source', 'target')
+                    .order_by('source_id', 'id')
+                    .values(
+                        'id', 'graph_id', 'project_id', 'source_id', 'target_id',
+                        'trigger_element_id', 'action_type', 'trigger_text',
+                        'locator_strategy', 'locator_value', 'keywords',
+                        'created_at', 'source__title', 'source__path',
+                        'target__title', 'target__path'
+                    )
+                )
+            return Response({
+                'mode': 'overview',
+                'limited': UIPageNode.objects.filter(graph=graph).count() > len(node_ids),
+                'node_limit': node_limit,
+                'nodes': [
+                    {
+                        'id': item['id'],
+                        'graph': item['graph_id'],
+                        'project': item['project_id'],
+                        'url': item['url'],
+                        'path': item['path'],
+                        'title': item['title'],
+                        'route_key': item['route_key'],
+                        'page_text': '',
+                        'keywords': item['keywords'],
+                        'metadata': item['metadata'],
+                        'element_count': item['element_count'],
+                        'outgoing_count': item['outgoing_count'],
+                        'created_at': item['created_at'],
+                        'updated_at': item['updated_at'],
+                    }
+                    for item in nodes
+                ],
+                'elements': [
+                    {
+                        'id': item['id'],
+                        'graph': item['graph_id'],
+                        'page_node': item['page_node_id'],
+                        'project': item['project_id'],
+                        'platform_element_id': item['element_id'],
+                        'page_title': item['page_node__title'],
+                        'page_path': item['page_node__path'],
+                        'name': item['name'],
+                        'role': item['role'],
+                        'element_type': item['element_type'],
+                        'text': item['text'],
+                        'locator_strategy': item['locator_strategy'],
+                        'locator_value': item['locator_value'],
+                        'backup_locators': [],
+                        'is_unique': item['is_unique'],
+                        'is_stable': item['is_stable'],
+                        'action_keywords': [],
+                        'attributes': {},
+                        'bounds': {},
+                        'dom_signature': '',
+                        'created_at': item['created_at'],
+                        'updated_at': item['updated_at'],
+                    }
+                    for item in elements
+                ],
+                'edges': [
+                    {
+                        'id': item['id'],
+                        'graph': item['graph_id'],
+                        'project': item['project_id'],
+                        'source': item['source_id'],
+                        'target': item['target_id'],
+                        'trigger_element': item['trigger_element_id'],
+                        'source_title': item['source__title'],
+                        'source_path': item['source__path'],
+                        'target_title': item['target__title'],
+                        'target_path': item['target__path'],
+                        'action_type': item['action_type'],
+                        'trigger_text': item['trigger_text'],
+                        'locator_strategy': item['locator_strategy'],
+                        'locator_value': item['locator_value'],
+                        'keywords': item['keywords'],
+                        'metadata': {},
+                        'created_at': item['created_at'],
+                    }
+                    for item in edges
+                ],
+            })
+        nodes = list(
+            UIPageNode.objects.filter(graph=graph)
+            .annotate(
+                element_count=models.Count('elements', distinct=True),
+                outgoing_count=models.Count('outgoing_edges', distinct=True),
+            )
+            .order_by('id')
+            .values(
+                'id', 'graph_id', 'project_id', 'url', 'path', 'title', 'route_key',
+                'page_text', 'keywords', 'metadata', 'element_count', 'outgoing_count',
+                'created_at', 'updated_at'
+            )
+        )
+        elements = list(
+            UIPageElement.objects.filter(graph=graph)
+            .select_related('page_node')
+            .order_by('id')
+            .values(
+                'id', 'graph_id', 'page_node_id', 'project_id', 'element_id',
+                'name', 'role', 'element_type', 'text', 'locator_strategy',
+                'locator_value', 'backup_locators', 'is_unique', 'is_stable',
+                'action_keywords', 'attributes', 'bounds', 'dom_signature',
+                'created_at', 'updated_at', 'page_node__title', 'page_node__path'
+            )
+        )
+        edges = list(
+            UIPageEdge.objects.filter(graph=graph)
+            .select_related('source', 'target')
+            .order_by('id')
+            .values(
+                'id', 'graph_id', 'project_id', 'source_id', 'target_id',
+                'trigger_element_id', 'action_type', 'trigger_text',
+                'locator_strategy', 'locator_value', 'keywords', 'metadata',
+                'created_at', 'source__title', 'source__path',
+                'target__title', 'target__path'
+            )
+        )
+        return Response({
+            'nodes': [
+                {
+                    'id': item['id'],
+                    'graph': item['graph_id'],
+                    'project': item['project_id'],
+                    'url': item['url'],
+                    'path': item['path'],
+                    'title': item['title'],
+                    'route_key': item['route_key'],
+                    'page_text': item['page_text'],
+                    'keywords': item['keywords'],
+                    'metadata': item['metadata'],
+                    'element_count': item['element_count'],
+                    'outgoing_count': item['outgoing_count'],
+                    'created_at': item['created_at'],
+                    'updated_at': item['updated_at'],
+                }
+                for item in nodes
+            ],
+            'elements': [
+                {
+                    'id': item['id'],
+                    'graph': item['graph_id'],
+                    'page_node': item['page_node_id'],
+                    'project': item['project_id'],
+                    'platform_element_id': item['element_id'],
+                    'page_title': item['page_node__title'],
+                    'page_path': item['page_node__path'],
+                    'name': item['name'],
+                    'role': item['role'],
+                    'element_type': item['element_type'],
+                    'text': item['text'],
+                    'locator_strategy': item['locator_strategy'],
+                    'locator_value': item['locator_value'],
+                    'backup_locators': item['backup_locators'],
+                    'is_unique': item['is_unique'],
+                    'is_stable': item['is_stable'],
+                    'action_keywords': item['action_keywords'],
+                    'attributes': item['attributes'],
+                    'bounds': item['bounds'],
+                    'dom_signature': item['dom_signature'],
+                    'created_at': item['created_at'],
+                    'updated_at': item['updated_at'],
+                }
+                for item in elements
+            ],
+            'edges': [
+                {
+                    'id': item['id'],
+                    'graph': item['graph_id'],
+                    'project': item['project_id'],
+                    'source': item['source_id'],
+                    'target': item['target_id'],
+                    'trigger_element': item['trigger_element_id'],
+                    'source_title': item['source__title'],
+                    'source_path': item['source__path'],
+                    'target_title': item['target__title'],
+                    'target_path': item['target__path'],
+                    'action_type': item['action_type'],
+                    'trigger_text': item['trigger_text'],
+                    'locator_strategy': item['locator_strategy'],
+                    'locator_value': item['locator_value'],
+                    'keywords': item['keywords'],
+                    'metadata': item['metadata'],
+                    'created_at': item['created_at'],
+                }
+                for item in edges
+            ],
+        })
+
+    @action(detail=True, methods=['post'], url_path='recrawl')
+    def recrawl(self, request, pk=None):
+        source_graph = self.get_object()
+        payload = dict(source_graph.crawl_config or {})
+        payload.update(request.data)
+        preserve_saved_credentials(payload, source_graph.crawl_config or {})
+        payload.setdefault('project', source_graph.project_id)
+        payload.setdefault('start_url', source_graph.start_url)
+        payload.setdefault('login_url', source_graph.login_url)
+        payload.setdefault('name', f'{source_graph.name}-更新')
+        try:
+            graph = start_page_graph_crawl(source_graph.project, request.user, payload)
+        except Exception as exc:
+            logger.error('页面图谱重新爬取失败: %s', exc, exc_info=True)
+            return Response({'error': f'页面图谱重新爬取失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+        graph = self.get_queryset().get(id=graph.id)
+        return Response({'message': '页面图谱重新爬取任务已提交，后台正在执行', 'graph': self.get_serializer(graph).data})
+
+    @action(detail=True, methods=['post'], url_path='cancel')
+    def cancel(self, request, pk=None):
+        graph = self.get_object()
+        if graph.status not in {'pending', 'running'}:
+            return Response({'message': '当前图谱任务不在运行中', 'graph': self.get_serializer(graph).data})
+        now = timezone.now()
+        graph.status = 'cancelled'
+        graph.error_message = '用户取消页面图谱爬取'
+        graph.completed_at = now
+        graph.heartbeat_at = now
+        progress = dict(graph.progress or {})
+        coverage = build_coverage_from_state(
+            progress,
+            graph.crawl_state or {},
+            SimpleNamespace(
+                max_pages=int((graph.crawl_config or {}).get('max_pages') or progress.get('max_pages') or 30),
+                max_actions=int((graph.crawl_config or {}).get('max_actions') or progress.get('max_actions') or 1000),
+            ),
+            status='cancelled',
+            error_message=graph.error_message,
+        )
+        progress.update({'stage': 'cancelled', 'status': 'cancelled', 'updated_at': now.isoformat(), **coverage})
+        crawl_state = dict(graph.crawl_state or {})
+        crawl_state['coverage'] = coverage
+        crawl_state['updated_at'] = now.isoformat()
+        graph.crawl_state = crawl_state
+        graph.progress = progress
+        graph.save(update_fields=['status', 'error_message', 'completed_at', 'heartbeat_at', 'progress', 'crawl_state', 'updated_at'])
+        return Response({'message': '页面图谱爬取已取消', 'graph': self.get_serializer(graph).data})
+
+    @action(detail=True, methods=['post'], url_path='resume')
+    def resume(self, request, pk=None):
+        graph = self.get_object()
+        try:
+            graph = resume_page_graph_crawl(graph, request.data)
+        except Exception as exc:
+            logger.error('页面图谱继续爬取失败: %s', exc, exc_info=True)
+            return Response({'error': f'页面图谱继续爬取失败: {exc}'}, status=status.HTTP_400_BAD_REQUEST)
+        graph = self.get_queryset().get(id=graph.id)
+        return Response({'message': '页面图谱继续爬取任务已提交，后台正在执行', 'graph': self.get_serializer(graph).data})
+
+
+class UIPageNodeViewSet(viewsets.ModelViewSet):
+    http_method_names = ['get', 'patch', 'head', 'options']
+    serializer_class = UIPageNodeSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ['project', 'graph']
+    search_fields = ['title', 'path', 'url', 'page_text']
+
+    def get_queryset(self):
+        user = self.request.user
+        accessible_projects = UiProject.objects.filter(
+            models.Q(owner=user) | models.Q(members=user)
+        ).distinct()
+        return UIPageNode.objects.filter(project__in=accessible_projects).select_related(
+            'graph', 'project'
+        ).annotate(
+            element_count=models.Count('elements', distinct=True),
+            outgoing_count=models.Count('outgoing_edges', distinct=True),
+        )
+
+
+class UIPageElementViewSet(viewsets.ModelViewSet):
+    http_method_names = ['get', 'patch', 'head', 'options']
+    serializer_class = UIPageElementSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['project', 'graph', 'page_node', 'element_type', 'is_unique', 'is_stable']
+    search_fields = ['name', 'text', 'locator_value']
+    ordering_fields = ['created_at', 'updated_at']
+
+    def get_queryset(self):
+        user = self.request.user
+        accessible_projects = UiProject.objects.filter(
+            models.Q(owner=user) | models.Q(members=user)
+        ).distinct()
+        return UIPageElement.objects.filter(project__in=accessible_projects).select_related(
+            'graph', 'page_node', 'project', 'element'
+        )
+
+
+class UIPageEdgeViewSet(viewsets.ModelViewSet):
+    http_method_names = ['get', 'patch', 'head', 'options']
+    serializer_class = UIPageEdgeSerializer
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter]
+    filterset_fields = ['project', 'graph', 'source', 'target']
+    search_fields = ['trigger_text', 'locator_value']
+
+    def get_queryset(self):
+        user = self.request.user
+        accessible_projects = UiProject.objects.filter(
+            models.Q(owner=user) | models.Q(members=user)
+        ).distinct()
+        return UIPageEdge.objects.filter(project__in=accessible_projects).select_related(
+            'graph', 'project', 'source', 'target', 'trigger_element'
+        )
 
 
 class ElementViewSet(viewsets.ModelViewSet):
@@ -3066,6 +3645,187 @@ class PageObjectViewSet(viewsets.ModelViewSet):
         po_elements = page_object.page_object_elements.select_related('element').all()
         serializer = PageObjectElementSerializer(po_elements, many=True)
         return Response(serializer.data)
+
+
+def _page_graph_record_id(project_id, page_name):
+    normalized = re.sub(r'[^A-Za-z0-9_-]+', '-', str(page_name or 'unknown')).strip('-')
+    digest = hashlib.sha1(str(page_name or 'unknown').encode('utf-8')).hexdigest()[:12]
+    if normalized:
+        return f'page-{project_id}-{normalized[:48]}-{digest}'
+    return f'page-{project_id}-{digest}'
+
+
+def _build_page_graph_record(project, page_name, elements, page_objects, test_case_count):
+    page_id = _page_graph_record_id(project.id, page_name)
+    element_nodes = [
+        {
+            'id': f'element-{element.id}',
+            'type': 'element',
+            'label': element.name,
+            'name': element.name,
+            'element_type': element.element_type,
+            'locator_strategy': element.locator_strategy.name if element.locator_strategy else '',
+            'locator_value': element.locator_value,
+        }
+        for element in elements
+    ]
+    page_object_nodes = [
+        {
+            'id': f'page-object-{page_object.id}',
+            'type': 'page_object',
+            'label': page_object.name,
+            'name': page_object.name,
+            'class_name': page_object.class_name,
+            'url_pattern': page_object.url_pattern,
+        }
+        for page_object in page_objects
+    ]
+    nodes = [
+        {
+            'id': page_id,
+            'type': 'page',
+            'label': page_name,
+            'name': page_name,
+        },
+        *page_object_nodes,
+        *element_nodes,
+    ]
+    edges = [
+        {
+            'id': f'{page_id}-page-object-{page_object.id}',
+            'source': page_id,
+            'target': f'page-object-{page_object.id}',
+            'type': 'contains_page_object',
+        }
+        for page_object in page_objects
+    ] + [
+        {
+            'id': f'{page_id}-element-{element.id}',
+            'source': page_id,
+            'target': f'element-{element.id}',
+            'type': 'contains_element',
+        }
+        for element in elements
+    ]
+
+    first_page_object = page_objects[0] if page_objects else None
+    return {
+        'id': page_id,
+        'project': project.id,
+        'project_id': project.id,
+        'project_name': project.name,
+        'name': page_name,
+        'page': page_name,
+        'page_name': page_name,
+        'title': page_name,
+        'url': first_page_object.url_pattern if first_page_object else '',
+        'url_pattern': first_page_object.url_pattern if first_page_object else '',
+        'description': first_page_object.description if first_page_object else '',
+        'elements_count': len(elements),
+        'element_count': len(elements),
+        'page_object_count': len(page_objects),
+        'test_case_count': test_case_count,
+        'nodes_count': len(nodes),
+        'edges_count': len(edges),
+        'nodes': nodes,
+        'edges': edges,
+    }
+
+
+class PageGraphViewSet(viewsets.ViewSet):
+    """Read-only page graph compatibility endpoint.
+
+    The current data model does not persist page graphs as a separate table.
+    This endpoint builds graph data from existing page names, page objects,
+    elements and test case steps so clients can render page topology without
+    requiring a migration.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def list(self, request):
+        project_param = request.query_params.get('project')
+        if project_param:
+            projects = [get_accessible_project_for_request(request, project_param)]
+        else:
+            projects = list(get_accessible_projects_for_user(request.user))
+
+        project_ids = [project.id for project in projects]
+        elements = list(
+            Element.objects.filter(project_id__in=project_ids)
+            .select_related('project', 'locator_strategy')
+            .order_by('page', 'name', 'id')
+        )
+        page_objects = list(
+            PageObject.objects.filter(project_id__in=project_ids)
+            .select_related('project')
+            .order_by('name', 'id')
+        )
+        steps = (
+            TestCaseStep.objects.filter(test_case__project_id__in=project_ids, element__isnull=False)
+            .select_related('test_case', 'element')
+            .values('test_case__project_id', 'element__page')
+            .annotate(test_case_count=models.Count('test_case', distinct=True))
+        )
+
+        test_case_count_map = {
+            (row['test_case__project_id'], row['element__page'] or '未分组页面'): row['test_case_count']
+            for row in steps
+        }
+
+        elements_by_project_page = {}
+        for element in elements:
+            page_name = element.page or '未分组页面'
+            elements_by_project_page.setdefault((element.project_id, page_name), []).append(element)
+
+        page_objects_by_project_page = {}
+        for page_object in page_objects:
+            page_name = page_object.name or page_object.class_name or '未命名页面'
+            page_objects_by_project_page.setdefault((page_object.project_id, page_name), []).append(page_object)
+
+        records = []
+        project_map = {project.id: project for project in projects}
+        keys = sorted(
+            set(elements_by_project_page.keys()) | set(page_objects_by_project_page.keys()),
+            key=lambda item: (project_map[item[0]].name, item[1])
+        )
+        for project_id, page_name in keys:
+            project = project_map[project_id]
+            records.append(_build_page_graph_record(
+                project=project,
+                page_name=page_name,
+                elements=elements_by_project_page.get((project_id, page_name), []),
+                page_objects=page_objects_by_project_page.get((project_id, page_name), []),
+                test_case_count=test_case_count_map.get((project_id, page_name), 0),
+            ))
+
+        search = str(request.query_params.get('search') or '').strip().lower()
+        if search:
+            records = [
+                record for record in records
+                if search in record['name'].lower() or search in record['url_pattern'].lower()
+            ]
+
+        try:
+            page_size = int(request.query_params.get('page_size') or 20)
+        except (TypeError, ValueError):
+            page_size = 20
+        page_size = max(1, min(page_size, 200))
+
+        try:
+            page_number = int(request.query_params.get('page') or 1)
+        except (TypeError, ValueError):
+            page_number = 1
+        page_number = max(1, page_number)
+
+        count = len(records)
+        start = (page_number - 1) * page_size
+        end = start + page_size
+        return Response({
+            'count': count,
+            'next': None if end >= count else page_number + 1,
+            'previous': None if page_number <= 1 else page_number - 1,
+            'results': records[start:end],
+        })
 
 
 class PageObjectElementViewSet(viewsets.ModelViewSet):
@@ -3857,7 +4617,10 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                     save_as=step.save_as,
                     transaction_id=step.transaction_id,
                     transaction_name=step.transaction_name,
-                    transaction_disabled=step.transaction_disabled
+                    transaction_disabled=step.transaction_disabled,
+                    parent_transaction_id=step.parent_transaction_id,
+                    parent_transaction_name=step.parent_transaction_name,
+                    parent_transaction_disabled=step.parent_transaction_disabled
                 ))
 
             if new_steps:
@@ -3916,6 +4679,14 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                 log_parts.append(f"- 元素点击成功 - 耗时 {execution_time}s")
             else:
                 log_parts.append(f"- 元素点击失败 - 元素未找到或不可点击")
+
+        elif step.action_type in {'doubleClick', 'double_click'}:
+            log_parts.append(f"双击元素 '{element_name}'")
+            log_parts.append(f"- 使用定位器: {locator_info}")
+            if step_result == 'success':
+                log_parts.append(f"- 元素双击成功 - 耗时 {execution_time}s")
+            else:
+                log_parts.append(f"- 元素双击失败 - 元素未找到或不可点击")
 
         elif step.action_type == 'fill':
             log_parts.append(f"在元素 '{element_name}' 中输入文本")
@@ -4153,7 +4924,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                     created_by=request.user,
                     assigned_runner=assigned_runner,
                 )
-                attach_execution_plan(execution, build_test_case_payload(test_case))
+                attach_execution_plan_from_test_case(execution, test_case)
 
                 log_operation('run', 'test_case', test_case.id, test_case.name, request.user)
 
@@ -4214,28 +4985,7 @@ class TestCaseViewSet(viewsets.ModelViewSet):
 
             start_time = time.time()
 
-            # 获取测试用例的所有步骤
-            test_steps = list(test_case.steps.all().order_by('step_number'))
-
-            # 预先获取所有步骤的数据,避免在异步上下文中访问ORM
-            steps_data = []
-            for step in test_steps:
-                step_data = {
-                    'step': step,
-                    'action_type': step.action_type,
-                    'description': step.description,
-                    'is_enabled': step.is_enabled,
-                    'transaction_disabled': step.transaction_disabled,
-                    'save_as': step.save_as,
-                    'input_value': step.input_value,
-                    'wait_time': step.wait_time,
-                    'assert_type': step.assert_type,
-                    'assert_value': step.assert_value,
-                }
-
-                step_data['element_data'] = resolve_element_locator_payload(build_step_element_data(step))
-
-                steps_data.append(step_data)
+            steps_data = build_execution_steps_data(test_case)
 
             # 存储步骤执行结果（用于JSON格式的execution_logs）
             step_results = []
@@ -4342,8 +5092,17 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                                 else:
                                     execution_logs.append(f"  (此步骤不需要元素)")
 
-                                if step_info.get('is_enabled', True) is False or step_info.get('transaction_disabled', False) is True:
-                                    skip_message = '事务块已禁用，已跳过执行' if step_info.get('transaction_disabled', False) is True else '步骤已禁用，已跳过执行'
+                                if (
+                                    step_info.get('is_enabled', True) is False
+                                    or step_info.get('transaction_disabled', False) is True
+                                    or step_info.get('parent_transaction_disabled', False) is True
+                                ):
+                                    if step_info.get('parent_transaction_disabled', False) is True:
+                                        skip_message = '父事务块已禁用，已跳过执行'
+                                    elif step_info.get('transaction_disabled', False) is True:
+                                        skip_message = '事务块已禁用，已跳过执行'
+                                    else:
+                                        skip_message = '步骤已禁用，已跳过执行'
                                     execution_logs.append(f"  {skip_message}")
                                     execution_logs.append("")
                                     _append_skipped_step_result(step_results, i, action_type, description, skip_message)
@@ -4555,8 +5314,17 @@ class TestCaseViewSet(viewsets.ModelViewSet):
                                         else:
                                             execution_logs.append(f"  (此步骤不需要元素)")
 
-                                        if step_info.get('is_enabled', True) is False or step_info.get('transaction_disabled', False) is True:
-                                            skip_message = '事务块已禁用，已跳过执行' if step_info.get('transaction_disabled', False) is True else '步骤已禁用，已跳过执行'
+                                        if (
+                                            step_info.get('is_enabled', True) is False
+                                            or step_info.get('transaction_disabled', False) is True
+                                            or step_info.get('parent_transaction_disabled', False) is True
+                                        ):
+                                            if step_info.get('parent_transaction_disabled', False) is True:
+                                                skip_message = '父事务块已禁用，已跳过执行'
+                                            elif step_info.get('transaction_disabled', False) is True:
+                                                skip_message = '事务块已禁用，已跳过执行'
+                                            else:
+                                                skip_message = '步骤已禁用，已跳过执行'
                                             execution_logs.append(f"  {skip_message}")
                                             execution_logs.append("")
                                             _append_skipped_step_result(step_results, i, action_type, description, skip_message)
@@ -5259,28 +6027,7 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
 
                                 start_time = time.time()
 
-                                # 获取测试用例的所有步骤
-                                test_steps = list(test_case.steps.all().order_by('step_number'))
-
-                                # 预先获取所有步骤的数据
-                                steps_data = []
-                                for step in test_steps:
-                                    step_data = {
-                                        'step': step,
-                                        'action_type': step.action_type,
-                                        'description': step.description,
-                                        'is_enabled': step.is_enabled,
-                                        'transaction_disabled': step.transaction_disabled,
-                                        'save_as': step.save_as,
-                                        'input_value': step.input_value,
-                                        'wait_time': step.wait_time,
-                                        'assert_type': step.assert_type,
-                                        'assert_value': step.assert_value,
-                                    }
-
-                                    step_data['element_data'] = resolve_element_locator_payload(build_step_element_data(step))
-
-                                    steps_data.append(step_data)
+                                steps_data = build_execution_steps_data(test_case)
 
                                 # 存储步骤执行结果和截图
                                 step_results = []
@@ -5334,8 +6081,17 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                             action_type = step_info['action_type']
                                             element_data = step_info['element_data']
 
-                                            if step_info.get('is_enabled', True) is False or step_info.get('transaction_disabled', False) is True:
-                                                skip_message = '事务块已禁用，已跳过执行' if step_info.get('transaction_disabled', False) is True else '步骤已禁用，已跳过执行'
+                                            if (
+                                                step_info.get('is_enabled', True) is False
+                                                or step_info.get('transaction_disabled', False) is True
+                                                or step_info.get('parent_transaction_disabled', False) is True
+                                            ):
+                                                if step_info.get('parent_transaction_disabled', False) is True:
+                                                    skip_message = '父事务块已禁用，已跳过执行'
+                                                elif step_info.get('transaction_disabled', False) is True:
+                                                    skip_message = '事务块已禁用，已跳过执行'
+                                                else:
+                                                    skip_message = '步骤已禁用，已跳过执行'
                                                 execution_logs.append(f"步骤 {i}: {skip_message}")
                                                 _append_skipped_step_result(
                                                     step_results,
@@ -5438,8 +6194,17 @@ class UiScheduledTaskViewSet(viewsets.ModelViewSet):
                                                 action_type = step_info['action_type']
                                                 element_data = step_info['element_data']
 
-                                                if step_info.get('is_enabled', True) is False or step_info.get('transaction_disabled', False) is True:
-                                                    skip_message = '事务块已禁用，已跳过执行' if step_info.get('transaction_disabled', False) is True else '步骤已禁用，已跳过执行'
+                                                if (
+                                                    step_info.get('is_enabled', True) is False
+                                                    or step_info.get('transaction_disabled', False) is True
+                                                    or step_info.get('parent_transaction_disabled', False) is True
+                                                ):
+                                                    if step_info.get('parent_transaction_disabled', False) is True:
+                                                        skip_message = '父事务块已禁用，已跳过执行'
+                                                    elif step_info.get('transaction_disabled', False) is True:
+                                                        skip_message = '事务块已禁用，已跳过执行'
+                                                    else:
+                                                        skip_message = '步骤已禁用，已跳过执行'
                                                     execution_logs.append(f"步骤 {i}: {skip_message}")
                                                     _append_skipped_step_result(
                                                         step_results,
@@ -7153,6 +7918,20 @@ class AITestCaseGenerationViewSet(viewsets.ModelViewSet):
             root_skill=skill,
             user=request.user,
         )
+        page_graph_warnings = []
+        page_graph = latest_generation_graph(project)
+        if page_graph:
+            page_graph_matches = search_graph(project, source_text, graph=page_graph, limit=20)
+            page_graph_warnings.append(
+                f'已参考页面图谱“{page_graph.name}”：'
+                f'状态{page_graph.status}、'
+                f'页面{page_graph.summary.get("pages", 0)}个、'
+                f'元素{page_graph.summary.get("elements", 0)}个、'
+                f'路径{page_graph.summary.get("edges", 0)}条，'
+                f'本次命中上下文{len(page_graph_matches)}条'
+            )
+        else:
+            page_graph_warnings.append('当前项目暂无已完成页面图谱，AI生成未使用页面图谱上下文；如需更准确定位，请先在页面图谱中爬取被测系统')
 
         manifest, warnings, generation_mode = generate_ui_test_case_manifest(
             project,
@@ -7166,7 +7945,7 @@ class AITestCaseGenerationViewSet(viewsets.ModelViewSet):
         if selected_modules:
             module_names = '、'.join(module.get('name') or module.get('code') for module in selected_modules[:6])
             route_warnings.append(f'已按用例意图加载 {len(selected_modules)} 个Skill模块: {module_names}')
-        warnings = list(uploaded_source.warnings) + list(route_warnings) + warnings
+        warnings = list(uploaded_source.warnings) + page_graph_warnings + list(route_warnings) + warnings
 
         if natural_text and uploaded_source.text:
             source_type = 'mixed'

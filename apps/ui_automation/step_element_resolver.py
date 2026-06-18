@@ -8,7 +8,8 @@ def build_step_element_data(step):
     element = getattr(step, 'element', None)
     override_strategy = str(getattr(step, 'element_locator_strategy', '') or '').strip()
     override_value = str(getattr(step, 'element_locator_value', '') or '').strip()
-    override_enabled = bool(getattr(step, 'element_locator_override_enabled', False))
+    override_flag = getattr(step, 'element_locator_override_enabled', None)
+    override_enabled = bool(override_flag) or (override_flag is None and bool(override_value))
 
     if element:
         element_strategy = _strategy_name(getattr(element, 'locator_strategy', None)) or 'css'

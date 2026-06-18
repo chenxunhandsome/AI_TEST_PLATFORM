@@ -108,6 +108,10 @@
               <el-icon><Aim /></el-icon>
               <span>{{ $t('menu.elementManagement') }}</span>
             </el-menu-item>
+            <el-menu-item index="/ui-automation/page-graphs">
+              <el-icon><Connection /></el-icon>
+              <span>页面图谱</span>
+            </el-menu-item>
             <el-menu-item index="/ui-automation/test-cases">
               <el-icon><Document /></el-icon>
               <span>{{ $t('menu.caseManagement') }}</span>
@@ -399,6 +403,7 @@ const breadcrumbTitle = computed(() => {
     '/ui-automation/dashboard': t('menu.dashboard'),
     '/ui-automation/projects': t('menu.projectManagement'),
     '/ui-automation/elements-enhanced': t('menu.elementManagement'),
+    '/ui-automation/page-graphs': '页面图谱',
     '/ui-automation/test-cases': t('menu.caseManagement'),
     '/ui-automation/scripts-enhanced': t('menu.scriptGeneration'),
     '/ui-automation/scripts': t('menu.scriptList'),

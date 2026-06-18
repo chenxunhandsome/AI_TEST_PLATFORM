@@ -164,3 +164,40 @@ class TestCaseManagementApiTests(APITestCase):
         test_case.refresh_from_db()
         self.assertIsNone(test_case.folder)
         self.assertFalse(TestCaseFolder.objects.filter(id=folder.id).exists())
+
+    def test_page_graphs_endpoint_returns_project_pages(self):
+        locator_strategy = LocatorStrategy.objects.create(name='css')
+        element = Element.objects.create(
+            project=self.project,
+            name='login button',
+            description='',
+            element_type='BUTTON',
+            page='Login',
+            component_name='',
+            locator_strategy=locator_strategy,
+            locator_value='.login-button',
+            wait_timeout=5,
+            created_by=self.user,
+        )
+        test_case = self.create_case('login flow')
+        TestCaseStep.objects.create(
+            test_case=test_case,
+            step_number=1,
+            action_type='click',
+            element=element,
+            description='click login',
+            wait_time=1000
+        )
+
+        response = self.client.get('/api/ui-automation/page-graphs/', {
+            'project': self.project.id,
+            'page_size': 50,
+        })
+
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['count'], 1)
+        graph = response.data['results'][0]
+        self.assertEqual(graph['name'], 'Login')
+        self.assertEqual(graph['elements_count'], 1)
+        self.assertEqual(graph['test_case_count'], 1)
+        self.assertEqual(graph['nodes'][0]['type'], 'page')

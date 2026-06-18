@@ -413,6 +413,8 @@ const viewCaseDetail = (caseData) => {
 const getActionText = (actionType) => {
   const actionMap = {
     'click': t('uiAutomation.actionTypes.click'),
+    'doubleClick': t('uiAutomation.actionTypes.doubleClick'),
+    'double_click': t('uiAutomation.actionTypes.doubleClick'),
     'fill': t('uiAutomation.actionTypes.fill'),
     'fillAndEnter': t('uiAutomation.actionTypes.fillAndEnter'),
     'getText': t('uiAutomation.actionTypes.getText'),

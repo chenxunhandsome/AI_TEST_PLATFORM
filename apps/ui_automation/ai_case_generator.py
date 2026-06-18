@@ -23,13 +23,13 @@ logger = logging.getLogger(__name__)
 MAX_SOURCE_FILE_SIZE = 10 * 1024 * 1024
 SUPPORTED_SOURCE_EXTENSIONS = {'.txt', '.md', '.json', '.csv', '.xlsx', '.xmind'}
 SUPPORTED_ACTION_TYPES = {
-    'click', 'fill', 'fillAndEnter', 'getText', 'waitFor', 'hover', 'scroll',
+    'click', 'doubleClick', 'fill', 'fillAndEnter', 'getText', 'waitFor', 'hover', 'scroll',
     'drag', 'screenshot', 'assert', 'wait', 'switchTab', 'refreshCurrentPage',
     'closeCurrentPage',
 }
 SUPPORTED_ASSERT_TYPES = {'textContains', 'textEquals', 'isVisible', 'exists', 'hasAttribute'}
 ELEMENT_ACTION_TYPES = {
-    'click', 'fill', 'fillAndEnter', 'getText', 'waitFor', 'hover', 'scroll', 'drag', 'assert'
+    'click', 'doubleClick', 'fill', 'fillAndEnter', 'getText', 'waitFor', 'hover', 'scroll', 'drag', 'assert'
 }
 VALID_ELEMENT_TYPES = {
     'INPUT', 'BUTTON', 'LINK', 'DROPDOWN', 'CHECKBOX', 'RADIO', 'TEXT',
@@ -536,15 +536,44 @@ def get_generation_model_config(config_id=None):
 
 
 def build_existing_element_context(project, limit=200):
-    elements = Element.objects.filter(project=project).select_related('locator_strategy').order_by('page', 'name')[:limit]
+    elements = Element.objects.filter(project=project).select_related('locator_strategy').order_by(
+        '-is_unique', 'validation_status', 'page', 'name'
+    )[:limit]
     lines = []
     for element in elements:
         strategy = element.locator_strategy.name if element.locator_strategy else ''
         lines.append(
             f'- page:{element.page or "-"} element:{element.name} type:{element.element_type} '
-            f'locator:{strategy}={element.locator_value}'
+            f'unique:{element.is_unique} status:{element.validation_status} locator:{strategy}={element.locator_value}'
         )
     return '\n'.join(lines)
+
+
+def build_page_graph_generation_context(project, source_text, limit=120):
+    try:
+        from .page_graph_service import build_page_graph_context
+        return build_page_graph_context(project, source_text, limit=limit)
+    except Exception as exc:
+        logger.warning('Failed to build page graph generation context: %s', exc, exc_info=True)
+        return ''
+
+
+def build_page_graph_route_generation_plan(project, source_text):
+    try:
+        from .page_graph_service import build_page_graph_route_plan
+        return build_page_graph_route_plan(project, source_text)
+    except Exception as exc:
+        logger.warning('Failed to build page graph route plan: %s', exc, exc_info=True)
+        return {}
+
+
+def format_page_graph_route_generation_context(route_plan):
+    try:
+        from .page_graph_service import format_page_graph_route_context
+        return format_page_graph_route_context(route_plan)
+    except Exception as exc:
+        logger.warning('Failed to format page graph route context: %s', exc, exc_info=True)
+        return ''
 
 
 def build_generation_system_prompt(skill_content, source_text):
@@ -1304,18 +1333,31 @@ def generate_ui_test_case_manifest(project, source_text, skill_content='', model
     if not source_text:
         raise ValidationError('请提供自然语言用例或上传可解析的用例文件')
 
+    page_graph_context = build_page_graph_generation_context(project, source_text)
+    page_graph_route_plan = build_page_graph_route_generation_plan(project, source_text)
+    page_graph_route_context = format_page_graph_route_generation_context(page_graph_route_plan)
+
     prebuilt_manifest = try_parse_manifest(source_text)
     if prebuilt_manifest:
         manifest = normalize_manifest(project, prebuilt_manifest)
         warnings.extend(enforce_generation_business_rules(project, manifest, source_text))
+        warnings.extend(validate_manifest_against_page_graph_plan(manifest, page_graph_route_plan))
         warnings.extend(validate_manifest_quality(manifest))
         return manifest, warnings, 'manifest'
 
     if use_ai and model_config:
         try:
-            raw = call_openai_compatible_model(project, source_text, skill_content, model_config)
+            raw = call_openai_compatible_model(
+                project,
+                source_text,
+                skill_content,
+                model_config,
+                page_graph_context=page_graph_context,
+                page_graph_route_context=page_graph_route_context,
+            )
             manifest = normalize_manifest(project, extract_json_payload(raw))
             warnings.extend(enforce_generation_business_rules(project, manifest, source_text))
+            warnings.extend(validate_manifest_against_page_graph_plan(manifest, page_graph_route_plan))
             warnings.extend(validate_manifest_quality(manifest))
             return manifest, warnings, 'ai'
         except Exception as exc:
@@ -1324,6 +1366,7 @@ def generate_ui_test_case_manifest(project, source_text, skill_content='', model
 
     manifest = heuristic_manifest(project, source_text)
     warnings.extend(enforce_generation_business_rules(project, manifest, source_text))
+    warnings.extend(validate_manifest_against_page_graph_plan(manifest, page_graph_route_plan))
     warnings.extend(validate_manifest_quality(manifest))
     return manifest, warnings, 'heuristic'
 
@@ -1338,7 +1381,14 @@ def try_parse_manifest(source_text):
     return None
 
 
-def call_openai_compatible_model(project, source_text, skill_content, model_config):
+def call_openai_compatible_model(
+    project,
+    source_text,
+    skill_content,
+    model_config,
+    page_graph_context=None,
+    page_graph_route_context=None,
+):
     base_url = (model_config.base_url or '').rstrip('/')
     if not base_url:
         raise ValidationError('AI模型配置缺少 base_url')
@@ -1350,9 +1400,31 @@ def call_openai_compatible_model(project, source_text, skill_content, model_conf
         url = f'{base_url}/v1/chat/completions'
 
     system_prompt = build_generation_system_prompt(skill_content, source_text)
+    if page_graph_context is None:
+        page_graph_context = build_page_graph_generation_context(project, source_text)
+    if page_graph_route_context is None:
+        page_graph_route_context = format_page_graph_route_generation_context(
+            build_page_graph_route_generation_plan(project, source_text)
+        )
     user_prompt = f"""
+预构建页面图谱上下文:
+{page_graph_context or '暂无可用页面图谱；如需更准确定位，请先在页面图谱中爬取被测系统。'}
+
+推荐操作路径（页面图谱路径规划，强约束）:
+{page_graph_route_context or '未命中可用图谱路径；仅可使用已有元素和稳定定位规则补充。'}
+
+路径强约束:
+1. 如果“推荐操作路径”提供了导航步骤，必须按顺序生成这些导航步骤。
+2. 推荐路径中的 locator_strategy 和 locator_value 必须原样复制，不允许改写或重新发明。
+3. 到达目标页面后，必须优先复用“目标页面可用元素”的定位器。
+4. 图谱未覆盖的步骤才允许使用已有元素或稳定定位规则补充。
+5. 如果未使用推荐路径，生成结果必须仍然保证步骤可执行且元素定位稳定。
+
 项目名称: {project.name}
 项目基础URL: {project.base_url}
+
+相关页面图谱:
+{build_page_graph_generation_context(project, source_text) or '暂无已完成页面图谱；如需更准确定位，请先在页面图谱中爬取被测系统。'}
 
 可复用的已有元素:
 {build_existing_element_context(project) or '暂无已有元素，请根据用例文本生成稳定定位器。'}
@@ -2551,6 +2623,72 @@ def renumber_manifest_steps(manifest):
     for case in manifest.get('test_cases') or []:
         for index, step in enumerate(case.get('steps') or [], start=1):
             step['step_number'] = index
+
+
+def validate_manifest_against_page_graph_plan(manifest, route_plan):
+    warnings = []
+    if not route_plan:
+        return warnings
+    paths = route_plan.get('paths') or []
+    if not paths:
+        return warnings
+
+    used_locators = set()
+    used_descriptions = []
+    for case in manifest.get('test_cases') or []:
+        for step in case.get('steps') or []:
+            description = normalize_match_text(step.get('description') or '')
+            if description:
+                used_descriptions.append(description)
+            for element_key in ('element', 'drag_target_element'):
+                element = step.get(element_key) or {}
+                if not isinstance(element, dict):
+                    continue
+                locator_value = str(element.get('locator_value') or '').strip()
+                if locator_value:
+                    used_locators.add(locator_value)
+
+    recommended_path = paths[0]
+    path_steps = recommended_path.get('steps') or []
+    path_locators = [
+        str(step.get('locator_value') or '').strip()
+        for step in path_steps
+        if str(step.get('locator_value') or '').strip()
+    ]
+    if path_locators:
+        used_path_locators = [locator for locator in path_locators if locator in used_locators]
+        if not used_path_locators:
+            warnings.append(
+                f'页面图谱已规划到“{recommended_path.get("target_page")}”的推荐路径，但生成结果未使用推荐路径中的定位器，请检查导航步骤是否按图谱生成'
+            )
+        elif len(path_locators) >= 2 and len(used_path_locators) < min(2, len(path_locators)):
+            warnings.append(
+                f'页面图谱推荐路径包含 {len(path_locators)} 个导航定位器，生成结果仅使用 {len(used_path_locators)} 个，可能漏掉中间导航步骤'
+            )
+
+    trigger_texts = [
+        normalize_match_text(step.get('trigger_text') or '')
+        for step in path_steps
+        if normalize_match_text(step.get('trigger_text') or '')
+    ]
+    if trigger_texts and used_descriptions:
+        matched_triggers = [
+            trigger for trigger in trigger_texts
+            if any(trigger and trigger in description for description in used_descriptions)
+        ]
+        if path_steps and not matched_triggers and not path_locators:
+            warnings.append(
+                f'页面图谱已规划到“{recommended_path.get("target_page")}”的推荐路径，但生成结果未体现推荐路径的点击动作'
+            )
+
+    target_locators = {
+        str(element.get('locator_value') or '').strip()
+        for element in route_plan.get('target_elements') or []
+        if str(element.get('locator_value') or '').strip()
+    }
+    if target_locators and not (target_locators & used_locators):
+        warnings.append('页面图谱提供了目标页面元素定位器，但生成结果未复用这些定位器，后续执行可能不稳定')
+    return warnings
 
 
 def normalize_match_text(value):

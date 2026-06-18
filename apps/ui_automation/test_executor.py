@@ -217,9 +217,13 @@ def _resolve_legacy_selenium_element_attribute(driver, element, by, locator_valu
 
 def _build_skipped_step_result(step_data):
     message = (
-        '事务块已禁用，已跳过执行'
-        if step_data.get('transaction_disabled', False) is True
-        else '步骤已禁用，已跳过执行'
+        '父事务块已禁用，已跳过执行'
+        if step_data.get('parent_transaction_disabled', False) is True
+        else (
+            '事务块已禁用，已跳过执行'
+            if step_data.get('transaction_disabled', False) is True
+            else '步骤已禁用，已跳过执行'
+        )
     )
     return {
         'step_number': step_data['step_number'],
@@ -640,6 +644,7 @@ class TestExecutor:
                     'description': step.description,
                     'is_enabled': step.is_enabled,
                     'transaction_disabled': step.transaction_disabled,
+                    'parent_transaction_disabled': step.parent_transaction_disabled,
                     'save_as': step.save_as or '',
                     'input_value': step.input_value,
                     'wait_time': step.wait_time,
@@ -797,10 +802,10 @@ class TestExecutor:
                     case_execution.execution_logs = json.dumps(case_result['steps'], ensure_ascii=False)
                     if case_result['error']:
                         case_execution.error_message = case_result['error']
-                if case_result.get('screenshots'):
-                    case_execution.screenshots = case_result['screenshots']
-                set_execution_step_details(case_execution, case_result.get('steps', []), case_data.get('steps', []))
-                case_execution.save()
+                    if case_result.get('screenshots'):
+                        case_execution.screenshots = case_result['screenshots']
+                    set_execution_step_details(case_execution, case_result.get('steps', []), case_data.get('steps', []))
+                    case_execution.save()
 
                     print(f"⏱️  执行时长: {case_execution.execution_time:.2f}秒")
 
@@ -878,7 +883,11 @@ class TestExecutor:
                 step_data['_just_switched_tab'] = just_switched_tab
                 just_switched_tab = False  # 重置标志
 
-                if step_data.get('is_enabled', True) is False or step_data.get('transaction_disabled', False) is True:
+                if (
+                    step_data.get('is_enabled', True) is False
+                    or step_data.get('transaction_disabled', False) is True
+                    or step_data.get('parent_transaction_disabled', False) is True
+                ):
                     result['steps'].append(_build_skipped_step_result(step_data))
                     continue
 
@@ -910,11 +919,11 @@ class TestExecutor:
 
                 # 步骤执行完后添加短暂延迟，确保页面状态稳定
                 # 特别是点击操作后，可能触发动画、下拉框展开等
-                if step_result['success'] and step_data['action_type'] in ['click', 'fill', 'fillAndEnter', 'hover']:
+                if step_result['success'] and step_data['action_type'] in ['click', 'doubleClick', 'double_click', 'fill', 'fillAndEnter', 'hover']:
                     import asyncio
                     import time as sync_time
                     # 点击操作后等待更长时间（下拉框展开动画）
-                    if step_data['action_type'] == 'click':
+                    if step_data['action_type'] in {'click', 'doubleClick', 'double_click'}:
                         self.current_page.wait_for_timeout(800)  # 等待800ms，确保下拉框完全展开
                     else:
                         self.current_page.wait_for_timeout(300)  # 其他操作等待300ms
@@ -1043,7 +1052,11 @@ class TestExecutor:
         try:
             # 遍历预先准备好的步骤数据
             for step_data in case_data['steps']:
-                if step_data.get('is_enabled', True) is False or step_data.get('transaction_disabled', False) is True:
+                if (
+                    step_data.get('is_enabled', True) is False
+                    or step_data.get('transaction_disabled', False) is True
+                    or step_data.get('parent_transaction_disabled', False) is True
+                ):
                     result['steps'].append(_build_skipped_step_result(step_data))
                     continue
 
@@ -1369,6 +1382,15 @@ class TestExecutor:
                             else:
                                 self.current_page.click(selector, timeout=step_data['wait_time'])
                             step_result['success'] = True
+
+                elif step_data['action_type'] in {'doubleClick', 'double_click'}:
+                    if step_data.get('_just_switched_tab'):
+                        self.current_page.bring_to_front()
+                        extended_timeout = max(step_data['wait_time'], 10000)
+                        self.current_page.dblclick(selector, timeout=extended_timeout)
+                    else:
+                        self.current_page.dblclick(selector, timeout=step_data['wait_time'])
+                    step_result['success'] = True
 
                 elif step_data['action_type'] == 'fill':
                     # 解析输入值中的变量表达式
@@ -1912,6 +1934,7 @@ class TestExecutor:
                     'description': step.description,
                     'is_enabled': step.is_enabled,
                     'transaction_disabled': step.transaction_disabled,
+                    'parent_transaction_disabled': step.parent_transaction_disabled,
                     'save_as': step.save_as or '',
                     'input_value': step.input_value,
                     'wait_time': step.wait_time,
@@ -2402,7 +2425,11 @@ class TestExecutor:
             initialize_project_runtime_variables(global_variables=case_data.get('project_global_variables'))
             # 遍历预先准备好的步骤数据
             for step_data in case_data['steps']:
-                if step_data.get('is_enabled', True) is False or step_data.get('transaction_disabled', False) is True:
+                if (
+                    step_data.get('is_enabled', True) is False
+                    or step_data.get('transaction_disabled', False) is True
+                    or step_data.get('parent_transaction_disabled', False) is True
+                ):
                     result['steps'].append(_build_skipped_step_result(step_data))
                     continue
 
@@ -2419,9 +2446,9 @@ class TestExecutor:
 
                 # 步骤执行完后添加短暂延迟，确保页面状态稳定
                 # 特别是点击操作后，可能触发动画、下拉框展开等
-                if step_result['success'] and step_data['action_type'] in ['click', 'fill', 'fillAndEnter', 'hover']:
+                if step_result['success'] and step_data['action_type'] in ['click', 'doubleClick', 'double_click', 'fill', 'fillAndEnter', 'hover']:
                     # 点击操作后等待更长时间（下拉框展开动画）
-                    if step_data['action_type'] == 'click':
+                    if step_data['action_type'] in {'click', 'doubleClick', 'double_click'}:
                         time.sleep(0.8)  # 等待800ms，确保下拉框完全展开
                     else:
                         time.sleep(0.3)  # 其他操作等待300ms
@@ -2835,6 +2862,16 @@ class TestExecutor:
                             else:
                                 raise
 
+                elif step_data['action_type'] in {'doubleClick', 'double_click'}:
+                    element_obj = wait.until(EC.element_to_be_clickable((by, locator_value)))
+                    driver.execute_script(
+                        "arguments[0].scrollIntoView({block: 'center', inline: 'center'});",
+                        element_obj,
+                    )
+                    time.sleep(0.2)
+                    ActionChains(driver).double_click(element_obj).perform()
+                    step_result['success'] = True
+
                 elif step_data['action_type'] == 'fill':
                     # 先定位元素
                     element_obj = wait.until(EC.presence_of_element_located((by, locator_value)))
@@ -3169,7 +3206,7 @@ class TestExecutor:
             if len(error_parts) == 0 or (len(error_parts) == 1 and 'TimeoutException' in error_parts[0]):
                 # 添加操作相关的上下文
                 action_type_str = step_data.get('action_type', '') if isinstance(step_data, dict) else ''
-                if action_type_str == 'click':
+                if action_type_str in {'click', 'doubleClick', 'double_click'}:
                     error_parts.append(f"等待元素可点击失败（超时{timeout_seconds}秒）")
                 elif action_type_str in {'fill', 'fillAndEnter'}:
                     error_parts.append(f"等待输入框可用失败（超时{timeout_seconds}秒）")
