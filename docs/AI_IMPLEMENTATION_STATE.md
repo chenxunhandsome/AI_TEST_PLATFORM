@@ -24,7 +24,7 @@
 
 ```yaml
 state_schema_version: 1.0.0
-last_updated: 2026-07-17T10:05:20+08:00
+last_updated: 2026-07-17T10:09:59+08:00
 design_version: 1.6.1
 active_wp: null
 wp_status: WP-001_DONE_WP-101_READY
@@ -183,7 +183,8 @@ git:
   committed: true
   remote_push: passed_direct_without_persistent_proxy_change
   remote_head: ea3f713
-  wp_001_commit: pending
+  wp_001_commit: 3d191e7
+  wp_001_remote_sync: pending
 portal:
   http: reachable
   https_443: refused
@@ -202,7 +203,7 @@ portal:
 - 建立 loopback-only 可控 Web server，覆盖 route/login/tab/modal/form/pagination/dynamic ID/loop/risk/prompt injection。
 - 篡改 hash、跨项目 Issue、非脱敏字段、ACL、prompt injection、SSRF 和危险动作均有故障注入测试。
 - 验收通过：8/8 golden tests、48/48 合并回归、Django check、migration check、Vue build；报告为 `docs/baselines/WP-001_GOLDEN_BASELINE.md`。
-- 当前工作包 Git 提交待状态落盘后完成；SVN 继续按用户要求等待网络恢复。
+- 当前工作包 Git 主提交为 `3d191e7`；远端同步待完成状态检查点落盘后执行。SVN 继续按用户要求等待网络恢复。
 
 ### 2026-07-17 / WP-001 开始
 
