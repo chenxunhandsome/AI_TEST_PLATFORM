@@ -25,6 +25,8 @@ mysql_start_*.log
 apps/*/migrations/*
 # 使用否定模式，例外地跟踪 __init__.py 文件
 !apps/*/migrations/__init__.py
+# app_automation 的完整迁移链必须进入 Git 镜像；0003 依赖 SVN 中已有的 0001/0002。
+!apps/app_automation/migrations/*.py
 
 # 忽略 allure-static 下的所有文件（运行时生成）
 media/allure-static/*

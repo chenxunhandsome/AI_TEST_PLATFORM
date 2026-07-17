@@ -742,6 +742,11 @@ def generate_skill_module_content_draft(
 ):
     summary_rules = split_skill_module_summary(summary)
     module_label = SKILL_MODULE_TYPE_LABELS.get(module_type, module_type or '模块')
+    type_specific_heading = (
+        '创建类流程专项约束'
+        if module_type == 'business_flow'
+        else f'{module_label}专项约束'
+    )
     normalized_keywords = normalize_json_list(keywords)
     normalized_intents = normalize_json_list(intents)
     normalized_pages = normalize_json_list(pages)
@@ -801,7 +806,7 @@ def generate_skill_module_content_draft(
         '4. 涉及成功校验时，必须补充可执行的断言或成功提示等待，不允许省略验证成功步骤。',
         '5. 涉及元素描述时，优先约束元素命名、页面归属、定位稳定性和复用优先级。',
         '',
-        f'{module_label}专项约束：',
+        f'{type_specific_heading}：',
     ])
     lines.extend([f'{index}. {rule}' for index, rule in enumerate(type_specific_guidance.get(module_type, []), start=1)])
 
@@ -2181,7 +2186,7 @@ def enforce_generation_business_rules(project, manifest, source_text):
                     case['description'] = summary
                 rebuilt_case = True
                 warnings.append(
-                    f'用例 {case_index} 已按自然语言步骤重建关键流程，共生成 {len(rebuilt_steps)} 步，覆盖登录/管理模式/数据要素创建等关键事务块'
+                    f'用例 {case_index} 已按自然语言步骤重建关键流程，共生成 {len(rebuilt_steps)} 步，覆盖登录/管理模式/数据要素创建流程等关键事务块'
                 )
 
         if intents and not rebuilt_case:

@@ -24,15 +24,15 @@
 
 ```yaml
 state_schema_version: 1.0.0
-last_updated: 2026-07-17T09:25:51+08:00
-design_version: 1.5.0
-active_wp: WP-002
-wp_status: WP-002_IN_PROGRESS
+last_updated: 2026-07-17T09:32:08+08:00
+design_version: 1.5.1
+active_wp: null
+wp_status: WP-002_DONE_WP-001_READY
 implementation_started: true
 parameter_discovery_started: false
 current_owner: root + user
-last_completed_wp: WP-000
-next_ready_wp: null
+last_completed_wp: WP-002
+next_ready_wp: WP-001
 primary_vcs: svn
 mirror_vcs: git
 vcs_mode: svn_authoritative_git_mirror
@@ -42,7 +42,7 @@ vcs_mode: svn_authoritative_git_mirror
 
 ### 当前目标
 
-正在执行 `WP-002`：稳定既有 migration/test 基线。先检查重叠的用户未提交改动，再分别处理 requirement fixture、UI AI 两项失败与 app_automation migration drift，不把基线失败错误归因于新架构。
+`WP-002` 已完成：既有 migration/test 基线全部稳定。下一入口为 `WP-001`，建立最小 Jira/Confluence/SynapseRT cassette、可控 Web fixture 和安全黄金集；开始前仍需核对现有未提交改动。
 
 ### 已确认的环境
 
@@ -71,17 +71,16 @@ vcs_mode: svn_authoritative_git_mirror
 
 ### 当前 blocker / 安全待办
 
-1. `WP-002` 当前无外部 blocker；需要处理 app_automation migration drift、requirement tests fixture、两个 UI AI generation 断言/行为偏差。
+1. `WP-001` 当前无外部 blocker；SVN/远端 Git 同步因网络条件延后，不影响本地实现和验证。
 2. 用户尚未确认聊天中暴露的门户密码是否已轮换；平台不使用该密码，此项不阻塞 `WP-002`，但仍应尽快完成。
 3. 浏览器目标并发、生产对象存储实例和证据保留期尚未最终确认，但不阻塞基础代码骨架。
 
 ### 下一步动作（严格按顺序）
 
-1. 检查 `apps/requirement_analysis/tests.py`、`apps/ui_automation/ai_case_generator.py`/对应测试和 app_automation models/migrations 的用户改动归属。
-2. 修复 requirement tests 创建 Project 时缺 owner 的 fixture。
-3. 对齐 2 个 UI AI generation 失败的预期与当前业务规则，不在不理解用户改动时修改生成逻辑。
-4. 审查 app_automation 23 个 AlterField migration drift，决定补 migration 还是修正模型声明；不得仅为让 check 通过盲建 migration。
-5. 重跑 Django check、migration check、4+36 tests 和 Vue build；全绿后完成 WP-002 并进入 WP-001/WP-101。
+1. 完成 `WP-002` 的路径级本地 Git 提交；`ai_case_generator.py` 只暂存本轮三个修复 hunk，不带入用户现有 MCP/maximizeWindow/页面图谱改动。
+2. 网络/代理恢复后，将设计检查点和 `WP-002` 变更按路径提交 SVN，并在确认前置 Git 提交范围后同步远端。
+3. 开始 `WP-001`：盘点现有 fixture/测试目录，定义 Jira/Confluence/SynapseRT cassette 的脱敏格式和可控 Web fixture。
+4. 建立 ACL、prompt injection、危险动作与只读 endpoint 拒绝黄金用例，形成首个基线报告。
 
 ---
 
@@ -149,9 +148,11 @@ confluence:
   child_page_bfs: required
 baseline:
   django_check: passed
-  migration_check: failed_app_automation_23_alterfield_drift
-  requirement_analysis_tests: 0_passed_4_errors_project_owner_fixture
-  ui_ai_mcp_tests: 34_passed_2_failed
+  migration_check: passed_no_changes_detected
+  app_automation_migration_0003: 24_metadata_only_alterfield_applied_in_clean_test_db
+  requirement_analysis_tests: 4_passed
+  ui_ai_mcp_tests: 36_passed
+  wp_002_target_tests: 40_passed
   frontend_build: passed_with_existing_bundle_warnings
 svn:
   primary: true
@@ -165,8 +166,11 @@ svn:
 git:
   mirror_enabled: true
   branch: main
-  context_docs_tracked: false
-  committed: false
+  context_docs_tracked: true
+  design_checkpoint_commit: 9c528c9
+  wp_002_commit: pending
+  committed: true
+  remote_push: deferred_preexisting_ahead_commits_and_network
 portal:
   http: reachable
   https_443: refused
@@ -177,6 +181,14 @@ portal:
 ---
 
 ## 5. 会话交接记录
+
+### 2026-07-17 / WP-002 完成 → WP-001 READY
+
+- requirement fixture 已补 `Project.owner`；4/4 测试通过。
+- UI AI 两个失败已以三个最小 hunk 修复：业务流草稿保留“创建类流程”标题语义，结构化数据要素重建 warning 明确包含“数据要素创建流程”；用户其他生成器改动未覆盖。
+- app_automation `0003` 对齐 24 个仅元数据 `AlterField`；无 Add/Remove/Create/Delete/SQL/Python 操作，在干净测试库应用成功，migration check 无漂移。
+- 验收通过：目标 40/40 tests、Django check、migration check、Vue build。Vue 仅保留既有 bundle/tree-sitter 警告。
+- Git 设计检查点已本地提交为 `9c528c9`；`WP-002` 代码提交待本节状态落盘后完成。SVN 与远端 Git 按用户要求等待网络/范围条件。
 
 ### 2026-07-17 / WP-002 开始
 

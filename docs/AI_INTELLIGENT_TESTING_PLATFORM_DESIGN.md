@@ -1,10 +1,10 @@
 # TestHub AI 智能测试平台完整设计方案（单一事实源）
 
 > 文档性质：产品需求、总体设计、详细设计、实施计划、验收标准和 AI 开发上下文协议的单一事实源（SSOT）  
-> 文档版本：1.5.0  
+> 文档版本：1.5.1  
 > 基线日期：2026-07-17  
 > 适用仓库：TestHub（Django 4.2 + Vue 3 + Playwright）  
-> 当前状态：WP-000 已完成，WP-002 基线稳定化进行中；首批范围 PIMC/P331、SynapseRT、双 VCS 治理和已知基线失败已固化  
+> 当前状态：WP-000/WP-002 已完成，既有基线全绿；下一工作包为 WP-001 黄金 fixture 与安全基线  
 > 维护规则：任何实现若与本文冲突，必须先修改本文并记录决策，再修改代码；聊天记录、临时提示词和口头约定不能覆盖本文。
 
 ---
@@ -2365,9 +2365,9 @@ flowchart LR
 | WP | 状态 | 依赖 | 主要交付 | 关键验收 |
 |---|---|---|---|---|
 | `WP-000` 关键参数与基线盘点 | DONE | 无 | 回答 OPEN、环境/版本/规模、范围、VCS 和现有基线 | 环境/PAT/PIMC/P331/SynapseRT/SVN 已验证；既有失败已形成 WP-002，不把失败误记为本项目回归 |
-| `WP-002` 既有基线稳定化 | IN_PROGRESS | WP-000 | 修复 requirement test owner fixture、2 个 UI AI 用例生成断言/行为偏差；审查 app_automation migration drift；全量重跑 | Django check、migration check、目标 40 tests 与 Vue build 全绿；保留用户现有改动 |
-| `WP-001` 黄金 fixture 与安全基线 | NOT_STARTED | WP-002 | 最小文档/Jira/Confluence/SynapseRT cassette、可控 Web fixture、ACL/prompt injection/risk 用例 | 黄金集目录/版本和首个基线报告 |
-| `WP-101` 新 app 与配置骨架 | NOT_STARTED | WP-002 | `knowledge`、`ai_orchestration`、settings、health check、feature flags | Django check、关闭 flags 行为不变 |
+| `WP-002` 既有基线稳定化 | DONE | WP-000 | 修复 requirement test owner fixture、2 个 UI AI 用例生成断言/行为偏差；审查 app_automation migration drift；全量重跑 | 40/40 tests、Django/migration check、Vue build 全绿；0003 为 24 个元数据 AlterField；用户现有改动保留 |
+| `WP-001` 黄金 fixture 与安全基线 | READY | WP-002 | 最小文档/Jira/Confluence/SynapseRT cassette、可控 Web fixture、ACL/prompt injection/risk 用例 | 黄金集目录/版本和首个基线报告 |
+| `WP-101` 新 app 与配置骨架 | READY | WP-002 | `knowledge`、`ai_orchestration`、settings、health check、feature flags | Django check、关闭 flags 行为不变 |
 | `WP-102` UID/对象存储/Outbox | NOT_STARTED | WP-101 | UUIDv7、artifact manifest、SecretRef、Outbox dispatcher/dead letter/reconciliation 框架 | 事务/重复投递/崩溃恢复集成测试 |
 | `WP-103` AIRun/Context/LLM Gateway | NOT_STARTED | WP-101, WP-102 | Run 状态机、PromptVersion、内部 GPT adapter、可选 Claude adapter、Pydantic 输出、成本/trace | fake provider、timeout/fallback/schema/恢复测试 |
 | `WP-201` 知识模型与上传解析 | NOT_STARTED | WP-102 | Source/Artifact/Revision/Chunk/Job、上传安全、Docling/fallback、层级切片 | AC-101/103、结构 fixture |
@@ -2412,10 +2412,10 @@ flowchart LR
 ### 20.5 当前实施记录
 
 ```yaml
-design_version: 1.5.0
-active_wp: WP-002
-last_completed_wp: WP-000
-next_ready_wp: null
+design_version: 1.5.1
+active_wp: null
+last_completed_wp: WP-002
+next_ready_wp: WP-001
 implementation_started: true
 parameter_discovery_started: false
 last_updated: 2026-07-17
@@ -2439,11 +2439,12 @@ evidence:
   - "PIMC 共 52,205 Issue：测试用例 24,678、测试计划 37、需求 1,625、缺陷 24,193；其余任务类 1,672"
   - "SynapseRT license valid；已从静态资源识别 /rest/synapse/latest endpoint，设计只允许读取子集"
   - "P331 根页面版本 144；child/page/attachment/comment/restriction 可用，descendant/page 返回 500，采用 BFS"
-  - "Django check 通过；Vue build 通过；migration check 因 app_automation 23 个 AlterField 漂移失败"
-  - "requirement_analysis 4 tests 因 Project.owner fixture 缺失全失败；UI AI/MCP 36 tests 中 34 通过、2 个断言失败"
+  - "WP-002 验收通过：requirement 4/4、UI AI/MCP 36/36，总计 40/40 tests；Django check、migration check、Vue build 通过"
+  - "app_automation 0003 对齐 24 个仅元数据 AlterField，无结构性/自定义 SQL/Python 操作，并在干净测试库应用成功"
   - "SVN 是权威主线、Git 是同步镜像；.env 已同时被 svn:ignore 与 .gitignore 排除；采用带相同 WP ID 的路径级提交"
 notes:
   - "2026-07-17 SVN 连接超时且未产生 revision；用户要求网络/代理恢复前不提交 SVN，当前允许先做路径级本地 Git 提交"
+  - "Git 设计检查点本地提交 9c528c9；远端 push 会包含本轮前已领先 origin/main 的两个既有提交，因此暂缓并保留范围确认"
   - "仓库当前可能存在用户未提交改动；实施会话必须重新检查 git/svn 状态并保留"
   - "实际 PIMC 测试用例 24,678，容量按 10 万～100 万 chunk 档设计"
   - "被测环境为用户独占，允许 SUT 内全量操作；外部副作用仍需 allowlist"
@@ -2512,6 +2513,7 @@ notes:
 
 | 版本 | 日期 | 变更 | 影响 |
 |---|---|---|---|
+| 1.5.1 | 2026-07-17 | WP-002 完成：fixture 与两个 UI AI 行为断言修复；app_automation 24 个元数据 AlterField 形成 0003；40 tests/Django/migration/Vue 全绿 | WP-001 与 WP-101 READY；Git 路径级提交，SVN/远端同步延后 |
 | 1.5.0 | 2026-07-17 | 新 Confluence PAT 与批准范围只读验证通过；旧 Jira/Confluence PAT 撤销确认；WP-002 开始；DEC-015 改为 SVN 权威主线 + Git 同步镜像 | Atlassian 安全阻塞解除；WP-002 IN_PROGRESS；后续工作包双端记录 revision/hash |
 | 1.4.1 | 2026-07-16 | 校正 PAT 轮换状态：Jira `.env` PAT 已不同于聊天暴露值，Confluence 仍需撤销替换；补充首批 Jira 页面入口与 REST/JQL 采集边界；开发入口改为 WP-002 | 安全联调等待 Confluence PAT 轮换；WP-002 可在用户确认后开始 |
 | 1.4.0 | 2026-07-16 | 新 PAT/PIMC/P331 范围验证、SynapseRT 识别、SVN 主基线和既有测试/migration 基线落盘；新增 WP-002/WP-205 | WP-000 DONE，下一 WP-002 |
@@ -2662,4 +2664,4 @@ notes:
 
 ---
 
-**本文结束。当前开发入口为进行中的 `WP-002`；每次开始、暂停与结束都必须在第 20.5 节更新 `active_wp`、实施证据和 SVN/Git 同步状态。**
+**本文结束。`WP-002` 已完成，下一开发入口为 `WP-001`；每次开始、暂停与结束都必须在第 20.5 节更新 `active_wp`、实施证据和 SVN/Git 同步状态。**

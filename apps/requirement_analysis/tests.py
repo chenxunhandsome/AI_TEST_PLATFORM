@@ -15,7 +15,8 @@ class RequirementAnalysisTestCase(TestCase):
         )
         self.project = Project.objects.create(
             name='Test Project',
-            description='A test project'
+            description='A test project',
+            owner=self.user,
         )
 
     def test_requirement_document_creation(self):
