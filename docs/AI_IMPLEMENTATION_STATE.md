@@ -24,7 +24,7 @@
 
 ```yaml
 state_schema_version: 1.0.0
-last_updated: 2026-07-17T09:32:08+08:00
+last_updated: 2026-07-17T09:38:50+08:00
 design_version: 1.5.1
 active_wp: null
 wp_status: WP-002_DONE_WP-001_READY
@@ -168,7 +168,7 @@ git:
   branch: main
   context_docs_tracked: true
   design_checkpoint_commit: 9c528c9
-  wp_002_commit: pending
+  wp_002_commit: 9e28eaa
   committed: true
   remote_push: deferred_preexisting_ahead_commits_and_network
 portal:
@@ -188,7 +188,7 @@ portal:
 - UI AI 两个失败已以三个最小 hunk 修复：业务流草稿保留“创建类流程”标题语义，结构化数据要素重建 warning 明确包含“数据要素创建流程”；用户其他生成器改动未覆盖。
 - app_automation `0003` 对齐 24 个仅元数据 `AlterField`；无 Add/Remove/Create/Delete/SQL/Python 操作，在干净测试库应用成功，migration check 无漂移。
 - 验收通过：目标 40/40 tests、Django check、migration check、Vue build。Vue 仅保留既有 bundle/tree-sitter 警告。
-- Git 设计检查点已本地提交为 `9c528c9`；`WP-002` 代码提交待本节状态落盘后完成。SVN 与远端 Git 按用户要求等待网络/范围条件。
+- Git 设计检查点已本地提交为 `9c528c9`；`WP-002` 代码提交为 `9e28eaa`。SVN 与远端 Git 按用户要求等待网络/范围条件。
 
 ### 2026-07-17 / WP-002 开始
 
