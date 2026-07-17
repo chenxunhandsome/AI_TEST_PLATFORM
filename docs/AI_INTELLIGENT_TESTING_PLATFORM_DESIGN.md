@@ -2443,7 +2443,7 @@ evidence:
   - "app_automation 0003 对齐 24 个仅元数据 AlterField，无结构性/自定义 SQL/Python 操作，并在干净测试库应用成功"
   - "WP-001 bundle 1.0.0：18 个 hash 文件、3 cassettes、27 security cases、8 states/10 edges；8 golden tests 与 48 合并回归全绿"
   - "首个基线报告为 docs/baselines/WP-001_GOLDEN_BASELINE.md；manifest SHA-256=d9e773e450718711e53d7e5fb7b6732ea8e81680f85849e58b5d5856b745d793"
-  - "WP-001 Git 主提交为 3d191e7；SVN 继续按用户要求等待公司网络/代理恢复"
+  - "WP-001 Git 主提交 3d191e7、完成检查点 3d135dd 已推送 origin/main；SVN 继续按用户要求等待公司网络/代理恢复"
   - "SVN 是权威主线、Git 是同步镜像；.env 已同时被 svn:ignore 与 .gitignore 排除；采用带相同 WP ID 的路径级提交"
 notes:
   - "2026-07-17 SVN 连接超时且未产生 revision；用户要求网络/代理恢复前不提交 SVN，当前允许先做路径级本地 Git 提交"
