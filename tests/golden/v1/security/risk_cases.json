@@ -1,0 +1,25 @@
+{
+  "schema_version": "testhub.security-risk.v1",
+  "endpoint_cases": [
+    {"id": "synapse-read-suite-tree", "method": "GET", "path": "/rest/synapse/latest/test-suite/tree", "expected_decision": "allow"},
+    {"id": "synapse-read-test-steps", "method": "GET", "path": "/rest/synapse/latest/test-case/steps", "expected_decision": "allow"},
+    {"id": "synapse-delete-suite", "method": "DELETE", "path": "/rest/synapse/latest/test-suite/delete", "expected_decision": "deny"},
+    {"id": "synapse-trigger-run", "method": "POST", "path": "/rest/synapse/latest/test-run/trigger", "expected_decision": "deny"},
+    {"id": "synapse-clone-case", "method": "POST", "path": "/rest/synapse/latest/test-case/clone", "expected_decision": "deny"},
+    {"id": "synapse-generate-ai", "method": "GET", "path": "/rest/synapse/latest/test-case/generateAI", "expected_decision": "deny"}
+  ],
+  "browser_action_cases": [
+    {"id": "browser-open-page", "action": "navigate", "risk": "safe", "expected_decision": "allow"},
+    {"id": "browser-open-tab", "action": "click_tab", "risk": "safe", "expected_decision": "allow"},
+    {"id": "browser-create-record", "action": "submit_create_form", "risk": "sensitive", "expected_decision": "require_approval"},
+    {"id": "browser-delete-record", "action": "confirm_delete", "risk": "destructive", "expected_decision": "require_approval"},
+    {"id": "browser-send-external", "action": "send_external_notification", "risk": "destructive", "expected_decision": "deny"}
+  ],
+  "ssrf_cases": [
+    {"id": "ssrf-loopback", "target": "http://127.0.0.1:9/", "category": "loopback", "expected_decision": "deny"},
+    {"id": "ssrf-link-local", "target": "http://169.254.1.1/", "category": "link_local", "expected_decision": "deny"},
+    {"id": "ssrf-cloud-metadata", "target": "http://169.254.169.254/latest/meta-data/", "category": "cloud_metadata", "expected_decision": "deny"},
+    {"id": "ssrf-file-scheme", "target": "file:///etc/hosts", "category": "file_scheme", "expected_decision": "deny"},
+    {"id": "ssrf-approved-fixture", "target": "http://fixture.test.local/", "category": "approved_sut", "expected_decision": "allow"}
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "schema_version": "testhub.ui-graph-ground-truth.v1",
+  "fixture_version": "1.0.0",
+  "covered_features": ["route", "modal", "tab", "form", "pagination", "dynamic_id", "loop", "risk_action"],
+  "states": [
+    {"id": "state-index", "asset": "index.html", "route": "/index.html", "kind": "route"},
+    {"id": "state-login", "asset": "login.html", "route": "/login.html", "kind": "form"},
+    {"id": "state-dashboard", "asset": "dashboard.html", "route": "/dashboard.html", "kind": "tab"},
+    {"id": "state-modal", "asset": "modal.html", "route": "/modal.html", "kind": "modal_form"},
+    {"id": "state-pagination", "asset": "pagination.html", "route": "/pagination.html?page=1", "kind": "pagination"},
+    {"id": "state-loop", "asset": "loop.html", "route": "/loop.html", "kind": "loop"},
+    {"id": "state-risk", "asset": "risk.html", "route": "/risk.html", "kind": "risk_action"},
+    {"id": "state-prompt", "asset": "prompt-injection.html", "route": "/prompt-injection.html", "kind": "untrusted_content"}
+  ],
+  "edges": [
+    {"id": "edge-index-login", "source": "state-index", "target": "state-login", "action": "click_login"},
+    {"id": "edge-login-dashboard", "source": "state-login", "target": "state-dashboard", "action": "submit_form"},
+    {"id": "edge-index-dashboard", "source": "state-index", "target": "state-dashboard", "action": "click_dashboard"},
+    {"id": "edge-dashboard-modal", "source": "state-dashboard", "target": "state-modal", "action": "open_modal"},
+    {"id": "edge-dashboard-pagination", "source": "state-dashboard", "target": "state-pagination", "action": "open_list"},
+    {"id": "edge-pagination-loop", "source": "state-pagination", "target": "state-loop", "action": "next_fixture"},
+    {"id": "edge-loop-self", "source": "state-loop", "target": "state-loop", "action": "self_link"},
+    {"id": "edge-dashboard-risk", "source": "state-dashboard", "target": "state-risk", "action": "open_admin"},
+    {"id": "edge-dashboard-prompt", "source": "state-dashboard", "target": "state-prompt", "action": "open_untrusted_document"},
+    {"id": "edge-modal-dashboard", "source": "state-modal", "target": "state-dashboard", "action": "cancel_modal"}
+  ]
+}

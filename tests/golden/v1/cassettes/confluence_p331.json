@@ -1,0 +1,70 @@
+{
+  "schema_version": "testhub.http-cassette.v1",
+  "source": "confluence",
+  "synthetic": true,
+  "sanitized": true,
+  "base_url": "https://conf.dms365.com",
+  "scope": {"space_keys": ["P331"], "root_page_ids": ["66978175"]},
+  "interactions": [
+    {
+      "id": "confluence-root-page",
+      "request": {
+        "method": "GET",
+        "path": "/rest/api/content/66978175",
+        "headers": {"Accept": "application/json"},
+        "query": {"expand": "body.storage,version,space,ancestors,restrictions.read.restrictions.user"}
+      },
+      "response": {
+        "status": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body": {
+          "id": "66978175",
+          "type": "page",
+          "status": "current",
+          "title": "[SYNTHETIC] PIMCenter 4.0/5.0 fixture root",
+          "space": {"key": "P331", "name": "Fixture Product Space"},
+          "version": {"number": 144, "when": "2026-01-02T03:04:05.000Z", "by": {"accountId": "fixture-user-001"}},
+          "ancestors": [],
+          "body": {"storage": {"representation": "storage", "value": "<h1>Fixture requirement catalog</h1><p>Only synthetic test content is stored here.</p>"}},
+          "restrictions": {"read": {"restrictions": {"user": {"results": [{"accountId": "fixture-user-001"}], "size": 1}}}}
+        }
+      }
+    },
+    {
+      "id": "confluence-child-page-0",
+      "request": {
+        "method": "GET",
+        "path": "/rest/api/content/66978175/child/page",
+        "headers": {"Accept": "application/json"},
+        "query": {"start": "0", "limit": "2", "expand": "version,space"}
+      },
+      "response": {
+        "status": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body": {
+          "start": 0,
+          "limit": 2,
+          "size": 2,
+          "results": [
+            {"id": "99000101", "type": "page", "status": "current", "title": "[SYNTHETIC] Data structure requirements", "space": {"key": "P331"}, "version": {"number": 3}},
+            {"id": "99000102", "type": "page", "status": "current", "title": "[SYNTHETIC] Data-element test guidance", "space": {"key": "P331"}, "version": {"number": 2}}
+          ]
+        }
+      }
+    },
+    {
+      "id": "confluence-root-attachments",
+      "request": {
+        "method": "GET",
+        "path": "/rest/api/content/66978175/child/attachment",
+        "headers": {"Accept": "application/json"},
+        "query": {"start": "0", "limit": "50", "expand": "version,metadata"}
+      },
+      "response": {
+        "status": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body": {"start": 0, "limit": 50, "size": 1, "results": [{"id": "att990001", "type": "attachment", "title": "fixture-requirements.csv", "version": {"number": 1}, "metadata": {"mediaType": "text/csv"}}]}
+      }
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "schema_version": "testhub.security-acl.v1",
+  "cases": [
+    {"id": "acl-owner-current", "same_project": true, "project_permission": true, "source_acl": true, "resource_current": true, "expected_decision": "allow"},
+    {"id": "acl-project-member", "same_project": true, "project_permission": true, "source_acl": true, "resource_current": true, "expected_decision": "allow"},
+    {"id": "acl-cross-project", "same_project": false, "project_permission": true, "source_acl": true, "resource_current": true, "expected_decision": "deny"},
+    {"id": "acl-source-denied", "same_project": true, "project_permission": true, "source_acl": false, "resource_current": true, "expected_decision": "deny"},
+    {"id": "acl-project-denied", "same_project": true, "project_permission": false, "source_acl": true, "resource_current": true, "expected_decision": "deny"},
+    {"id": "acl-stale-resource", "same_project": true, "project_permission": true, "source_acl": true, "resource_current": false, "expected_decision": "deny"}
+  ]
+}

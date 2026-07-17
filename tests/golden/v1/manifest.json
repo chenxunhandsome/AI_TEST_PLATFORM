@@ -1,0 +1,32 @@
+{
+  "schema_version": "testhub.golden-manifest.v1",
+  "bundle_version": "1.0.0",
+  "created_date": "2026-07-17",
+  "synthetic": true,
+  "sanitized": true,
+  "scope": {
+    "jira_projects": ["PIMC"],
+    "confluence_spaces": ["P331"],
+    "confluence_root_pages": ["66978175"]
+  },
+  "files": [
+    {"path": "cassettes/jira_pimc.json", "kind": "cassette", "sha256": "a488522ecf38445e5edcee90d48ae66902d9b35a7a2c33f8b07357d1a930aecb"},
+    {"path": "cassettes/confluence_p331.json", "kind": "cassette", "sha256": "8ad85dc0954ad33e61603d73f644944a587013685bd539712391ec355d7090e0"},
+    {"path": "cassettes/synapsert_pimc.json", "kind": "cassette", "sha256": "ab109fc9c5d3b4b7649f73c7ac6df7b58ea05f2315aede92fad9a1d9f185519c"},
+    {"path": "documents/requirement_sample.md", "kind": "document", "sha256": "545cbe6cb2a5429beb49fdda91324e71a68029b0ad95a633a4ec759ddb5fe554"},
+    {"path": "security/acl_cases.json", "kind": "security_acl", "sha256": "6cce45cc37c7d6e74747791c845f28a57948321646cce1c2db90f7cf4784338c"},
+    {"path": "security/prompt_injection_cases.json", "kind": "security_prompt", "sha256": "88074653ade4d6eb0a31c5029b1ccb3cd64c55cbc35382c9e76017d5d6f1cead"},
+    {"path": "security/risk_cases.json", "kind": "security_risk", "sha256": "8593aa2920fd3cbf3837728e24cc8df9bbad7ff6a6167da26b1106195c7f3a8f"},
+    {"path": "baseline_report.json", "kind": "baseline_report", "sha256": "e9614b7c117a6bcc59ef4831ac27a1b87111ba50cdc644e69fb7c161b3e13b8d"},
+    {"path": "web/graph.json", "kind": "web_graph", "sha256": "3b91bd1228171059536aa8395f826c855cdc477d1fa88fa1da2243b3f8891883"},
+    {"path": "web/index.html", "kind": "web_asset", "sha256": "c2262af94dc310f142c69879365fbf31710a6c5eddb64b2b40666c19584a87f9"},
+    {"path": "web/login.html", "kind": "web_asset", "sha256": "bdf4165354b332a1b76deeb351e84f4e93d546bf888702627d5e7352888cb96b"},
+    {"path": "web/dashboard.html", "kind": "web_asset", "sha256": "514f13a49643885a1219a3a8590565d0f6ce4611b25b2ff930626cba852faa80"},
+    {"path": "web/modal.html", "kind": "web_asset", "sha256": "d61d1a64260da850d44ab60d0bfbf255cfaad83dfde34857d372c2c48f8f8c86"},
+    {"path": "web/pagination.html", "kind": "web_asset", "sha256": "3622f473408eef670e7ab306c2e0fb16681db5685123d614d4f82a980d82f3cb"},
+    {"path": "web/loop.html", "kind": "web_asset", "sha256": "a668cdc056feef50962c546ac95cf32d55ac31b2ec4daea251af424e7f2c18ca"},
+    {"path": "web/risk.html", "kind": "web_asset", "sha256": "8e586a1e4c94b5ed0e32e9be0e6396ff1f8bdc79a575a145cef348ea076ee393"},
+    {"path": "web/prompt-injection.html", "kind": "web_asset", "sha256": "91c2020686e0ceab2e1a5deb341b92f0d872178500a3495e65a7d49b87c33a47"},
+    {"path": "web/api/state.json", "kind": "web_asset", "sha256": "8f75de9e1cf9504c83d1b19744153ce8b36898e68364e6c919b07a4af1a5712a"}
+  ]
+}

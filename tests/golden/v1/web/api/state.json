@@ -1,0 +1,6 @@
+{
+  "fixture_version": "1.0.0",
+  "status": "ready",
+  "records": [{"id": "fixture-record-001", "type": "decimal", "label": "fixture_decimal"}],
+  "next_cursor": null
+}

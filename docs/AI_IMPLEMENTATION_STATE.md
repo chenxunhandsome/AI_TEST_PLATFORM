@@ -24,15 +24,15 @@
 
 ```yaml
 state_schema_version: 1.0.0
-last_updated: 2026-07-17T09:38:50+08:00
-design_version: 1.5.1
+last_updated: 2026-07-17T10:05:20+08:00
+design_version: 1.6.1
 active_wp: null
-wp_status: WP-002_DONE_WP-001_READY
+wp_status: WP-001_DONE_WP-101_READY
 implementation_started: true
 parameter_discovery_started: false
 current_owner: root + user
-last_completed_wp: WP-002
-next_ready_wp: WP-001
+last_completed_wp: WP-001
+next_ready_wp: WP-101
 primary_vcs: svn
 mirror_vcs: git
 vcs_mode: svn_authoritative_git_mirror
@@ -42,7 +42,7 @@ vcs_mode: svn_authoritative_git_mirror
 
 ### 当前目标
 
-`WP-002` 已完成：既有 migration/test 基线全部稳定。下一入口为 `WP-001`，建立最小 Jira/Confluence/SynapseRT cassette、可控 Web fixture 和安全黄金集；开始前仍需核对现有未提交改动。
+`WP-001` 已完成：版本化、脱敏、确定性的 cassette/Web/security 黄金包和首个基线报告全部通过。M0 基线已就绪，下一入口为 `WP-101`，建立 `knowledge`、`ai_orchestration` app、配置、health check 与默认关闭的 feature flags。
 
 ### 已确认的环境
 
@@ -71,16 +71,16 @@ vcs_mode: svn_authoritative_git_mirror
 
 ### 当前 blocker / 安全待办
 
-1. `WP-001` 当前无外部 blocker；SVN/远端 Git 同步因网络条件延后，不影响本地实现和验证。
-2. 用户尚未确认聊天中暴露的门户密码是否已轮换；平台不使用该密码，此项不阻塞 `WP-002`，但仍应尽快完成。
+1. `WP-101` 当前无外部 blocker；SVN 同步按用户要求等待公司网络/代理恢复，不影响本地实现和验证。
+2. 用户尚未确认聊天中暴露的门户密码是否已轮换；平台不使用该密码，此项不阻塞 `WP-101`，但仍应尽快完成。
 3. 浏览器目标并发、生产对象存储实例和证据保留期尚未最终确认，但不阻塞基础代码骨架。
 
 ### 下一步动作（严格按顺序）
 
-1. 完成 `WP-002` 的路径级本地 Git 提交；`ai_case_generator.py` 只暂存本轮三个修复 hunk，不带入用户现有 MCP/maximizeWindow/页面图谱改动。
-2. 网络/代理恢复后，将设计检查点和 `WP-002` 变更按路径提交 SVN，并在确认前置 Git 提交范围后同步远端。
-3. 开始 `WP-001`：盘点现有 fixture/测试目录，定义 Jira/Confluence/SynapseRT cassette 的脱敏格式和可控 Web fixture。
-4. 建立 ACL、prompt injection、危险动作与只读 endpoint 拒绝黄金用例，形成首个基线报告。
+1. 完成 `WP-001` 的路径级 Git 提交与远端推送；SVN 保持待同步，不发起网络连接。
+2. 开始 `WP-101` 前盘点 Django settings、URL、health check 和现有 app 命名边界。
+3. 创建 `knowledge`、`ai_orchestration` app 骨架与默认关闭的 feature flags，关闭时现有行为必须不变。
+4. 添加配置/health/flag 测试并重跑黄金集、既有 40 tests、Django/migration check 和 Vue build。
 
 ---
 
@@ -154,6 +154,17 @@ baseline:
   ui_ai_mcp_tests: 36_passed
   wp_002_target_tests: 40_passed
   frontend_build: passed_with_existing_bundle_warnings
+golden_baseline:
+  bundle_version: 1.0.0
+  manifest_sha256: d9e773e450718711e53d7e5fb7b6732ea8e81680f85849e58b5d5856b745d793
+  manifest_files: 18
+  cassettes: 3
+  security_cases: 27
+  web_states: 8
+  web_edges: 10
+  contract_tests: 8_passed
+  combined_regression_tests: 48_passed
+  report: docs/baselines/WP-001_GOLDEN_BASELINE.md
 svn:
   primary: true
   env_ignored: true
@@ -170,7 +181,9 @@ git:
   design_checkpoint_commit: 9c528c9
   wp_002_commit: 9e28eaa
   committed: true
-  remote_push: deferred_preexisting_ahead_commits_and_network
+  remote_push: passed_direct_without_persistent_proxy_change
+  remote_head: ea3f713
+  wp_001_commit: pending
 portal:
   http: reachable
   https_443: refused
@@ -181,6 +194,22 @@ portal:
 ---
 
 ## 5. 会话交接记录
+
+### 2026-07-17 / WP-001 完成 → WP-101 READY
+
+- 建立 `tests/golden/v1` bundle 1.0.0：18 个 manifest/hash 保护文件、Jira/Confluence/SynapseRT 三类 cassette、27 个安全案例、8 状态/10 边 Web 真值图。
+- cassette 全部 synthetic/sanitized/read-only，并严格限制 PIMC、P331/66978175；SynapseRT 写/执行/克隆/删除/AI endpoint fail closed。
+- 建立 loopback-only 可控 Web server，覆盖 route/login/tab/modal/form/pagination/dynamic ID/loop/risk/prompt injection。
+- 篡改 hash、跨项目 Issue、非脱敏字段、ACL、prompt injection、SSRF 和危险动作均有故障注入测试。
+- 验收通过：8/8 golden tests、48/48 合并回归、Django check、migration check、Vue build；报告为 `docs/baselines/WP-001_GOLDEN_BASELINE.md`。
+- 当前工作包 Git 提交待状态落盘后完成；SVN 继续按用户要求等待网络恢复。
+
+### 2026-07-17 / WP-001 开始
+
+- 用户授权开始 WP-001，并允许推送当前 `main` 领先远端的全部 5 个提交。
+- 默认本地 Git 代理未运行导致首次 push 失败；使用仅本次命令生效的空代理参数直连成功，未修改全局配置，`origin/main` 已更新到 `ea3f713`。
+- WP-001 只建立脱敏 fixture、cassette 契约、安全黄金集和基线报告，不提前实现 WP-203～205 正式连接器。
+- 仓库没有现成 golden/cassette 框架；采用 Python 标准库和 Django/`unittest` 可离线运行，避免引入新的网络测试依赖。
 
 ### 2026-07-17 / WP-002 完成 → WP-001 READY
 

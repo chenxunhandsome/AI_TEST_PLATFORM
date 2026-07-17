@@ -1,0 +1,33 @@
+{
+  "schema_version": "testhub.golden-baseline-report.v1",
+  "bundle_version": "1.0.0",
+  "evaluated_date": "2026-07-17",
+  "result": "PASS",
+  "expected_counts": {
+    "files": 18,
+    "cassettes": 3,
+    "security_cases": 27,
+    "web_states": 8,
+    "web_edges": 10
+  },
+  "release_gates": {
+    "fixture_checksum_integrity": "PASS",
+    "source_scope_isolation": "PASS",
+    "credential_redaction": "PASS",
+    "read_only_cassette_methods": "PASS",
+    "synapsert_write_execute_ai_denial": "PASS",
+    "acl_fail_closed": "PASS",
+    "prompt_injection_no_escalation": "PASS",
+    "ssrf_and_risk_classification": "PASS",
+    "controlled_web_graph_ground_truth": "PASS"
+  },
+  "reproduce": [
+    "python -m unittest tests.test_golden_baseline -v",
+    "python manage.py test tests.test_golden_baseline --settings=backend.settings_local --verbosity 1"
+  ],
+  "limitations": [
+    "SynapseRT live endpoint paths remain capability-probe bindings for WP-205; cassette bodies are synthetic adapter contracts.",
+    "This initial bundle contains one controlled Web application; the quality program expands to three to five applications before UI graph release.",
+    "The initial security set is a release seed and continues expanding through WP-801."
+  ]
+}

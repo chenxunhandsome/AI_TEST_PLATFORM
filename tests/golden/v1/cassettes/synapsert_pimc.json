@@ -1,0 +1,39 @@
+{
+  "schema_version": "testhub.http-cassette.v1",
+  "source": "synapsert",
+  "synthetic": true,
+  "sanitized": true,
+  "base_url": "https://jira.dms365.com",
+  "endpoint_binding": "capability-probe-required-before-live-replay",
+  "scope": {"project_keys": ["PIMC"], "rest_base": "/rest/synapse/latest/"},
+  "interactions": [
+    {
+      "id": "synapse-license",
+      "operation": "get_license",
+      "request": {"method": "GET", "path": "/rest/synapse/latest/license", "headers": {"Accept": "application/json"}, "query": {}},
+      "response": {"status": 200, "headers": {"Content-Type": "application/json"}, "body": {"valid": true, "product": "SynapseRT", "fixture": true}}
+    },
+    {
+      "id": "synapse-suite-tree",
+      "operation": "list_test_suite_tree",
+      "request": {"method": "GET", "path": "/rest/synapse/latest/test-suite/tree", "headers": {"Accept": "application/json"}, "query": {"projectKey": "PIMC"}},
+      "response": {
+        "status": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body": {"nodes": [{"id": "suite-fixture-root", "name": "[SYNTHETIC] PIMC regression", "parentId": null}, {"id": "suite-fixture-data", "name": "[SYNTHETIC] Data element", "parentId": "suite-fixture-root"}]}
+      }
+    },
+    {
+      "id": "synapse-suite-members",
+      "operation": "list_test_suite_members",
+      "request": {"method": "GET", "path": "/rest/synapse/latest/test-suite/members", "headers": {"Accept": "application/json"}, "query": {"projectKey": "PIMC", "suiteId": "suite-fixture-data", "startAt": "0", "maxResults": "50"}},
+      "response": {"status": 200, "headers": {"Content-Type": "application/json"}, "body": {"startAt": 0, "maxResults": 50, "total": 1, "testCases": [{"key": "PIMC-900002", "order": 1}]}}
+    },
+    {
+      "id": "synapse-test-steps",
+      "operation": "list_test_steps",
+      "request": {"method": "GET", "path": "/rest/synapse/latest/test-case/steps", "headers": {"Accept": "application/json"}, "query": {"projectKey": "PIMC", "issueKey": "PIMC-900002"}},
+      "response": {"status": 200, "headers": {"Content-Type": "application/json"}, "body": {"steps": [{"id": "step-fixture-1", "order": 1, "action": "Open the data-element page", "expected": "The page is ready"}, {"id": "step-fixture-2", "order": 2, "action": "Submit a decimal data element", "expected": "A success notice is visible"}]}}
+    }
+  ]
+}

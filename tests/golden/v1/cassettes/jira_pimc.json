@@ -1,0 +1,97 @@
+{
+  "schema_version": "testhub.http-cassette.v1",
+  "source": "jira",
+  "synthetic": true,
+  "sanitized": true,
+  "base_url": "https://jira.dms365.com",
+  "scope": {
+    "project_keys": ["PIMC"],
+    "issue_type_ids": ["10200", "10201", "10202", "10203"]
+  },
+  "interactions": [
+    {
+      "id": "jira-server-info",
+      "request": {
+        "method": "GET",
+        "path": "/rest/api/2/serverInfo",
+        "headers": {"Accept": "application/json"},
+        "query": {}
+      },
+      "response": {
+        "status": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body": {"version": "11.3.6", "deploymentType": "Server", "buildNumber": 11030006}
+      }
+    },
+    {
+      "id": "jira-pimc-search-page-0",
+      "request": {
+        "method": "GET",
+        "path": "/rest/api/2/search",
+        "headers": {"Accept": "application/json"},
+        "query": {
+          "jql": "project = PIMC AND issuetype in (10200,10201,10202,10203) ORDER BY id ASC",
+          "startAt": "0",
+          "maxResults": "2",
+          "fields": "summary,description,issuetype,status,updated,comment,issuelinks"
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body": {
+          "startAt": 0,
+          "maxResults": 2,
+          "total": 2,
+          "issues": [
+            {
+              "id": "990000001",
+              "key": "PIMC-900001",
+              "fields": {
+                "summary": "[SYNTHETIC] Create a governed data element",
+                "description": "A project member creates a decimal data element and verifies the success notice.",
+                "issuetype": {"id": "10200", "name": "Requirement"},
+                "status": {"id": "1", "name": "Open"},
+                "updated": "2026-01-02T03:04:05.000+0800",
+                "comment": {"total": 1, "comments": [{"id": "991", "author": {"key": "fixture-user-001"}, "body": "Use the approved decimal definition."}]},
+                "issuelinks": [{"id": "992", "type": {"name": "Tests"}, "outwardIssue": {"key": "PIMC-900002"}}]
+              }
+            },
+            {
+              "id": "990000002",
+              "key": "PIMC-900002",
+              "fields": {
+                "summary": "[SYNTHETIC] Verify data-element creation",
+                "description": "Select the decimal definition, submit the modal, and assert the success notice.",
+                "issuetype": {"id": "10201", "name": "Test Case"},
+                "status": {"id": "10000", "name": "Ready"},
+                "updated": "2026-01-02T03:05:06.000+0800",
+                "comment": {"total": 0, "comments": []},
+                "issuelinks": []
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "jira-pimc-changelog",
+      "request": {
+        "method": "GET",
+        "path": "/rest/api/2/issue/PIMC-900001/changelog",
+        "headers": {"Accept": "application/json"},
+        "query": {"startAt": "0", "maxResults": "50"}
+      },
+      "response": {
+        "status": 200,
+        "headers": {"Content-Type": "application/json"},
+        "body": {
+          "startAt": 0,
+          "maxResults": 50,
+          "total": 1,
+          "values": [{"id": "993", "author": {"key": "fixture-user-001"}, "created": "2026-01-02T03:04:05.000+0800", "items": [{"field": "status", "fromString": "Draft", "toString": "Open"}]}]
+        }
+      }
+    }
+  ]
+}

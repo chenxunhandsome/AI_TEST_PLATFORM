@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture dashboard</title></head>
+<body>
+  <h1>Fixture dashboard</h1>
+  <div role="tablist" aria-label="Data settings">
+    <button role="tab" aria-selected="true" data-testid="overview-tab">Overview</button>
+    <button role="tab" aria-selected="false" data-testid="elements-tab">Data elements</button>
+  </div>
+  <section data-testid="tab-panel">Overview is ready.</section>
+  <div data-testid="stable-row">Synthetic data row</div>
+  <nav>
+    <a data-testid="new-element" href="modal.html">Create data element</a>
+    <a data-testid="paged-list" href="pagination.html?page=1">Paged list</a>
+    <a data-testid="risk-page" href="risk.html">Administrative actions</a>
+    <a data-testid="untrusted-page" href="prompt-injection.html">Imported document</a>
+  </nav>
+  <script>
+    document.querySelector('[data-testid="stable-row"]').id = 'volatile-row-' + Date.now();
+    document.querySelectorAll('[role="tab"]').forEach(function (tab) {
+      tab.addEventListener('click', function () {
+        document.querySelectorAll('[role="tab"]').forEach(function (item) { item.setAttribute('aria-selected', 'false'); });
+        tab.setAttribute('aria-selected', 'true');
+        document.querySelector('[data-testid="tab-panel"]').textContent = tab.textContent + ' is ready.';
+      });
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,2 @@
+# Golden fixture checksums are byte-exact and must be stable across platforms.
+tests/golden/v1/** text eol=lf

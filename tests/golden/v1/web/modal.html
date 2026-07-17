@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Fixture modal</title></head>
+<body>
+  <dialog data-testid="create-modal" open>
+    <form method="get" action="dashboard.html">
+      <h1>Create synthetic data element</h1>
+      <label>Definition
+        <select data-testid="definition"><option value="decimal">SYS Decimal</option></select>
+      </label>
+      <label>Label <input data-testid="element-label" name="label" value="fixture_decimal"></label>
+      <button data-testid="modal-submit" type="submit">Create</button>
+      <a data-testid="modal-cancel" href="dashboard.html">Cancel</a>
+    </form>
+  </dialog>
+</body>
+</html>
