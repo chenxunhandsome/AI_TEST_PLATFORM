@@ -24,7 +24,7 @@
 
 ```yaml
 state_schema_version: 1.0.0
-last_updated: 2026-07-17T10:11:37+08:00
+last_updated: 2026-07-17T10:13:53+08:00
 design_version: 1.6.1
 active_wp: null
 wp_status: WP-001_DONE_WP-101_READY
@@ -182,7 +182,9 @@ git:
   wp_002_commit: 9e28eaa
   committed: true
   remote_push: passed_direct_without_persistent_proxy_change
-  remote_head_at_last_verification: 3d135dd
+  remote_ref: origin/main
+  remote_sync_verified: true
+  remote_sync_scope: through_wp_001_completion_status
   wp_001_commit: 3d191e7
   wp_001_remote_sync: passed
 portal:
